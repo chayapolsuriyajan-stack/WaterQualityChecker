@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HydroMonitor Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-gray-50 min-h-screen p-8">
+
+    <header class="flex justify-between items-center mb-8">
+        <select class="p-2 border rounded-lg bg-white shadow-sm border-gray-300">
+            <option>Site: Satit CMU, Chiang Mai, Thailand</option>
+        </select>
+        <div class="text-sm text-gray-500" id="lastUpdated">Last updated: --</div>
+    </header>
+
+    <div class="grid grid-cols-12 gap-6">
+
+        <div class="col-span-12 md:col-span-4 card">
+            <h2 class="text-gray-600 font-medium mb-4">Overall WQI Score</h2>
+            <div class="flex flex-col items-center">
+                <div class="text-6xl font-bold text-teal-700">92</div>
+                <p class="text-teal-600 font-semibold uppercase tracking-wider">Excellent</p>
+                <div class="w-full h-4 bg-gray-200 rounded-full mt-4 overflow-hidden">
+                    <div class="bg-teal-500 h-full w-[92%]"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-span-12 md:col-span-8 card">
+            <h2 class="text-gray-600 font-medium mb-4">WQI Trend (Last 30 Days)</h2>
+            <div class="h-40 bg-gray-50 flex items-end p-2 border-b border-gray-200">
+                <div class="w-full h-24 bg-teal-50 border-t-2 border-teal-500"></div>
+            </div>
+        </div>
+
+        <div class="col-span-12 md:col-span-4 card">
+            <h2 class="text-gray-600 font-medium mb-4">Water Quality Parameter</h2>
+            <div class="space-y-4">
+                <div class="flex justify-between items-center border-b pb-2">
+                    <span class="text-sm">Dissolved Oxygen (DO)</span>
+                    <span class="font-bold text-teal-700">8.8 mg/L</span>
+                </div>
+                <div class="flex justify-between items-center border-b pb-2">
+                    <span class="text-sm">pH Level</span>
+                    <span class="font-bold text-teal-700">7.3 pH</span>
+                </div>
+                <div class="flex justify-between items-center border-b pb-2">
+                    <span class="text-sm">Temperature</span>
+                    <span class="font-bold text-teal-700" id="paramTemp">--.- &deg;C</span>
+                </div>
+                <div class="flex justify-between items-center border-b pb-2">
+                    <span class="text-sm">Turbidity</span>
+                    <span class="font-bold text-teal-700" id="paramTurb">--- NTU</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-sm">TDS</span>
+                    <span class="font-bold text-teal-700" id="paramTds">--- ppm</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-span-12 md:col-span-4 card">
+            <h2 class="text-gray-600 font-medium mb-4">Satit CMU Area</h2>
+            <div id="siteMap" class="h-48 rounded-lg border border-gray-200 overflow-hidden"></div>
+        </div>
+
+        <div class="col-span-12 md:col-span-4 card">
+            <h2 class="text-gray-600 font-medium mb-4">Pollutant Source Identification</h2>
+            <div class="flex items-end gap-2 h-24">
+                <div class="w-12 bg-orange-500 h-[70%]"></div>
+                <div class="w-12 bg-gray-300 h-[40%]"></div>
+                <div class="w-12 bg-gray-300 h-[25%]"></div>
+                <div class="w-12 bg-gray-300 h-[15%]"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

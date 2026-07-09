@@ -1,0 +1,5 @@
+{
+  "staticDir": "Build",
+  "indexFile": "web/index.html",
+  "googleSheetsWebhookUrl": ""
+}

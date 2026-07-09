@@ -1,0 +1,18 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 1.5rem;
+}
+
+/* Plain CSS (not a Tailwind utility class) so the height is guaranteed to apply
+   immediately -- Leaflet measures this container on init, but Tailwind's CDN
+   build injects utility-class CSS asynchronously and can lose that race,
+   leaving the map initialized into a 0-height box. */
+#siteMap {
+    height: 12rem;
+}
