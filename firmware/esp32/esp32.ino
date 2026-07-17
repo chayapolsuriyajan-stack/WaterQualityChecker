@@ -17,7 +17,7 @@
 // GPIO34, since the sensor outputs up to ~4.5V but ESP32 ADC pins are only 3.3V safe.
 // This undoes the divider to recover the sensor's real 0-4.5V output for the NTU formula.
 const float dividerRecoveryFactor = 1.5; // (R1 + R2) / R2 = 30k / 20k
-const float adcVref = 3.3;
+const float adcVref = 5.0;
 
 const char* ssid = "W7";
 const char* password = "Asdfghjkl";
@@ -76,7 +76,7 @@ bool discoverBackend(unsigned long timeoutMs = 3000) {
 void setup() {
   Serial.begin(115200);
   sensors.begin();
-
+  analogSetAttenuation(ADC_11db);
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
   WiFi.begin(ssid, password); // <-- This automatically gets a DYNAMIC IP via DHCP
@@ -121,12 +121,17 @@ void loop() {
     float temperatureC = sensors.getTempCByIndex(0);
     if (temperatureC == DEVICE_DISCONNECTED_C) temperatureC = 0.0;
 
-    int rawAnalogValue = analogRead(TURBIDITY_PIN); // ESP32 ADC: 12-bit, 0-4095
-    float adcVoltage = rawAnalogValue * (adcVref / 4095.0);
-    float sensorVoltage = adcVoltage * dividerRecoveryFactor;
-    float turbidityNTU = -1120.4 * (sensorVoltage * sensorVoltage) + 5742.3 * sensorVoltage - 4353.8;
-    if (turbidityNTU < 0) turbidityNTU = 0;
-    Serial.printf("Turbidity raw=%d adcV=%.3f sensorV=%.3f NTU=%.1f\n", rawAnalogValue, adcVoltage, sensorVoltage, turbidityNTU);
+    // Turbidity is reported as the averaged raw ADC value (mean of 20 samples, matching
+    // the sketch_jul13a bench test) rather than the NTU formula: the NTU curve was
+    // unstable through the voltage divider, and averaging smooths out electrical noise.
+    const int turbiditySamples = 20;
+    long turbidityAdcSum = 0;
+    for (int i = 0; i < turbiditySamples; i++) {
+      turbidityAdcSum += analogRead(TURBIDITY_PIN); // ESP32 ADC: 12-bit, 0-4095
+      delay(10);
+    }
+    float turbidityADC = (float)turbidityAdcSum / turbiditySamples;
+    Serial.printf("Turbidity avgADC=%.0f\n", turbidityADC);
 
     // DFRobot TDS Meter V1.0 official formula, temperature-compensated using the DS18B20
     // reading (the sensor's raw output drifts with water temperature, nominally calibrated at 25C).
@@ -138,10 +143,11 @@ void loop() {
                     - 255.86 * tdsCompensatedVoltage * tdsCompensatedVoltage
                     + 857.39 * tdsCompensatedVoltage) * 0.5;
     if (tdsPpm < 0) tdsPpm = 0;
+    Serial.printf("TDS raw=%d tdsV=%.3f compV=%.3f ppm=%.1f\n", rawTdsValue, tdsVoltage, tdsCompensatedVoltage, tdsPpm);
 
     StaticJsonDocument<192> jsonDoc;
     jsonDoc["temperature"] = temperatureC;
-    jsonDoc["turbidity"] = turbidityNTU;
+    jsonDoc["turbidity"] = turbidityADC;
     jsonDoc["tds"] = tdsPpm;
 
     String outputPayload;

@@ -90,6 +90,33 @@ async def start_discovery_listener():
 ui_clients = set()
 ui_clients_lock = asyncio.Lock()
 
+# Running min/max per parameter, tracked since server start (reset on restart).
+# Living on the backend (not per-browser) so every connected dashboard shows the
+# same range and it survives page refreshes. Mutated only from the event loop in
+# update_sensor, so no lock is needed.
+STAT_KEYS = ("temperature", "turbidity", "tds")
+sensor_stats: dict = {}
+
+
+def _update_stats(payload: dict) -> None:
+    for key in STAT_KEYS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        current = sensor_stats.get(key)
+        if current is None:
+            sensor_stats[key] = {"min": value, "max": value}
+        else:
+            current["min"] = min(current["min"], value)
+            current["max"] = max(current["max"], value)
+
+
+def _stats_snapshot() -> dict:
+    # Deep-ish copy so a snapshot handed to a coroutine/broadcast can't be mutated
+    # underneath it by a later reading.
+    return {key: dict(stat) for key, stat in sensor_stats.items()}
+
+
 async def broadcast_sensor_update(payload: dict) -> None:
     disconnected_clients = []
     message = json.dumps({"type": "sensor_update", "payload": payload})
@@ -128,6 +155,28 @@ async def relay_to_google_sheets(payload: dict) -> None:
     await asyncio.to_thread(_post_to_google_sheets, payload)
 
 
+# --- Turbidity ADC -> NTU calibration ---------------------------------------
+# The firmware reports turbidity as an averaged raw ADC count (0-4095). Higher ADC
+# means clearer water (more light reaches the sensor), so NTU falls as ADC rises.
+# Measured clean water sits around ADC 1700-2500, treated as ~0 NTU; below the clean
+# threshold the water is dirtier and NTU climbs linearly to TURBIDITY_NTU_MAX.
+# The dashboard shows this NTU value; the raw ADC is what's logged to Google Sheets.
+# These are rough anchors -- retune against known reference samples.
+TURBIDITY_ADC_CLEAN = 1700   # at/above this ADC => clean water, 0 NTU
+TURBIDITY_ADC_DIRTY = 0      # at/below this ADC => maximum turbidity
+TURBIDITY_NTU_MAX = 3000     # NTU reported at the dirty anchor
+
+
+def adc_to_ntu(adc: float) -> float:
+    if adc >= TURBIDITY_ADC_CLEAN:
+        return 0.0
+    span = TURBIDITY_ADC_CLEAN - TURBIDITY_ADC_DIRTY
+    if span <= 0:
+        return 0.0
+    ntu = (TURBIDITY_ADC_CLEAN - adc) / span * TURBIDITY_NTU_MAX
+    return round(max(0.0, min(TURBIDITY_NTU_MAX, ntu)), 1)
+
+
 @app.post("/update")
 async def update_sensor(request: Request):
     try:
@@ -137,9 +186,15 @@ async def update_sensor(request: Request):
             "timestamp": int(time.time()),
         }
 
+        turbidity_adc = None
         if "temperature" in data and "turbidity" in data:
             payload["temperature"] = float(data["temperature"])
-            payload["turbidity"] = float(data["turbidity"])
+            # Firmware reports turbidity as an averaged raw ADC count. The dashboard
+            # (and min/max stats) work in NTU, so convert here; the raw ADC is kept
+            # separately and logged as-is to Google Sheets.
+            turbidity_adc = float(data["turbidity"])
+            payload["turbidity"] = adc_to_ntu(turbidity_adc)
+            payload["turbidity_adc"] = turbidity_adc
             if "tds" in data:
                 payload["tds"] = float(data["tds"])
         else:
@@ -154,10 +209,22 @@ async def update_sensor(request: Request):
 
             payload["water_level"] = int(float(water_level))
 
+        _update_stats(payload)
+        payload["stats"] = _stats_snapshot()
+
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
         if "temperature" in payload:
-            asyncio.create_task(relay_to_google_sheets(payload))
+            # Google Sheets logs the raw averaged ADC (not the NTU shown on the dashboard).
+            sheet_payload = {
+                "source": payload["source"],
+                "timestamp": payload["timestamp"],
+                "temperature": payload["temperature"],
+                "turbidity": turbidity_adc,
+            }
+            if "tds" in payload:
+                sheet_payload["tds"] = payload["tds"]
+            asyncio.create_task(relay_to_google_sheets(sheet_payload))
         return JSONResponse({"ok": True, "payload": payload})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -193,6 +260,16 @@ async def websocket_app(websocket: WebSocket):
 
     async with ui_clients_lock:
         ui_clients.add(websocket)
+
+    # Prime the freshly connected dashboard with the current min/max so the range
+    # is visible right away instead of only after the next reading arrives.
+    if sensor_stats:
+        try:
+            await websocket.send_text(
+                json.dumps({"type": "sensor_update", "payload": {"stats": _stats_snapshot()}})
+            )
+        except Exception:
+            pass
 
     try:
         while True:

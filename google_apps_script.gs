@@ -6,7 +6,7 @@ function doPost(e) {
   var data = JSON.parse(e.postData.contents);
 
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (NTU)", "TDS (ppm)"]);
+    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)"]);
   }
 
   sheet.appendRow([
