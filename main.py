@@ -162,6 +162,8 @@ async def relay_to_google_sheets(payload: dict) -> None:
 # threshold the water is dirtier and NTU climbs linearly to TURBIDITY_NTU_MAX.
 # The dashboard shows this NTU value; the raw ADC is what's logged to Google Sheets.
 # These are rough anchors -- retune against known reference samples.
+# NOTE: currently BYPASSED (see update_sensor) -- turbidity is shown/stored as raw
+# averaged ADC for now, until the NTU curve is calibrated.
 TURBIDITY_ADC_CLEAN = 1700   # at/above this ADC => clean water, 0 NTU
 TURBIDITY_ADC_DIRTY = 0      # at/below this ADC => maximum turbidity
 TURBIDITY_NTU_MAX = 3000     # NTU reported at the dirty anchor
@@ -186,15 +188,11 @@ async def update_sensor(request: Request):
             "timestamp": int(time.time()),
         }
 
-        turbidity_adc = None
         if "temperature" in data and "turbidity" in data:
             payload["temperature"] = float(data["temperature"])
-            # Firmware reports turbidity as an averaged raw ADC count. The dashboard
-            # (and min/max stats) work in NTU, so convert here; the raw ADC is kept
-            # separately and logged as-is to Google Sheets.
-            turbidity_adc = float(data["turbidity"])
-            payload["turbidity"] = adc_to_ntu(turbidity_adc)
-            payload["turbidity_adc"] = turbidity_adc
+            # Turbidity is shown and stored as the averaged raw ADC for now. The NTU
+            # conversion (adc_to_ntu) is left in place but bypassed until it's calibrated.
+            payload["turbidity"] = float(data["turbidity"])
             if "tds" in data:
                 payload["tds"] = float(data["tds"])
         else:
@@ -215,12 +213,12 @@ async def update_sensor(request: Request):
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
         if "temperature" in payload:
-            # Google Sheets logs the raw averaged ADC (not the NTU shown on the dashboard).
+            # Google Sheets logs the same averaged raw ADC that's shown on the dashboard.
             sheet_payload = {
                 "source": payload["source"],
                 "timestamp": payload["timestamp"],
                 "temperature": payload["temperature"],
-                "turbidity": turbidity_adc,
+                "turbidity": payload["turbidity"],
             }
             if "tds" in payload:
                 sheet_payload["tds"] = payload["tds"]
@@ -228,6 +226,40 @@ async def update_sensor(request: Request):
         return JSONResponse({"ok": True, "payload": payload})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+HISTORY_WINDOW_SECONDS = 15 * 60  # dashboard graph shows only the last 15 minutes
+
+
+@app.get("/history")
+async def get_history():
+    # Reads recent readings back from the Google Sheet (via the Apps Script doGet) and
+    # returns only the last 15 minutes. Proxied here (server-side) so the dashboard
+    # fetch stays same-origin -- no browser CORS/redirect issues with Google.
+    if not GOOGLE_SHEETS_WEBHOOK_URL:
+        return JSONResponse({"rows": [], "windowSeconds": HISTORY_WINDOW_SECONDS})
+
+    def fetch() -> str:
+        req = urllib.request.Request(GOOGLE_SHEETS_WEBHOOK_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode("utf-8")
+
+    try:
+        raw = await asyncio.to_thread(fetch)
+        data = json.loads(raw)
+    except Exception as exc:
+        print(f"⚠️ Failed to read history from Google Sheets: {exc}")
+        return JSONResponse(
+            {"rows": [], "windowSeconds": HISTORY_WINDOW_SECONDS, "error": str(exc)}
+        )
+
+    cutoff_ms = (time.time() - HISTORY_WINDOW_SECONDS) * 1000
+    rows = [
+        r
+        for r in data.get("rows", [])
+        if isinstance(r.get("timestamp"), (int, float)) and r["timestamp"] >= cutoff_ms
+    ]
+    return JSONResponse({"rows": rows, "windowSeconds": HISTORY_WINDOW_SECONDS})
 
 
 @app.get("/")

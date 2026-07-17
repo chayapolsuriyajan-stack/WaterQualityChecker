@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="bg-gray-50 min-h-screen p-8">
@@ -32,10 +33,10 @@
         </div>
 
         <div class="col-span-12 md:col-span-8 card">
-            <h2 class="text-gray-600 font-medium mb-4">WQI Trend (Last 30 Days)</h2>
-            <div class="h-40 bg-gray-50 flex items-end p-2 border-b border-gray-200">
-                <div class="w-full h-24 bg-teal-50 border-t-2 border-teal-500"></div>
-            </div>
+            <h2 class="text-gray-600 font-medium mb-4">Last 15 Minutes
+                <span class="text-xs text-gray-400 font-normal">(from Google Sheet)</span>
+            </h2>
+            <div class="h-48"><canvas id="historyChart"></canvas></div>
         </div>
 
         <div class="col-span-12 md:col-span-4 card">
@@ -58,8 +59,8 @@
                 </div>
                 <div class="border-b pb-2">
                     <div class="flex justify-between items-center">
-                        <span class="text-sm">Turbidity</span>
-                        <span class="font-bold text-teal-700" id="paramTurb">--- NTU</span>
+                        <span class="text-sm">Turbidity (avg ADC)</span>
+                        <span class="font-bold text-teal-700" id="paramTurb">--- ADC</span>
                     </div>
                     <div class="text-xs text-gray-400 text-right" id="rangeTurb">min --- / max ---</div>
                 </div>

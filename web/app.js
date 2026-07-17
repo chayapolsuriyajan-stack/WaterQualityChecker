@@ -59,7 +59,9 @@ function connectWebSocket() {
 // static placeholders here -- there's no sensor feeding those yet.
 function updateDashboard(temp, turb, tds) {
     document.getElementById('paramTemp').innerText = `${temp.toFixed(1)} °C`;
-    document.getElementById('paramTurb').innerText = `${Math.round(turb)} NTU`;
+    // Turbidity is shown as the raw averaged ADC for now (NTU conversion is bypassed
+    // on the backend until it's calibrated).
+    document.getElementById('paramTurb').innerText = `${Math.round(turb)} ADC`;
     document.getElementById('paramTds').innerText = `${Math.round(tds)} ppm`;
 
     const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -75,7 +77,7 @@ function updateRanges(stats) {
         el.innerText = `min ${Number(stat.min).toFixed(digits)} / max ${Number(stat.max).toFixed(digits)}${unit}`;
     };
     render('rangeTemp', stats.temperature, 1, ' °C');
-    render('rangeTurb', stats.turbidity, 0, ' NTU');
+    render('rangeTurb', stats.turbidity, 0, ' ADC');
     render('rangeTds', stats.tds, 0, ' ppm');
 }
 
@@ -103,5 +105,68 @@ function startSimulation() {
     }, 2000);
 }
 
+// --- 15-MINUTE HISTORY GRAPH ---
+// Data source is the Google Sheet, read back through the backend's /history endpoint
+// (which filters to the last 15 minutes). Kept separate from the live WebSocket feed.
+let historyChart;
+
+function numOrNull(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function ensureHistoryChart() {
+    if (historyChart) return historyChart;
+    const canvas = document.getElementById('historyChart');
+    if (!canvas || typeof Chart === 'undefined') return null;
+    historyChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                { label: 'Temp (°C)', data: [], borderColor: '#0d9488', yAxisID: 'yTemp', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                { label: 'Turbidity (ADC)', data: [], borderColor: '#f59e0b', yAxisID: 'yTurb', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                { label: 'TDS (ppm)', data: [], borderColor: '#6366f1', yAxisID: 'yTds', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0 } },
+                yTemp: { position: 'left', title: { display: true, text: '°C' } },
+                yTurb: { position: 'right', title: { display: true, text: 'ADC' }, grid: { drawOnChartArea: false } },
+                yTds: { display: false },
+            },
+        },
+    });
+    return historyChart;
+}
+
+async function loadHistory() {
+    try {
+        const resp = await fetch('/history');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        const chart = ensureHistoryChart();
+        if (!chart) return;
+        chart.data.labels = rows.map(r =>
+            new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        chart.data.datasets[0].data = rows.map(r => numOrNull(r.temperature));
+        chart.data.datasets[1].data = rows.map(r => numOrNull(r.turbidity));
+        chart.data.datasets[2].data = rows.map(r => numOrNull(r.tds));
+        chart.update();
+    } catch (e) {
+        console.error('Failed to load 15-min history', e);
+    }
+}
+
 // Initialize connection on dashboard launch
 connectWebSocket();
+
+// Pull the last 15 minutes from the sheet now, then refresh periodically.
+loadHistory();
+setInterval(loadHistory, 30000);
