@@ -126,6 +126,7 @@ void loop() {
     float sensorVoltage = adcVoltage * dividerRecoveryFactor;
     float turbidityNTU = -1120.4 * (sensorVoltage * sensorVoltage) + 5742.3 * sensorVoltage - 4353.8;
     if (turbidityNTU < 0) turbidityNTU = 0;
+    Serial.printf("Turbidity raw=%d adcV=%.3f sensorV=%.3f NTU=%.1f\n", rawAnalogValue, adcVoltage, sensorVoltage, turbidityNTU);
 
     // DFRobot TDS Meter V1.0 official formula, temperature-compensated using the DS18B20
     // reading (the sensor's raw output drifts with water temperature, nominally calibrated at 25C).
