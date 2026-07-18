@@ -22,6 +22,8 @@ window.addEventListener('load', () => siteMap.invalidateSize());
 // --- WEBSOCKET PIPELINE ---
 const espWebSocketUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080/ws/app`;
 let socket;
+// Unit the backend is currently sending for turbidity ('NTU' once calibrated, else 'ADC').
+let turbidityUnit = 'ADC';
 
 function connectWebSocket() {
     socket = new WebSocket(espWebSocketUrl);
@@ -40,6 +42,9 @@ function connectWebSocket() {
             if (p.stats) {
                 updateRanges(p.stats);
             }
+            // Turbidity now arrives as calibrated NTU once a backend calibration exists,
+            // else raw ADC. `turbidityUnit` says which; remember it for the range labels too.
+            if (p.turbidityUnit) turbidityUnit = p.turbidityUnit;
             // A stats-only snapshot carries no live reading -- don't zero out the values.
             if (p.temperature !== undefined && p.turbidity !== undefined) {
                 updateDashboard(Number(p.temperature), Number(p.turbidity), Number(p.tds || 0));
@@ -59,9 +64,9 @@ function connectWebSocket() {
 // static placeholders here -- there's no sensor feeding those yet.
 function updateDashboard(temp, turb, tds) {
     document.getElementById('paramTemp').innerText = `${temp.toFixed(1)} °C`;
-    // Turbidity is shown as the raw averaged ADC for now (NTU conversion is bypassed
-    // on the backend until it's calibrated).
-    document.getElementById('paramTurb').innerText = `${Math.round(turb)} ADC`;
+    // Turbidity shows calibrated NTU when the backend has a calibration, else raw ADC.
+    document.getElementById('paramTurb').innerText =
+        turbidityUnit === 'NTU' ? `${turb.toFixed(1)} NTU` : `${Math.round(turb)} ADC`;
     document.getElementById('paramTds').innerText = `${Math.round(tds)} ppm`;
 
     const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -77,7 +82,7 @@ function updateRanges(stats) {
         el.innerText = `min ${Number(stat.min).toFixed(digits)} / max ${Number(stat.max).toFixed(digits)}${unit}`;
     };
     render('rangeTemp', stats.temperature, 1, ' °C');
-    render('rangeTurb', stats.turbidity, 0, ' ADC');
+    render('rangeTurb', stats.turbidity, turbidityUnit === 'NTU' ? 1 : 0, turbidityUnit === 'NTU' ? ' NTU' : ' ADC');
     render('rangeTds', stats.tds, 0, ' ppm');
 }
 

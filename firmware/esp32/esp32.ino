@@ -133,22 +133,18 @@ void loop() {
     float turbidityADC = (float)turbidityAdcSum / turbiditySamples;
     Serial.printf("Turbidity avgADC=%.0f\n", turbidityADC);
 
-    // DFRobot TDS Meter V1.0 official formula, temperature-compensated using the DS18B20
-    // reading (the sensor's raw output drifts with water temperature, nominally calibrated at 25C).
+    // TDS is sent as the raw sensor voltage; the backend now owns the DFRobot ppm formula,
+    // its temperature compensation, and the calibration k-factor (see main.py apply_tds),
+    // so the meter can be recalibrated live without reflashing this board. The board still
+    // sends temperature so the backend can do the temperature compensation.
     int rawTdsValue = analogRead(TDS_PIN);
     float tdsVoltage = rawTdsValue * (adcVref / 4095.0);
-    float tempCompensationCoeff = 1.0 + 0.02 * (temperatureC - 25.0);
-    float tdsCompensatedVoltage = tdsVoltage / tempCompensationCoeff;
-    float tdsPpm = (133.42 * tdsCompensatedVoltage * tdsCompensatedVoltage * tdsCompensatedVoltage
-                    - 255.86 * tdsCompensatedVoltage * tdsCompensatedVoltage
-                    + 857.39 * tdsCompensatedVoltage) * 0.5;
-    if (tdsPpm < 0) tdsPpm = 0;
-    Serial.printf("TDS raw=%d tdsV=%.3f compV=%.3f ppm=%.1f\n", rawTdsValue, tdsVoltage, tdsCompensatedVoltage, tdsPpm);
+    Serial.printf("TDS raw=%d tdsV=%.3f\n", rawTdsValue, tdsVoltage);
 
     StaticJsonDocument<192> jsonDoc;
     jsonDoc["temperature"] = temperatureC;
     jsonDoc["turbidity"] = turbidityADC;
-    jsonDoc["tds"] = tdsPpm;
+    jsonDoc["tdsVoltage"] = tdsVoltage;
 
     String outputPayload;
     serializeJson(jsonDoc, outputPayload);
