@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HydroMonitor — Sensor Calibration</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8;
+            --accent:#38bdf8; --good:#34d399; --warn:#fbbf24; --bad:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); padding:24px; }
+    h1 { font-size:1.4rem; margin:0 0 4px; }
+    .sub { color:var(--muted); margin:0 0 20px; font-size:.9rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
+    .card h2 { font-size:1.1rem; margin:0 0 12px; display:flex; justify-content:space-between; align-items:baseline; }
+    .live { font-variant-numeric: tabular-nums; }
+    .live .val { font-size:1.9rem; font-weight:600; color:var(--accent); }
+    .live .unit { color:var(--muted); font-size:.9rem; margin-left:4px; }
+    .conv { color:var(--muted); font-size:.85rem; margin-top:4px; min-height:1.1em; }
+    .row { display:flex; gap:8px; align-items:center; margin:14px 0 6px; flex-wrap:wrap; }
+    input[type=number] { background:var(--bg); border:1px solid var(--line); color:var(--text);
+           border-radius:8px; padding:8px 10px; width:120px; font-size:.95rem; }
+    input[type=text] { background:var(--bg); border:1px solid var(--line); color:var(--text);
+           border-radius:8px; padding:8px 10px; flex:1; min-width:110px; font-size:.95rem; }
+    button { background:var(--accent); color:#03202e; border:none; border-radius:8px;
+             padding:8px 14px; font-weight:600; cursor:pointer; font-size:.9rem; }
+    button:hover { filter:brightness(1.08); }
+    button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+    button.danger { background:transparent; color:var(--bad); border:1px solid var(--bad); }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:.85rem; }
+    th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-weight:500; }
+    .coeff { margin-top:12px; font-size:.85rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .coeff b { color:var(--text); }
+    .actions { margin-top:16px; display:flex; gap:8px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px; }
+    .status { font-size:.85rem; color:var(--muted); }
+    .status.dot::before { content:"●"; margin-right:6px; }
+    .status.on::before { color:var(--good); }
+    .status.off::before { color:var(--bad); }
+    .hint { color:var(--warn); font-size:.8rem; margin-top:4px; }
+    .del { cursor:pointer; color:var(--bad); }
+    a.back { color:var(--accent); text-decoration:none; font-size:.85rem; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <h1>Sensor Calibration</h1>
+      <p class="sub">Dip the probe in a known reference, enter its value, and capture. Coefficients apply live after Save. <a class="back" href="/classic">← dashboard</a></p>
+    </div>
+    <div>
+      <span id="feedStatus" class="status dot off">waiting for readings…</span>
+      <button id="modeBtn" class="ghost">Calibration mode: OFF</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Turbidity -->
+    <div class="card" id="card-turbidity">
+      <h2>Turbidity <span class="live"><span class="val" id="turb-raw">—</span><span class="unit">raw ADC</span></span></h2>
+      <div class="conv" id="turb-conv">Not calibrated — needs 2 points</div>
+      <div class="row">
+        <input type="number" id="turb-ref" placeholder="Known NTU" step="any" />
+        <input type="text" id="turb-label" placeholder="label (e.g. clean water)" />
+        <button data-capture="turbidity">Capture point</button>
+      </div>
+      <div class="hint">Tip: capture clean water = 0 NTU, then one turbid standard.</div>
+      <table><thead><tr><th>Raw ADC</th><th>NTU</th><th>Label</th><th></th></tr></thead>
+        <tbody id="turb-points"></tbody></table>
+      <div class="coeff" id="turb-coeff"></div>
+      <div class="actions">
+        <button class="ghost" data-reset="turbidity">Reset</button>
+      </div>
+    </div>
+
+    <!-- TDS -->
+    <div class="card" id="card-tds">
+      <h2>TDS <span class="live"><span class="val" id="tds-raw">—</span><span class="unit">raw V</span></span></h2>
+      <div class="conv" id="tds-conv">k-factor 1.00 (uncalibrated)</div>
+      <div class="row">
+        <input type="number" id="tds-ref" placeholder="Known ppm" step="any" />
+        <input type="text" id="tds-label" placeholder="label (e.g. 707 ppm)" />
+        <button data-capture="tds">Capture point</button>
+      </div>
+      <div class="hint">Tip: one known-ppm calibration solution (e.g. 707 ppm) is enough.</div>
+      <table><thead><tr><th>Raw V</th><th>ppm</th><th>Temp</th><th>Label</th><th></th></tr></thead>
+        <tbody id="tds-points"></tbody></table>
+      <div class="coeff" id="tds-coeff"></div>
+      <div class="actions">
+        <button class="ghost" data-reset="tds">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions" style="margin-top:24px;">
+    <button id="saveBtn">Save calibration</button>
+    <span id="saveMsg" class="status"></span>
+  </div>
+
+<script>
+let state = null;
+
+async function api(path, method, body) {
+  const opts = { method: method || 'GET' };
+  if (body !== undefined) { opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(body); }
+  const resp = await fetch(path, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || resp.statusText);
+  return data;
+}
+
+function fmt(v, d) { return (v === null || v === undefined) ? '—' : Number(v).toFixed(d); }
+
+function render() {
+  if (!state) return;
+  const raw = state.latestRaw || {};
+
+  // Live raw values
+  document.getElementById('turb-raw').textContent = raw.turbidity === null ? '—' : Math.round(raw.turbidity);
+  document.getElementById('tds-raw').textContent = fmt(raw.tdsVoltage, 3);
+
+  const feed = document.getElementById('feedStatus');
+  const hasFeed = raw.turbidity !== null || raw.tdsVoltage !== null;
+  feed.className = 'status dot ' + (hasFeed ? 'on' : 'off');
+  feed.textContent = hasFeed ? 'live readings' : 'waiting for readings…';
+
+  // Turbidity conversion preview
+  const tc = state.turbidity.coefficients;
+  const turbConv = document.getElementById('turb-conv');
+  if (tc && raw.turbidity !== null) {
+    const ntu = Math.max(0, tc.slope * raw.turbidity + tc.intercept);
+    turbConv.textContent = `→ ${ntu.toFixed(1)} NTU  (slope ${tc.slope.toFixed(4)}, intercept ${tc.intercept.toFixed(1)})`;
+  } else {
+    turbConv.textContent = tc ? 'calibrated (waiting for reading)' : 'Not calibrated — needs 2 points';
+  }
+  document.getElementById('turb-coeff').innerHTML = tc
+    ? `NTU = <b>${tc.slope.toFixed(4)}</b> × ADC + <b>${tc.intercept.toFixed(1)}</b>` : '';
+
+  // TDS conversion preview
+  const kc = state.tds.coefficients || { k: 1.0 };
+  document.getElementById('tds-conv').textContent = `k-factor ${kc.k.toFixed(3)}` + (state.tds.points.length ? '' : ' (uncalibrated)');
+  document.getElementById('tds-coeff').innerHTML = `ppm = <b>${kc.k.toFixed(3)}</b> × DFRobot(V, temp)`;
+
+  // Point tables
+  const turbBody = document.getElementById('turb-points');
+  turbBody.innerHTML = state.turbidity.points.map((p, i) =>
+    `<tr><td>${Math.round(p.raw)}</td><td>${Number(p.reference).toFixed(1)}</td><td>${escapeHtml(p.label||'')}</td>
+     <td><span class="del" data-del-turbidity="${i}">✕</span></td></tr>`).join('');
+  const tdsBody = document.getElementById('tds-points');
+  tdsBody.innerHTML = state.tds.points.map((p, i) =>
+    `<tr><td>${Number(p.rawVoltage).toFixed(3)}</td><td>${Number(p.reference).toFixed(0)}</td>
+     <td>${p.temperature!=null?Number(p.temperature).toFixed(1)+'°':'—'}</td><td>${escapeHtml(p.label||'')}</td>
+     <td><span class="del" data-del-tds="${i}">✕</span></td></tr>`).join('');
+
+  const modeBtn = document.getElementById('modeBtn');
+  modeBtn.textContent = 'Calibration mode: ' + (state.mode ? 'ON' : 'OFF');
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function poll() {
+  try { state = await api('/calibration'); render(); }
+  catch (e) { /* transient */ }
+}
+
+document.addEventListener('click', async (e) => {
+  const t = e.target;
+  try {
+    if (t.dataset.capture) {
+      const sensor = t.dataset.capture;
+      const refEl = document.getElementById(sensor === 'turbidity' ? 'turb-ref' : 'tds-ref');
+      const labelEl = document.getElementById(sensor === 'turbidity' ? 'turb-label' : 'tds-label');
+      if (refEl.value === '') { flash('Enter the known reference value first'); return; }
+      await api('/calibration/capture', 'POST', { sensor, reference: Number(refEl.value), label: labelEl.value });
+      refEl.value = ''; labelEl.value = '';
+      await poll();
+    } else if (t.dataset.reset) {
+      await api('/calibration/reset', 'POST', { sensor: t.dataset.reset });
+      await poll();
+    } else if (t.dataset.delTurbidity !== undefined) {
+      await api('/calibration/point', 'DELETE', { sensor: 'turbidity', index: Number(t.dataset.delTurbidity) });
+      await poll();
+    } else if (t.dataset.delTds !== undefined) {
+      await api('/calibration/point', 'DELETE', { sensor: 'tds', index: Number(t.dataset.delTds) });
+      await poll();
+    } else if (t.id === 'saveBtn') {
+      await api('/calibration/save', 'POST');
+      flash('Saved ✓', true);
+    } else if (t.id === 'modeBtn') {
+      const r = await api('/calibration/mode', 'POST', { enabled: !(state && state.mode) });
+      await poll();
+    }
+  } catch (err) { flash(err.message || 'error'); }
+});
+
+function flash(msg, ok) {
+  const el = document.getElementById('saveMsg');
+  el.textContent = msg;
+  el.style.color = ok ? 'var(--good)' : 'var(--bad)';
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>
