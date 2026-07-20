@@ -603,11 +603,13 @@ async def get_index():
     # Primary dashboard: the React SPA (web-react/). Falls back to the vanilla dashboard
     # if the React build isn't present.
     react_index = "web-react/index.html"
+    # no-cache => the browser always revalidates the unhashed SPA shell, so a rebuilt
+    # dashboard shows up on a normal reload (the hashed /assets/* stay cacheable).
     if os.path.isfile(react_index):
-        return FileResponse(react_index)
+        return FileResponse(react_index, headers={"Cache-Control": "no-cache"})
     if not os.path.isfile(webconfig.get("indexFile", "index.html")):
         raise HTTPException(status_code=404, detail="Index file not found")
-    return FileResponse(webconfig.get("indexFile", "index.html"))
+    return FileResponse(webconfig.get("indexFile", "index.html"), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/classic")
@@ -617,7 +619,7 @@ async def get_classic_index():
     index_file = webconfig.get("indexFile", "index.html")
     if not os.path.isfile(index_file):
         raise HTTPException(status_code=404, detail="Classic index file not found")
-    return FileResponse(index_file)
+    return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
 
 @app.websocket("/ws/app")
