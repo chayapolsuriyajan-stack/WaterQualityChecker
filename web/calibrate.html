@@ -29,6 +29,13 @@
     button:hover { filter:brightness(1.08); }
     button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
     button.danger { background:transparent; color:var(--bad); border:1px solid var(--bad); }
+    /* Calibration on/off toggle: clearly green when ON, muted outline when OFF. */
+    button#modeBtn { min-width:250px; text-align:center; transition:background .15s, color .15s, border-color .15s; }
+    button#modeBtn.on  { background:var(--good); color:#052e1c; border:1px solid var(--good); }
+    button#modeBtn.off { background:transparent; color:var(--muted); border:1px solid var(--line); }
+    button#modeBtn::before { margin-right:6px; }
+    button#modeBtn.on::before  { content:"●"; }
+    button#modeBtn.off::before { content:"○"; }
     table { width:100%; border-collapse:collapse; margin-top:12px; font-size:.85rem; }
     th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
     th { color:var(--muted); font-weight:500; }
@@ -49,11 +56,11 @@
   <div class="topbar">
     <div>
       <h1>Sensor Calibration</h1>
-      <p class="sub">Dip the probe in a known reference, enter its value, and capture. Coefficients apply live after Save. <a class="back" href="/classic">← dashboard</a></p>
+      <p class="sub">Dip the probe in a known reference, enter its value, and capture. After Save, turn <b>Calibration ON</b> (button, right) to apply the coefficients to the live dashboard. <a class="back" href="/classic">← dashboard</a></p>
     </div>
     <div>
       <span id="feedStatus" class="status dot off">waiting for readings…</span>
-      <button id="modeBtn" class="ghost">Calibration mode: OFF</button>
+      <button id="modeBtn" class="off">Calibration: OFF — showing raw values</button>
     </div>
   </div>
 
@@ -63,11 +70,19 @@
       <h2>Turbidity <span class="live"><span class="val" id="turb-raw">—</span><span class="unit">raw ADC</span></span></h2>
       <div class="conv" id="turb-conv">Not calibrated — needs 2 points</div>
       <div class="row">
-        <input type="number" id="turb-ref" placeholder="Known NTU" step="any" />
-        <input type="text" id="turb-label" placeholder="label (e.g. clean water)" />
-        <button data-capture="turbidity">Capture point</button>
+        <input type="number" id="turb-raw-in" placeholder="Raw ADC" step="any" />
+        <input type="number" id="turb-ref" placeholder="NTU for that ADC" step="any" />
+        <input type="text" id="turb-label" placeholder="label (optional)" />
+        <button data-capture="turbidity">Add point</button>
       </div>
-      <div class="hint">Tip: capture clean water = 0 NTU, then one turbid standard.</div>
+      <div class="hint">Type the Raw ADC and the NTU it maps to (e.g. 3000 → 0, 1000 → 500). Need 2 points. <a class="back" href="#" data-uselive="turbidity">↓ use live ADC</a></div>
+      <div class="conv" id="turb-observed">Observed ADC while calibrating: — min / — max</div>
+      <div class="row">
+        <button class="ghost" data-usemin="turbidity">use min as ADC</button>
+        <button class="ghost" data-usemax="turbidity">use max as ADC</button>
+        <button class="danger" data-resetrange="turbidity">Reset range</button>
+      </div>
+      <div class="hint">Dip the probe and let it read; min/max update live. Higher ADC = clearer water (low NTU), lower ADC = more turbid (high NTU).</div>
       <table><thead><tr><th>Raw ADC</th><th>NTU</th><th>Label</th><th></th></tr></thead>
         <tbody id="turb-points"></tbody></table>
       <div class="coeff" id="turb-coeff"></div>
@@ -81,11 +96,12 @@
       <h2>TDS <span class="live"><span class="val" id="tds-raw">—</span><span class="unit">raw V</span></span></h2>
       <div class="conv" id="tds-conv">k-factor 1.00 (uncalibrated)</div>
       <div class="row">
-        <input type="number" id="tds-ref" placeholder="Known ppm" step="any" />
-        <input type="text" id="tds-label" placeholder="label (e.g. 707 ppm)" />
-        <button data-capture="tds">Capture point</button>
+        <input type="number" id="tds-raw-in" placeholder="Raw V" step="any" />
+        <input type="number" id="tds-ref" placeholder="ppm for that V" step="any" />
+        <input type="text" id="tds-label" placeholder="label (optional)" />
+        <button data-capture="tds">Add point</button>
       </div>
-      <div class="hint">Tip: one known-ppm calibration solution (e.g. 707 ppm) is enough.</div>
+      <div class="hint">Type the Raw V and the ppm it maps to. One known-ppm solution is enough. <a class="back" href="#" data-uselive="tds">↓ use live V</a></div>
       <table><thead><tr><th>Raw V</th><th>ppm</th><th>Temp</th><th>Label</th><th></th></tr></thead>
         <tbody id="tds-points"></tbody></table>
       <div class="coeff" id="tds-coeff"></div>
@@ -102,6 +118,16 @@
 
 <script>
 let state = null;
+// Observed live raw-ADC range while calibrating (client-side only; "Reset range" clears it,
+// and it never touches the captured points).
+const obsRange = { turbidity: { min: null, max: null } };
+
+function trackObserved(sensor, value) {
+  if (value === null || value === undefined) return;
+  const o = obsRange[sensor];
+  o.min = (o.min === null) ? value : Math.min(o.min, value);
+  o.max = (o.max === null) ? value : Math.max(o.max, value);
+}
 
 async function api(path, method, body) {
   const opts = { method: method || 'GET' };
@@ -121,6 +147,14 @@ function render() {
   // Live raw values
   document.getElementById('turb-raw').textContent = raw.turbidity === null ? '—' : Math.round(raw.turbidity);
   document.getElementById('tds-raw').textContent = fmt(raw.tdsVoltage, 3);
+
+  // Track + show the observed raw-ADC range for this calibration session.
+  trackObserved('turbidity', raw.turbidity);
+  const obs = obsRange.turbidity;
+  document.getElementById('turb-observed').textContent =
+    'Observed ADC while calibrating: ' +
+    (obs.min === null ? '—' : Math.round(obs.min)) + ' min / ' +
+    (obs.max === null ? '—' : Math.round(obs.max)) + ' max';
 
   const feed = document.getElementById('feedStatus');
   const hasFeed = raw.turbidity !== null || raw.tdsVoltage !== null;
@@ -156,7 +190,10 @@ function render() {
      <td><span class="del" data-del-tds="${i}">✕</span></td></tr>`).join('');
 
   const modeBtn = document.getElementById('modeBtn');
-  modeBtn.textContent = 'Calibration mode: ' + (state.mode ? 'ON' : 'OFF');
+  modeBtn.className = state.mode ? 'on' : 'off';
+  modeBtn.textContent = state.mode
+    ? 'Calibration: ON — applying to live data'
+    : 'Calibration: OFF — showing raw values';
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -169,13 +206,35 @@ async function poll() {
 document.addEventListener('click', async (e) => {
   const t = e.target;
   try {
-    if (t.dataset.capture) {
+    if (t.dataset.uselive) {
+      e.preventDefault();
+      const sensor = t.dataset.uselive;
+      const rawEl = document.getElementById(sensor === 'turbidity' ? 'turb-raw-in' : 'tds-raw-in');
+      const live = state && state.latestRaw
+        ? (sensor === 'turbidity' ? state.latestRaw.turbidity : state.latestRaw.tdsVoltage) : null;
+      if (live === null || live === undefined) { flash('No live reading yet'); return; }
+      rawEl.value = sensor === 'turbidity' ? Math.round(live) : Number(live).toFixed(4);
+    } else if (t.dataset.usemin || t.dataset.usemax) {
+      e.preventDefault();
+      const sensor = t.dataset.usemin || t.dataset.usemax;
+      const which = t.dataset.usemin ? 'min' : 'max';
+      const v = obsRange[sensor][which];
+      if (v === null) { flash('No observed range yet — let it read a bit'); return; }
+      document.getElementById(sensor === 'turbidity' ? 'turb-raw-in' : 'tds-raw-in').value = Math.round(v);
+    } else if (t.dataset.resetrange) {
+      e.preventDefault();
+      obsRange[t.dataset.resetrange] = { min: null, max: null };
+      render();
+    } else if (t.dataset.capture) {
       const sensor = t.dataset.capture;
+      const rawEl = document.getElementById(sensor === 'turbidity' ? 'turb-raw-in' : 'tds-raw-in');
       const refEl = document.getElementById(sensor === 'turbidity' ? 'turb-ref' : 'tds-ref');
       const labelEl = document.getElementById(sensor === 'turbidity' ? 'turb-label' : 'tds-label');
-      if (refEl.value === '') { flash('Enter the known reference value first'); return; }
-      await api('/calibration/capture', 'POST', { sensor, reference: Number(refEl.value), label: labelEl.value });
-      refEl.value = ''; labelEl.value = '';
+      if (rawEl.value === '') { flash('Enter the raw value first'); return; }
+      if (refEl.value === '') { flash('Enter the reference value first'); return; }
+      await api('/calibration/capture', 'POST',
+        { sensor, raw: Number(rawEl.value), reference: Number(refEl.value), label: labelEl.value });
+      rawEl.value = ''; refEl.value = ''; labelEl.value = '';
       await poll();
     } else if (t.dataset.reset) {
       await api('/calibration/reset', 'POST', { sensor: t.dataset.reset });

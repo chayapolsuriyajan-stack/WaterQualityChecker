@@ -48,6 +48,9 @@ function connectWebSocket() {
             // A stats-only snapshot carries no live reading -- don't zero out the values.
             if (p.temperature !== undefined && p.turbidity !== undefined) {
                 updateDashboard(Number(p.temperature), Number(p.turbidity), Number(p.tds || 0));
+                // Live short-window graph tracks the sensor in real time (served from the
+                // backend's in-memory buffer, so this fetch is cheap and same-origin).
+                if (LIVE_HISTORY_WINDOWS.has(currentHistoryWindow())) loadHistory();
             }
         } catch (e) {
             console.error("Payload processing error", e, event.data);
@@ -139,10 +142,29 @@ function ensureHistoryChart() {
             maintainAspectRatio: false,
             animation: false,
             interaction: { mode: 'index', intersect: false },
+            plugins: {
+                // Legend names each colored line so the graph is readable at a glance.
+                legend: { display: true, position: 'top', labels: { boxWidth: 12, usePointStyle: true, font: { size: 11 } } },
+            },
             scales: {
                 x: { ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0 } },
-                yTemp: { position: 'left', title: { display: true, text: '°C' } },
-                yTurb: { position: 'right', title: { display: true, text: 'ADC' }, grid: { drawOnChartArea: false } },
+                // Left axis: numeric ticks WITH units + horizontal gridlines, colored to match
+                // the temperature line so you can read values off the left side.
+                yTemp: {
+                    position: 'left',
+                    title: { display: true, text: '°C', color: '#0d9488' },
+                    ticks: { color: '#0d9488', callback: (v) => v + '°' },
+                    grid: { display: true, color: '#e5e7eb' },
+                },
+                // Right axis: turbidity ADC numbers in the line's amber; no chart-area grid so
+                // the two axes' gridlines don't overlap (Chart.js multi-axis guidance).
+                yTurb: {
+                    position: 'right',
+                    title: { display: true, text: 'ADC', color: '#f59e0b' },
+                    ticks: { color: '#f59e0b', callback: (v) => Math.round(v) },
+                    grid: { drawOnChartArea: false },
+                },
+                // TDS stays on a hidden auto-scaling axis; its value is still in the legend + tooltip.
                 yTds: { display: false },
             },
         },
@@ -150,28 +172,89 @@ function ensureHistoryChart() {
     return historyChart;
 }
 
+// Currently selected history window, driven by the click-to-open popover on the
+// History card (see wireHistoryWindowMenu below) rather than a persistent control.
+let historyWindow = '15m';
+const HISTORY_WINDOW_LABELS = {
+    '5m': 'Last 5 min', '15m': 'Last 15 min', '1h': 'Last 1 hour',
+    '3h': 'Last 3 hours', '12h': 'Last 12 hours', '24h': 'Last 24 hours',
+};
+// Windows the backend serves live from its in-memory buffer -- refresh the graph on every
+// reading for these so it tracks the sensor in real time (the rest poll the sheet on a timer).
+const LIVE_HISTORY_WINDOWS = new Set(['5m', '15m', '1h']);
+
+function currentHistoryWindow() {
+    return historyWindow;
+}
+
+// X-axis label granularity adapts to the window: seconds for short windows, date+time for long.
+function historyLabel(ts, win) {
+    const d = new Date(ts);
+    if (win === '12h' || win === '24h') {
+        return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+    if (win === '5m' || win === '15m') {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); // 1h, 3h
+}
+
 async function loadHistory() {
+    const win = currentHistoryWindow();
     try {
-        const resp = await fetch('/history');
+        const resp = await fetch('/history?window=' + encodeURIComponent(win));
         if (!resp.ok) return;
         const data = await resp.json();
         const rows = Array.isArray(data.rows) ? data.rows : [];
         const chart = ensureHistoryChart();
         if (!chart) return;
-        chart.data.labels = rows.map(r =>
-            new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        chart.data.labels = rows.map(r => historyLabel(r.timestamp, win));
         chart.data.datasets[0].data = rows.map(r => numOrNull(r.temperature));
         chart.data.datasets[1].data = rows.map(r => numOrNull(r.turbidity));
         chart.data.datasets[2].data = rows.map(r => numOrNull(r.tds));
         chart.update();
     } catch (e) {
-        console.error('Failed to load 15-min history', e);
+        console.error('Failed to load history', e);
     }
+}
+
+// Click the History card to reveal a popover of time-range options; picking one sets
+// historyWindow, updates the label, closes the popover, and reloads the graph.
+function wireHistoryWindowMenu() {
+    const card = document.getElementById('historyCard');
+    const menu = document.getElementById('historyWindowMenu');
+    const label = document.getElementById('historyWindowLabel');
+    if (!card || !menu || !label) return;
+
+    const closeMenu = () => menu.classList.add('hidden');
+    const openMenu = () => menu.classList.remove('hidden');
+
+    card.addEventListener('click', (e) => {
+        // Ignore clicks that originated inside the popover itself (handled below).
+        if (menu.contains(e.target)) return;
+        menu.classList.toggle('hidden');
+    });
+
+    menu.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't let this bubble to the card handler and re-toggle
+        const btn = e.target.closest('button[data-window]');
+        if (!btn) return;
+        historyWindow = btn.dataset.window;
+        label.textContent = (HISTORY_WINDOW_LABELS[historyWindow] || historyWindow) + ' ▾';
+        closeMenu();
+        loadHistory();
+    });
+
+    // Click anywhere outside the card closes the popover.
+    document.addEventListener('click', (e) => {
+        if (!card.contains(e.target)) closeMenu();
+    });
 }
 
 // Initialize connection on dashboard launch
 connectWebSocket();
 
-// Pull the last 15 minutes from the sheet now, then refresh periodically.
+// Pull history now, wire the click-to-open range picker, and refresh periodically.
+wireHistoryWindowMenu();
 loadHistory();
 setInterval(loadHistory, 30000);

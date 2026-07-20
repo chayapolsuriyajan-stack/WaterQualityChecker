@@ -16,7 +16,10 @@
         <select class="p-2 border rounded-lg bg-white shadow-sm border-gray-300">
             <option>Site: Satit CMU, Chiang Mai, Thailand</option>
         </select>
-        <div class="text-sm text-gray-500" id="lastUpdated">Last updated: --</div>
+        <div class="flex items-center gap-4">
+            <a href="/calibrate" class="text-sm font-medium bg-teal-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-teal-700">⚙ Calibrate sensors</a>
+            <div class="text-sm text-gray-500" id="lastUpdated">Last updated: --</div>
+        </div>
     </header>
 
     <div class="grid grid-cols-12 gap-6">
@@ -32,11 +35,24 @@
             </div>
         </div>
 
-        <div class="col-span-12 md:col-span-8 card">
-            <h2 class="text-gray-600 font-medium mb-4">Last 15 Minutes
-                <span class="text-xs text-gray-400 font-normal">(from Google Sheet)</span>
-            </h2>
+        <div class="col-span-12 md:col-span-8 card relative cursor-pointer" id="historyCard" title="Click to change time range">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-gray-600 font-medium">History
+                    <span class="text-xs text-gray-400 font-normal">(from Google Sheet)</span>
+                </h2>
+                <span class="text-sm text-gray-500 font-medium select-none" id="historyWindowLabel">Last 15 min ▾</span>
+            </div>
             <div class="h-48"><canvas id="historyChart"></canvas></div>
+
+            <!-- Time-range popover: hidden until the card is clicked. -->
+            <div id="historyWindowMenu" class="hidden absolute right-4 top-10 z-10 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-40 cursor-auto">
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="5m">Last 5 min</button>
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="15m">Last 15 min</button>
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="1h">Last 1 hour</button>
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="3h">Last 3 hours</button>
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="12h">Last 12 hours</button>
+                <button type="button" class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100" data-window="24h">Last 24 hours</button>
+            </div>
         </div>
 
         <div class="col-span-12 md:col-span-4 card">
