@@ -1,6 +1,6 @@
 {
   "staticDir": "Build",
   "indexFile": "web/index.html",
-  "googleSheetsWebhookUrl": "https://script.google.com/macros/s/AKfycbwZsnYbxNYHjHCuDcjYOb_ehHSrX3UPMfIZpPV2N3yLP_yCOmDxxn-N9J137C8FuE1T/exec",
+  "googleSheetsWebhookUrl": "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec",
   "calibrationFile": "calibration.json"
 }

@@ -7,7 +7,7 @@ import time
 import datetime
 import urllib.request
 from collections import deque
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -109,6 +109,12 @@ ui_clients_lock = asyncio.Lock()
 STAT_KEYS = ("temperature", "turbidity", "tds")
 sensor_stats: dict = {}
 
+# In-memory rolling history of recent readings so the dashboard's short-window graph works
+# live off the sensor stream -- no Google Sheets round-trip. Holds the same fields the sheet
+# logs (raw ADC turbidity). Resets on restart; long windows still read from the sheet.
+HISTORY_BUFFER_MAX = 2000  # ~66 min at a 2s cadence; covers the 5m/15m/1h live windows
+history_buffer = deque(maxlen=HISTORY_BUFFER_MAX)
+
 
 def _update_stats(payload: dict) -> None:
     for key in STAT_KEYS:
@@ -203,7 +209,16 @@ def _load_calibration() -> dict:
 
 
 calibration = _load_calibration()
-calibration_mode = False
+# Whether saved calibrations are APPLIED to the live stream. Toggled by the on/off button
+# on the /calibrate page. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
+# as uncalibrated DFRobot ppm); when ON, saved coefficients are applied (NTU + calibrated
+# ppm). Defaults ON when a real calibration already exists on disk, so a calibrated rig
+# keeps applying after a restart; otherwise OFF. Held in memory (resets to this default on
+# restart), matching the other in-memory state here.
+calibration_mode = bool(
+    calibration["turbidity"]["coefficients"]
+    or (calibration["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
+)
 
 # Latest raw reading per sensor plus a short rolling buffer, so a calibration "capture"
 # can average out electrical noise instead of grabbing a single instant.
@@ -287,7 +302,9 @@ async def update_sensor(request: Request):
             # dashboards read that key). The calibrated NTU rides along in `turbidityNtu`
             # when a turbidity calibration is active (else None).
             turbidity_adc = float(data["turbidity"])
-            ntu = apply_turbidity(turbidity_adc)
+            # Only apply the saved calibration when calibration mode is ON (the /calibrate
+            # on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
+            ntu = apply_turbidity(turbidity_adc) if calibration_mode else None
             # `turbidityRaw` always carries the raw averaged ADC (for the calibration page +
             # honest Google Sheets logging). The primary `turbidity` field carries calibrated
             # NTU once a calibration exists, else falls back to raw ADC -- the React SPA (a
@@ -312,7 +329,13 @@ async def update_sensor(request: Request):
             if "tdsVoltage" in data:
                 tds_voltage = float(data["tdsVoltage"])
                 payload["tdsVoltage"] = tds_voltage
-                payload["tds"] = apply_tds(tds_voltage, payload["temperature"])
+                # Apply the k-factor only when calibration mode is ON; OFF => uncalibrated
+                # DFRobot ppm (k = 1.0).
+                payload["tds"] = (
+                    apply_tds(tds_voltage, payload["temperature"])
+                    if calibration_mode
+                    else round(_dfrobot_ppm(tds_voltage, payload["temperature"]), 1)
+                )
                 latest_raw["tdsVoltage"] = tds_voltage
                 _raw_buffers["tdsVoltage"].append(tds_voltage)
             elif "tds" in data:
@@ -335,6 +358,15 @@ async def update_sensor(request: Request):
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
         if "temperature" in payload:
+            # Record into the in-memory rolling history for the live short-window graph
+            # (same raw ADC turbidity the sheet logs; timestamp in epoch ms to match it).
+            history_buffer.append({
+                "timestamp": payload["timestamp"] * 1000,
+                "temperature": payload["temperature"],
+                "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
+                "tds": payload.get("tds"),
+            })
+
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
             sheet_payload = {
@@ -351,20 +383,72 @@ async def update_sensor(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
-HISTORY_WINDOW_SECONDS = 15 * 60  # dashboard graph shows only the last 15 minutes
+# Selectable history windows for the dashboard graph (label -> seconds). Default 15m.
+HISTORY_WINDOWS = {
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "3h": 3 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "24h": 24 * 60 * 60,
+}
+HISTORY_DEFAULT_WINDOW = "15m"
+HISTORY_MAX_POINTS = 400  # downsample target so long windows stay small/fast
+# Short windows are served LIVE from the in-memory buffer (no Google Sheet); longer windows
+# read from the sheet, which persists across restarts.
+HISTORY_BUFFER_WINDOWS = {"5m", "15m", "1h"}
+
+
+def _downsample(rows: list, max_points: int) -> list:
+    if len(rows) <= max_points:
+        return rows
+    stride = (len(rows) + max_points - 1) // max_points
+    return rows[::stride]
+
+
+def _with_ntu(rows: list) -> list:
+    # Each row's `turbidity` is raw ADC (matching the sheet). Add `turbidityNtu` = calibrated
+    # NTU (or None if uncalibrated) so NTU-based consumers (the React dashboard) stay consistent
+    # with the live WS value, while ADC-based consumers (the /classic graph) keep using `turbidity`.
+    out = []
+    for r in rows:
+        adc = r.get("turbidity")
+        ntu = apply_turbidity(adc) if isinstance(adc, (int, float)) else None
+        out.append({**r, "turbidityNtu": ntu})
+    return out
 
 
 @app.get("/history")
-async def get_history():
-    # Reads recent readings back from the Google Sheet (via the Apps Script doGet) and
-    # returns only the last 15 minutes. Proxied here (server-side) so the dashboard
-    # fetch stays same-origin -- no browser CORS/redirect issues with Google.
+async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
+    # Short windows come live from the in-memory buffer; long windows are read back from the
+    # Google Sheet (via the Apps Script doGet), proxied here so the dashboard fetch stays
+    # same-origin -- no browser CORS/redirect issues with Google.
+    seconds = HISTORY_WINDOWS.get(window)
+    if seconds is None:
+        return JSONResponse(
+            {"error": f"invalid window '{window}'; allowed: {', '.join(HISTORY_WINDOWS)}"},
+            status_code=400,
+        )
+
+    cutoff_ms = (time.time() - seconds) * 1000
+
+    # Live path: the recent short-window graph reads straight from memory.
+    if window in HISTORY_BUFFER_WINDOWS:
+        rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+        return JSONResponse(
+            {"rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)), "windowSeconds": seconds, "source": "live"}
+        )
+
     if not GOOGLE_SHEETS_WEBHOOK_URL:
-        return JSONResponse({"rows": [], "windowSeconds": HISTORY_WINDOW_SECONDS})
+        return JSONResponse({"rows": [], "windowSeconds": seconds, "source": "sheet"})
+
+    # Ask the Apps Script for this window + a downsample cap (it strides rows to fit).
+    sep = "&" if "?" in GOOGLE_SHEETS_WEBHOOK_URL else "?"
+    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": HISTORY_MAX_POINTS})
 
     def fetch() -> str:
-        req = urllib.request.Request(GOOGLE_SHEETS_WEBHOOK_URL, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
             return resp.read().decode("utf-8")
 
     try:
@@ -372,17 +456,14 @@ async def get_history():
         data = json.loads(raw)
     except Exception as exc:
         print(f"⚠️ Failed to read history from Google Sheets: {exc}")
-        return JSONResponse(
-            {"rows": [], "windowSeconds": HISTORY_WINDOW_SECONDS, "error": str(exc)}
-        )
+        return JSONResponse({"rows": [], "windowSeconds": seconds, "error": str(exc), "source": "sheet"})
 
-    cutoff_ms = (time.time() - HISTORY_WINDOW_SECONDS) * 1000
     rows = [
         r
         for r in data.get("rows", [])
         if isinstance(r.get("timestamp"), (int, float)) and r["timestamp"] >= cutoff_ms
     ]
-    return JSONResponse({"rows": rows, "windowSeconds": HISTORY_WINDOW_SECONDS})
+    return JSONResponse({"rows": _with_ntu(rows), "windowSeconds": seconds, "source": "sheet"})
 
 
 # --- Calibration API ---------------------------------------------------------
@@ -442,18 +523,29 @@ async def capture_calibration_point(request: Request):
         return JSONResponse({"error": "reference (numeric) is required"}, status_code=400)
     label = str(body.get("label", ""))
 
-    if sensor == "turbidity":
-        raw = _avg_raw("turbidity")
+    # Raw value: use the user-typed `raw` when provided (manual entry -- type the ADC/voltage
+    # and the reference it maps to), otherwise fall back to the averaged live reading.
+    manual_raw = body.get("raw")
+    if manual_raw is not None and manual_raw != "":
+        try:
+            raw = float(manual_raw)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "raw must be numeric"}, status_code=400)
+    else:
+        raw = _avg_raw("turbidity" if sensor == "turbidity" else "tdsVoltage")
         if raw is None:
-            return JSONResponse({"error": "no live turbidity reading yet"}, status_code=409)
+            unit = "Raw ADC" if sensor == "turbidity" else "Raw V"
+            return JSONResponse(
+                {"error": f"no live {sensor} reading yet — type a {unit} value instead"},
+                status_code=409,
+            )
+
+    if sensor == "turbidity":
         calibration["turbidity"]["points"].append(
             {"raw": round(raw, 1), "reference": reference, "label": label}
         )
         _recompute_turbidity()
     else:
-        raw = _avg_raw("tdsVoltage")
-        if raw is None:
-            return JSONResponse({"error": "no live TDS voltage reading yet"}, status_code=409)
         calibration["tds"]["points"].append(
             {
                 "rawVoltage": round(raw, 4),
