@@ -24,9 +24,42 @@ const espWebSocketUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}
 let socket;
 // Unit the backend is currently sending for turbidity ('NTU' once calibrated, else 'ADC').
 let turbidityUnit = 'ADC';
+// Matches the React SPA's backoff so both dashboards recover at the same rate.
+const RECONNECT_DELAY_MS = 3000;
+let reconnectTimer = null;
+
+// The dashboard never fabricates readings. When the socket is down the last real
+// values stay on screen (or the empty state, if nothing ever arrived) and this
+// indicator is the only thing that changes -- so "stale" is always visible.
+function setConnectionStatus(state) {
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    if (!dot || !text) return;
+    const styles = {
+        connected: ['bg-emerald-500', 'Connected'],
+        connecting: ['bg-amber-400', 'Connecting…'],
+        disconnected: ['bg-red-500', 'Disconnected'],
+    };
+    const [color, label] = styles[state] || styles.connecting;
+    dot.className = `w-2.5 h-2.5 rounded-full ${color}`;
+    text.innerText = label;
+}
+
+function scheduleReconnect() {
+    if (reconnectTimer) return; // a retry is already pending
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWebSocket();
+    }, RECONNECT_DELAY_MS);
+}
 
 function connectWebSocket() {
+    setConnectionStatus('connecting');
     socket = new WebSocket(espWebSocketUrl);
+
+    socket.onopen = () => {
+        setConnectionStatus('connected');
+    };
 
     socket.onmessage = (event) => {
         try {
@@ -58,22 +91,45 @@ function connectWebSocket() {
     };
 
     socket.onclose = () => {
-        startSimulation();
+        setConnectionStatus('disconnected');
+        scheduleReconnect();
+    };
+
+    socket.onerror = () => {
+        setConnectionStatus('disconnected');
+        // onerror is normally followed by onclose, which schedules the retry; this
+        // covers the case where it isn't (and scheduleReconnect de-dupes anyway).
+        scheduleReconnect();
     };
 }
 
 // --- UI RENDERING ---
-// Dissolved Oxygen, pH, the WQI score/trend, map, and pollutant source chart stay
-// static placeholders here -- there's no sensor feeding those yet.
+// Only three values are real: temperature, turbidity, TDS. Everything else that used
+// to sit on this dashboard (WQI score, dissolved oxygen, pH, pollutant sources) was
+// hardcoded with no sensor behind it and has been removed rather than faked.
+
+// Swaps a value element out of its muted "No record yet" empty state.
+function setValue(elementId, text) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.innerText = text;
+    el.classList.remove('text-gray-300');
+    el.classList.add('text-teal-700');
+}
+
 function updateDashboard(temp, turb, tds) {
-    document.getElementById('paramTemp').innerText = `${temp.toFixed(1)} °C`;
+    setValue('paramTemp', `${temp.toFixed(1)} °C`);
     // Turbidity shows calibrated NTU when the backend has a calibration, else raw ADC.
-    document.getElementById('paramTurb').innerText =
-        turbidityUnit === 'NTU' ? `${turb.toFixed(1)} NTU` : `${Math.round(turb)} ADC`;
-    document.getElementById('paramTds').innerText = `${Math.round(tds)} ppm`;
+    setValue('paramTurb', turbidityUnit === 'NTU' ? `${turb.toFixed(1)} NTU` : `${Math.round(turb)} ADC`);
+    setValue('paramTds', `${Math.round(tds)} ppm`);
 
     const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    document.getElementById('lastUpdated').innerText = `Last updated: ${timeNow}`;
+    const stamp = document.getElementById('lastUpdated');
+    if (stamp) {
+        stamp.innerText = `Last updated: ${timeNow}`;
+        stamp.classList.remove('text-gray-400');
+        stamp.classList.add('text-gray-500');
+    }
 }
 
 // Renders the backend's running min/max (since server start) under each parameter.
@@ -87,30 +143,6 @@ function updateRanges(stats) {
     render('rangeTemp', stats.temperature, 1, ' °C');
     render('rangeTurb', stats.turbidity, turbidityUnit === 'NTU' ? 1 : 0, turbidityUnit === 'NTU' ? ' NTU' : ' ADC');
     render('rangeTds', stats.tds, 0, ' ppm');
-}
-
-// --- DATA GENERATOR FALLBACK ---
-let simInterval;
-function startSimulation() {
-    if (simInterval) clearInterval(simInterval);
-    // No backend while simulating, so track min/max client-side from the mock values
-    // to keep the range display coherent instead of frozen at "--".
-    const simStats = {};
-    const track = (key, value) => {
-        const s = simStats[key] || (simStats[key] = { min: value, max: value });
-        s.min = Math.min(s.min, value);
-        s.max = Math.max(s.max, value);
-    };
-    simInterval = setInterval(() => {
-        const mockTemp = 23 + Math.random() * 2;
-        const mockTurb = 120 + Math.random() * 40;
-        const mockTds = 300 + Math.random() * 100;
-        updateDashboard(mockTemp, mockTurb, mockTds);
-        track('temperature', mockTemp);
-        track('turbidity', mockTurb);
-        track('tds', mockTds);
-        updateRanges(simStats);
-    }, 2000);
 }
 
 // --- 15-MINUTE HISTORY GRAPH ---
@@ -199,11 +231,27 @@ function historyLabel(ts, win) {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); // 1h, 3h
 }
 
+// Covers the canvas with an explicit message instead of leaving an empty axis frame
+// (which reads as a broken chart). Passing null hides the overlay.
+function setHistoryMessage(message) {
+    const overlay = document.getElementById('historyEmpty');
+    if (!overlay) return;
+    if (message) {
+        overlay.innerText = message;
+        overlay.classList.remove('hidden');
+    } else {
+        overlay.classList.add('hidden');
+    }
+}
+
 async function loadHistory() {
     const win = currentHistoryWindow();
     try {
         const resp = await fetch('/history?window=' + encodeURIComponent(win));
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            setHistoryMessage(`History unavailable (HTTP ${resp.status})`);
+            return;
+        }
         const data = await resp.json();
         const rows = Array.isArray(data.rows) ? data.rows : [];
         const chart = ensureHistoryChart();
@@ -213,8 +261,17 @@ async function loadHistory() {
         chart.data.datasets[1].data = rows.map(r => numOrNull(r.turbidity));
         chart.data.datasets[2].data = rows.map(r => numOrNull(r.tds));
         chart.update();
+        // /history answers 200 with {"rows": []} when there is nothing to show, and may
+        // add an "error" field (e.g. the Google Sheets webhook is unreachable). Both used
+        // to be swallowed silently, leaving a blank chart with no explanation.
+        if (rows.length === 0) {
+            setHistoryMessage(data.error ? `History unavailable: ${data.error}` : 'No record yet');
+        } else {
+            setHistoryMessage(null);
+        }
     } catch (e) {
         console.error('Failed to load history', e);
+        setHistoryMessage('History unavailable (network error)');
     }
 }
 

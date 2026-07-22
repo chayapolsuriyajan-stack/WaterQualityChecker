@@ -14,5 +14,5 @@ body {
    build injects utility-class CSS asynchronously and can lose that race,
    leaving the map initialized into a 0-height box. */
 #siteMap {
-    height: 12rem;
+    height: 16rem;
 }
