@@ -1,3 +1,10 @@
 .venv
 __pycache__
 calibration.json
+
+# Agent tooling artifacts -- not project code
+.agents/
+.claude/skills/graphify/
+skills-lock.json
+graphify-out/
+.playwright-mcp/

@@ -10,39 +10,65 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="bg-gray-50 min-h-screen p-8">
+<body class="bg-gray-50 min-h-screen p-6 md:p-8">
 
-    <header class="flex justify-between items-center mb-8">
-        <select class="p-2 border rounded-lg bg-white shadow-sm border-gray-300">
-            <option>Site: Satit CMU, Chiang Mai, Thailand</option>
-        </select>
-        <div class="flex items-center gap-4">
+    <header class="flex flex-wrap justify-between items-center gap-4 mb-6">
+        <div>
+            <h1 class="text-lg font-semibold text-gray-800">HydroMonitor</h1>
+            <p class="text-sm text-gray-500">Site: Satit CMU, Chiang Mai, Thailand</p>
+        </div>
+        <div class="flex items-center gap-4 flex-wrap">
+            <!-- Honest connection state: no simulated data, so the dot is the only
+                 thing that tells you whether the numbers below are live. -->
+            <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+                <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                <span id="statusText" class="text-sm font-medium text-gray-600">Connecting…</span>
+            </div>
             <a href="/calibrate" class="text-sm font-medium bg-teal-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-teal-700">⚙ Calibrate sensors</a>
-            <div class="text-sm text-gray-500" id="lastUpdated">Last updated: --</div>
+            <div class="text-sm text-gray-400" id="lastUpdated">No record yet</div>
         </div>
     </header>
 
+    <!-- Four data components: temperature, turbidity, TDS, history graph. -->
     <div class="grid grid-cols-12 gap-6">
 
-        <div class="col-span-12 md:col-span-4 card">
-            <h2 class="text-gray-600 font-medium mb-4">Overall WQI Score</h2>
-            <div class="flex flex-col items-center">
-                <div class="text-6xl font-bold text-teal-700">92</div>
-                <p class="text-teal-600 font-semibold uppercase tracking-wider">Excellent</p>
-                <div class="w-full h-4 bg-gray-200 rounded-full mt-4 overflow-hidden">
-                    <div class="bg-teal-500 h-full w-[92%]"></div>
-                </div>
+        <div class="col-span-12 md:col-span-4 card flex flex-col justify-between">
+            <h2 class="text-gray-600 font-medium">Temperature</h2>
+            <div class="mt-4">
+                <div class="text-4xl font-bold text-gray-300" id="paramTemp">No record yet</div>
+                <div class="text-xs text-gray-400 mt-2" id="rangeTemp">No min/max recorded yet</div>
             </div>
         </div>
 
-        <div class="col-span-12 md:col-span-8 card relative cursor-pointer" id="historyCard" title="Click to change time range">
+        <div class="col-span-12 md:col-span-4 card flex flex-col justify-between">
+            <h2 class="text-gray-600 font-medium">Turbidity</h2>
+            <div class="mt-4">
+                <div class="text-4xl font-bold text-gray-300" id="paramTurb">No record yet</div>
+                <div class="text-xs text-gray-400 mt-2" id="rangeTurb">No min/max recorded yet</div>
+            </div>
+        </div>
+
+        <div class="col-span-12 md:col-span-4 card flex flex-col justify-between">
+            <h2 class="text-gray-600 font-medium">TDS</h2>
+            <div class="mt-4">
+                <div class="text-4xl font-bold text-gray-300" id="paramTds">No record yet</div>
+                <div class="text-xs text-gray-400 mt-2" id="rangeTds">No min/max recorded yet</div>
+            </div>
+        </div>
+
+        <div class="col-span-12 lg:col-span-8 card relative cursor-pointer" id="historyCard" title="Click to change time range">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-gray-600 font-medium">History
                     <span class="text-xs text-gray-400 font-normal">(from Google Sheet)</span>
                 </h2>
                 <span class="text-sm text-gray-500 font-medium select-none" id="historyWindowLabel">Last 15 min ▾</span>
             </div>
-            <div class="h-48"><canvas id="historyChart"></canvas></div>
+            <div class="h-64 relative">
+                <canvas id="historyChart"></canvas>
+                <!-- Shown instead of an empty axis frame when /history has no rows
+                     (or returned an error) -- see setHistoryMessage in app.js. -->
+                <div id="historyEmpty" class="absolute inset-0 flex items-center justify-center text-sm text-gray-400 bg-white">No record yet</div>
+            </div>
 
             <!-- Time-range popover: hidden until the card is clicked. -->
             <div id="historyWindowMenu" class="hidden absolute right-4 top-10 z-10 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-40 cursor-auto">
@@ -55,54 +81,9 @@
             </div>
         </div>
 
-        <div class="col-span-12 md:col-span-4 card">
-            <h2 class="text-gray-600 font-medium mb-4">Water Quality Parameter</h2>
-            <div class="space-y-4">
-                <div class="flex justify-between items-center border-b pb-2">
-                    <span class="text-sm">Dissolved Oxygen (DO)</span>
-                    <span class="font-bold text-teal-700">8.8 mg/L</span>
-                </div>
-                <div class="flex justify-between items-center border-b pb-2">
-                    <span class="text-sm">pH Level</span>
-                    <span class="font-bold text-teal-700">7.3 pH</span>
-                </div>
-                <div class="border-b pb-2">
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm">Temperature</span>
-                        <span class="font-bold text-teal-700" id="paramTemp">--.- &deg;C</span>
-                    </div>
-                    <div class="text-xs text-gray-400 text-right" id="rangeTemp">min --.- / max --.-</div>
-                </div>
-                <div class="border-b pb-2">
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm">Turbidity (avg ADC)</span>
-                        <span class="font-bold text-teal-700" id="paramTurb">--- ADC</span>
-                    </div>
-                    <div class="text-xs text-gray-400 text-right" id="rangeTurb">min --- / max ---</div>
-                </div>
-                <div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm">TDS</span>
-                        <span class="font-bold text-teal-700" id="paramTds">--- ppm</span>
-                    </div>
-                    <div class="text-xs text-gray-400 text-right" id="rangeTds">min --- / max ---</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-span-12 md:col-span-4 card">
+        <div class="col-span-12 lg:col-span-4 card">
             <h2 class="text-gray-600 font-medium mb-4">Satit CMU Area</h2>
-            <div id="siteMap" class="h-48 rounded-lg border border-gray-200 overflow-hidden"></div>
-        </div>
-
-        <div class="col-span-12 md:col-span-4 card">
-            <h2 class="text-gray-600 font-medium mb-4">Pollutant Source Identification</h2>
-            <div class="flex items-end gap-2 h-24">
-                <div class="w-12 bg-orange-500 h-[70%]"></div>
-                <div class="w-12 bg-gray-300 h-[40%]"></div>
-                <div class="w-12 bg-gray-300 h-[25%]"></div>
-                <div class="w-12 bg-gray-300 h-[15%]"></div>
-            </div>
+            <div id="siteMap" class="rounded-lg border border-gray-200 overflow-hidden"></div>
         </div>
 
     </div>

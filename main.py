@@ -48,6 +48,26 @@ class BrotliStaticFiles(StaticFiles):
                 response.headers.setdefault("Content-Type", original_type or "application/octet-stream")
         return response
 
+class NoStoreStaticFiles(StaticFiles):
+    """StaticFiles that forbids browser caching entirely.
+
+    WHY (do not "optimise" this back to a long max-age): this project has no build
+    step. The React SPA's content-hashed files under web-react/assets/ are hand-edited
+    *in place* -- the hash in the filename never changes when the content does. Starlette
+    sets ETag/Last-Modified but no Cache-Control, so browsers apply heuristic freshness
+    and keep executing a stale copy without ever revalidating (observed for real with
+    routes-*.js). `no-store` (not `no-cache`) because `no-cache` still allows a 304, and
+    Starlette's ETag is derived from mtime+size -- an edit preserving both would 304
+    incorrectly. `no-store` guarantees a re-fetch.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+
 if os.path.isdir(BUILD_DIR):
     app.mount(f"/{BUILD_DIR}", BrotliStaticFiles(directory=BUILD_DIR), name="build")
     print(f"✅ Mounted {BUILD_DIR} directory for WebGL static assets.")
@@ -55,7 +75,9 @@ else:
     print(f"⚠️ {BUILD_DIR} directory not found; WebGL static asset mount disabled.")
 
 if os.path.isdir("web"):
-    app.mount("/static", StaticFiles(directory="web"), name="static")
+    # Same no-store rationale as /assets: web/app.js + style.css are hand-edited with no
+    # build step or cache-busting query string, so a cached copy silently hides edits.
+    app.mount("/static", NoStoreStaticFiles(directory="web"), name="static")
     print("✅ Mounted web directory for frontend static assets at /static.")
 else:
     print("⚠️ web directory not found; frontend static mount disabled.")
@@ -66,7 +88,7 @@ else:
 # primary dashboard at "/" (see get_index) and its assets are served from /assets/*.
 # The original vanilla dashboard is preserved at /classic (see get_classic_index).
 if os.path.isdir("web-react/assets"):
-    app.mount("/assets", StaticFiles(directory="web-react/assets"), name="react_assets")
+    app.mount("/assets", NoStoreStaticFiles(directory="web-react/assets"), name="react_assets")
     print("✅ Mounted React SPA dashboard assets at /assets.")
 else:
     print("⚠️ web-react not found; React SPA dashboard disabled (falling back to vanilla at /).")
@@ -287,6 +309,19 @@ def apply_tds(voltage: float, temperature_c) -> float:
     return round(k * _dfrobot_ppm(voltage, temperature_c), 1)
 
 
+# The DFRobot polynomial in _dfrobot_ppm is itself the temperature-compensated electrical
+# conductivity in uS/cm; the trailing * 0.5 is the standard EC -> TDS(ppm) conversion.
+# So EC is not a separate sensor -- it is exactly the TDS reading divided back out by that
+# same factor, and it inherits the TDS k-factor calibration so the two always agree.
+TDS_TO_EC_FACTOR = 0.5
+
+
+def ppm_to_ec(ppm) -> float | None:
+    if not isinstance(ppm, (int, float)):
+        return None
+    return round(ppm / TDS_TO_EC_FACTOR, 1)
+
+
 @app.post("/update")
 async def update_sensor(request: Request):
     try:
@@ -340,6 +375,12 @@ async def update_sensor(request: Request):
                 _raw_buffers["tdsVoltage"].append(tds_voltage)
             elif "tds" in data:
                 payload["tds"] = float(data["tds"])
+
+            # EC is derived from the same measurement as TDS (see ppm_to_ec) -- emitted as
+            # its own field so dashboards don't each re-derive the conversion factor.
+            ec = ppm_to_ec(payload.get("tds"))
+            if ec is not None:
+                payload["ec"] = ec
         else:
             text = await request.body()
             if not text:
@@ -365,6 +406,7 @@ async def update_sensor(request: Request):
                 "temperature": payload["temperature"],
                 "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
                 "tds": payload.get("tds"),
+                "ec": payload.get("ec"),
             })
 
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
@@ -414,7 +456,12 @@ def _with_ntu(rows: list) -> list:
     for r in rows:
         adc = r.get("turbidity")
         ntu = apply_turbidity(adc) if isinstance(adc, (int, float)) else None
-        out.append({**r, "turbidityNtu": ntu})
+        # Sheet-backed rows (long windows) have no `ec` column -- derive it from tds so the
+        # EC graph works across every window, not just the live in-memory ones.
+        ec = r.get("ec")
+        if ec is None:
+            ec = ppm_to_ec(r.get("tds"))
+        out.append({**r, "turbidityNtu": ntu, "ec": ec})
     return out
 
 
@@ -604,7 +651,8 @@ async def get_index():
     # if the React build isn't present.
     react_index = "web-react/index.html"
     # no-cache => the browser always revalidates the unhashed SPA shell, so a rebuilt
-    # dashboard shows up on a normal reload (the hashed /assets/* stay cacheable).
+    # dashboard shows up on a normal reload. (/assets/* is served no-store as well --
+    # see NoStoreStaticFiles: the hashed names are hand-edited in place.)
     if os.path.isfile(react_index):
         return FileResponse(react_index, headers={"Cache-Control": "no-cache"})
     if not os.path.isfile(webconfig.get("indexFile", "index.html")):
@@ -630,15 +678,51 @@ async def websocket_app(websocket: WebSocket):
     async with ui_clients_lock:
         ui_clients.add(websocket)
 
-    # Prime the freshly connected dashboard with the current min/max so the range
-    # is visible right away instead of only after the next reading arrives.
-    if sensor_stats:
-        try:
-            await websocket.send_text(
-                json.dumps({"type": "sensor_update", "payload": {"stats": _stats_snapshot()}})
-            )
-        except Exception:
-            pass
+    # Always prime the freshly connected dashboard -- even with nothing recorded yet.
+    # Previously this only fired when sensor_stats was non-empty, so a dashboard opened
+    # before the first ESP32 push got *zero* frames and could not tell "no record yet"
+    # from a hung socket. The prime always carries `hasData`, so the UI can render an
+    # explicit empty state instead of fabricating numbers.
+    #
+    # If a reading does exist, replay the latest one so a dashboard connecting mid-run
+    # shows real values immediately rather than "--" until the next push (~2s, or never
+    # if the sensor has gone offline). Sourced from history_buffer -- no extra state.
+    prime_payload = {
+        "stats": _stats_snapshot() if sensor_stats else None,
+        "hasData": bool(history_buffer),
+        # SECONDS (epoch), matching the WS `timestamp` convention used by /update.
+        # NOTE: history_buffer rows store epoch MILLISECONDS (to match the /history
+        # / Google Sheets rows), hence the // 1000 below.
+        "lastTimestamp": (history_buffer[-1]["timestamp"] // 1000) if history_buffer else None,
+    }
+    if history_buffer:
+        last = history_buffer[-1]
+        # history_buffer always stores turbidity as the RAW averaged ADC. Re-derive the
+        # displayed value/unit exactly the way /update does so the prime and the live
+        # broadcasts agree.
+        turbidity_adc = last.get("turbidity")
+        ntu = (
+            apply_turbidity(turbidity_adc)
+            if (calibration_mode and turbidity_adc is not None)
+            else None
+        )
+        prime_payload.update({
+            "source": "prime",
+            "timestamp": last["timestamp"] // 1000,
+            "temperature": last.get("temperature"),
+            "turbidityRaw": turbidity_adc,
+            "turbidityNtu": ntu,
+            "turbidity": ntu if ntu is not None else turbidity_adc,
+            "turbidityUnit": "NTU" if ntu is not None else "ADC",
+            "tds": last.get("tds"),
+        })
+
+    try:
+        await websocket.send_text(
+            json.dumps({"type": "sensor_update", "payload": prime_payload})
+        )
+    except Exception:
+        pass
 
     try:
         while True:
