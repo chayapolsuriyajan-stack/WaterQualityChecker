@@ -1,0 +1,141 @@
+@import 'tailwindcss';
+
+/*
+  Aqua Monitor theme
+  Accent: indigo/violet (brand) — deliberately NOT the old slate/cyan palette.
+  Status colors (good/moderate/poor) are separate semantic tokens used by
+  thresholds.ts / wqi.ts so brand accent and water-quality status never collide.
+*/
+
+@layer base {
+  :root {
+    --background: 220 25% 98%;
+    --foreground: 224 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 224 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 30% 12%;
+
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 20% 94%;
+    --secondary-foreground: 224 30% 16%;
+
+    --muted: 220 20% 94%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 243 75% 96%;
+    --accent-foreground: 243 75% 30%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 160 84% 33%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 30 40% 10%;
+
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 243 75% 59%;
+
+    --radius: 0.75rem;
+  }
+
+  :root[data-theme='dark'],
+  .dark {
+    --background: 224 30% 7%;
+    --foreground: 220 20% 96%;
+
+    --card: 224 26% 10%;
+    --card-foreground: 220 20% 96%;
+
+    --popover: 224 26% 10%;
+    --popover-foreground: 220 20% 96%;
+
+    --primary: 243 85% 70%;
+    --primary-foreground: 224 30% 8%;
+
+    --secondary: 224 20% 16%;
+    --secondary-foreground: 220 20% 92%;
+
+    --muted: 224 20% 16%;
+    --muted-foreground: 220 10% 65%;
+
+    --accent: 243 40% 20%;
+    --accent-foreground: 243 85% 85%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 160 70% 45%;
+    --success-foreground: 224 30% 8%;
+
+    --warning: 38 92% 55%;
+    --warning-foreground: 30 40% 10%;
+
+    --border: 224 20% 18%;
+    --input: 224 20% 18%;
+    --ring: 243 85% 70%;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --background: 224 30% 7%;
+      --foreground: 220 20% 96%;
+
+      --card: 224 26% 10%;
+      --card-foreground: 220 20% 96%;
+
+      --popover: 224 26% 10%;
+      --popover-foreground: 220 20% 96%;
+
+      --primary: 243 85% 70%;
+      --primary-foreground: 224 30% 8%;
+
+      --secondary: 224 20% 16%;
+      --secondary-foreground: 220 20% 92%;
+
+      --muted: 224 20% 16%;
+      --muted-foreground: 220 10% 65%;
+
+      --accent: 243 40% 20%;
+      --accent-foreground: 243 85% 85%;
+
+      --destructive: 0 70% 55%;
+      --destructive-foreground: 0 0% 100%;
+
+      --success: 160 70% 45%;
+      --success-foreground: 224 30% 8%;
+
+      --warning: 38 92% 55%;
+      --warning-foreground: 30 40% 10%;
+
+      --border: 224 20% 18%;
+      --input: 224 20% 18%;
+      --ring: 243 85% 70%;
+    }
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Noto Sans Thai', 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+}

@@ -1,76 +1,61 @@
-# Session Handoff — Sensor Calibration Mode + README
+# HANDOFF — Aqua Monitor `/app` dashboard build (in progress)
 
-**Date:** 2026-07-18
-**Repo:** WaterQualityChecker (HydroMonitor) · branch `master` · remote `origin` (GitHub)
-**Purpose:** Continue this work on a second device. All the work below is **committed nowhere yet — it's uncommitted in the working tree**, so the first step to sync is commit + push (see "How to sync" at the bottom).
+**Date:** 2026-07-23 · **Branch:** `feat/aqua-monitor-dashboard` · **Repo:** github.com/chayapolsuriyajan-stack/WaterQualityChecker
 
----
-
-## What was done this session
-
-1. **Backend-owned sensor calibration mode** (the main feature)
-   - Firmware now streams *raw* values; the backend converts + owns calibration, so sensors are re-tuned live with **no reflash**.
-   - Turbidity: 2-point linear ADC→NTU. TDS: DFRobot temp-compensated ppm × a single k-factor.
-   - New standalone **`/calibrate`** web page to capture reference points, see coefficients, save/reset.
-   - Persisted to `calibration.json` (git-ignored — it's per-device/per-sensor).
-2. **Primary dashboard now shows real NTU** — the React SPA at `/` read `turbidity` and labeled it "NTU" but was getting raw ADC (showed absurd values like "1539 NTU"). Backend now puts calibrated NTU into `turbidity` (raw kept in `turbidityRaw`, unit in `turbidityUnit`); `/classic` dashboard updated to match.
-3. **README rewritten** ([readme.md](readme.md)) — what it's for / how to use (with screenshots) / how it works. Screenshots in `docs/` (`dashboard.png`, `calibrate.png`), captured via Playwright against the running app.
-4. **Windows UTF-8 startup fix** — `main.py` now forces UTF-8 on stdout/stderr, so `python main.py` no longer crashes on a cp1252 console (previously needed `PYTHONUTF8=1`).
-5. **Docs/skill** — `CLAUDE.md` documents the new calibration system + changed firmware contract; the `sensor-calibration` skill was rewritten for the runtime workflow.
-
-## Changed / new files
-| File | Change |
-|---|---|
-| `main.py` | calibration state + `calibration.json` load/save, `apply_turbidity`/`apply_tds`, `/update` emits raw+calibrated fields (legacy-`tds` fallback), `/calibration*` REST API, `/calibrate` route, UTF-8 fix |
-| `firmware/esp32/esp32.ino` | sends raw `tdsVoltage` instead of computing ppm on-device |
-| `web/calibrate.html` | **new** standalone calibration page |
-| `web/app.js` | `/classic` dashboard shows NTU/ADC per `turbidityUnit` |
-| `webconfig.json` | `calibrationFile` key |
-| `CLAUDE.md`, `readme.md` | docs |
-| `.gitignore` | ignores `calibration.json` |
-| `docs/` | **new** README screenshots |
-| `.claude/skills/sensor-calibration/` | rewritten skill |
-| `skill-observations/` | task-observer log (obs #1, #2) |
-
-## Data contract (firmware ↔ backend) — keep in sync
-- Firmware POSTs `{temperature, turbidity (raw ADC), tdsVoltage}` to `/update`.
-- Backend broadcasts `{temperature, turbidity (=NTU when calibrated else ADC), turbidityRaw, turbidityNtu, turbidityUnit, tdsVoltage, tds (ppm), stats}`.
-- Legacy boards that still POST `tds` (ppm) keep working (backend passes it through).
-
-## Verification already done (all passed)
-- Turbidity 2-pt fit exact (1500 ADC → 250 NTU), TDS k-factor makes a known solution read its rated ppm, save writes `calibration.json`, legacy `tds` passthrough, reset clears, UI capture works, UTF-8 startup no longer crashes.
-- To re-verify on device 2: `pip install -r requirements.txt && python main.py`, then
-  `curl -X POST localhost:8080/update -H "Content-Type: application/json" -d '{"temperature":25,"turbidity":1500,"tdsVoltage":1.41}'`
-  and open `http://localhost:8080/calibrate`.
-
-## Open items (nothing blocking)
-- **Redundant nested clone `WaterQualityChecker/`** — a pristine duplicate git clone sitting inside the repo (clean, fully pushed, same commit). Safe to delete; the delete was blocked by Claude Code's auto-mode safety guard, so it needs a manual `rm -rf WaterQualityChecker` (PowerShell: `Remove-Item -Recurse -Force .\WaterQualityChecker`). **Do NOT `git add` this folder.**
-- **TDS "abnormal" on the dashboard** is cosmetic — the SPA's normal range is 50–300 ppm; sample data sat ~368. Real readings decide the color.
-- **Google Sheets** still logs raw ADC turbidity (column header says so); NTU columns would need an Apps Script schema change.
-- `main.py` startup still uses the deprecated `@app.on_event("startup")` (FastAPI lifespan) — works, just a warning.
-
-## Reference
-- Approved implementation plan: `C:\Users\chaya\.claude\plans\i-wanna-create-a-reactive-conway.md` (local to device 1 — not in the repo).
-- Full architecture / wiring / calibration math: [CLAUDE.md](CLAUDE.md).
-- Calibration procedure + sensor math: `.claude/skills/sensor-calibration/SKILL.md`.
+This is a mid-build checkpoint (committed because a usage limit was near). The new `/app` React dashboard is **partially built**. Full design spec: **`AQUA_MONITOR_PLAN.md`**. Build is driven by the **`/claudes-plan`** skill (shipped in this repo at `.claude/skills/claudes-plan/SKILL.md`).
 
 ---
 
-## How to sync to the other device
+## Quick resume (other device or after limit reset)
 
-**On this device (push):**
-```bash
-# from the repo root; do NOT add the nested WaterQualityChecker/ folder
-git add .gitignore CLAUDE.md readme.md HANDOFF.md main.py firmware web webconfig.json docs .claude skill-observations
-git status                 # confirm the nested WaterQualityChecker/ is NOT staged
-git commit -m "Add backend sensor calibration mode, /calibrate page, README + screenshots"
-git push origin master
-```
+1. `git fetch && git checkout feat/aqua-monitor-dashboard`
+2. `cd frontend && npm install`  (node_modules is git-ignored)
+3. Resume the build — re-run the pipeline:
+   `/claudes_plan finish the Aqua Monitor /app build per AQUA_MONITOR_PLAN.md and HANDOFF.md — Job 6 + backend done, Job 1 partial, Jobs 2-5 not started` (switch to Opus 4.8 first: `/model claude-opus-4-8`).
+4. When code lands: `cd frontend && npm run build`, then `python main.py` (Windows: needs UTF-8; already handled in main.py) and open `http://localhost:8080/app`.
 
-**On the other device (pull):**
-```bash
-git pull origin master
-pip install -r requirements.txt      # deps unchanged, but safe
-python main.py
-```
-Note: `calibration.json` is git-ignored, so each device keeps its **own** calibration (correct — calibration is per physical sensor). If you want the *same* calibration on both, copy `calibration.json` manually or re-capture on device 2 via `/calibrate`.
+Backend already serves `/app` from `frontend/dist` (built output). Until `npm run build` runs, `/app` 404s by design.
+
+---
+
+## Status
+
+### DONE
+- **Planning**: `AQUA_MONITOR_PLAN.md` approved (design + fixed backend contract). Boss produced the 6-job split (below).
+- **Job 6 — backend mount + gitignore** ✅: `main.py` has the `os.path.isdir`-guarded `app.mount("/app", StaticFiles(directory="frontend/dist", html=True), name="aquamonitor")` (~line 96); `.gitignore` has `frontend/node_modules/` + `frontend/dist/`. No existing routes touched.
+- **Job 1 — scaffold (PARTIAL)**: `frontend/` Vite+React+TS+Tailwind scaffold present; `package.json` has all deps (react, motion, recharts, @tanstack/react-query, sonner, class-variance-authority, clsx, tailwind-merge, lucide-react, radix primitives; dev: vite, typescript, tailwind, @vitejs/plugin-react, oxlint). `node_modules` installed. Present: `src/main.tsx`, `src/index.css`, `src/lib/cn.ts`, `src/vite-env.d.ts`, and **14 shadcn UI primitives** now correctly at `src/components/ui/*` (badge, button, card, dropdown-menu, input, label, select, separator, sheet, skeleton, sonner, table, tabs, tooltip). Note: the `@`-alias Windows bug that dumped these into `frontend/@/` was fixed (moved to `src/components/ui/`).
+
+### LEFT
+- **Job 1 finish**: create `src/lib/api.ts`, `src/lib/types.ts`, `src/lib/thresholds.ts`, `src/lib/wqi.ts`, `src/lib/useSensorSocket.ts` (specs in AQUA_MONITOR_PLAN.md "Key technical decisions"). Verify UI components' `cn` import path — they may import `@/lib/utils`; this project uses `src/lib/cn.ts`, so either add a `lib/utils.ts` re-export or fix imports. Optionally attempt `npx shadcn add @kokonutui/... @bklit/...` (animated card/button, chart, ring gauge); fall back to Recharts if unavailable.
+- **Job 2 — app shell** (`src/App.tsx` + `src/components/shell/`: Sidebar, MobileNav, RightContextColumn, UserBadge). `main.tsx` already imports `./App` which does NOT exist yet — this is why a full build currently fails. Responsive sidebar → drawer/bottom-nav.
+- **Job 3 — dashboard** (`src/components/dashboard/`: DashboardView, WqiHistoryChart, WindowSelector, ParamGrid, ParamCard, Sparkline, GaugeRow, RadialGauge). Reference lines required.
+- **Job 4 — calibration** (`src/components/calibration/`: CalibrationView, SensorList, TwoPointForm, CoefficientPreview). Optimistic mutations to `/calibration*`.
+- **Job 5 — history** (`src/components/history/`: HistoryView, HistoryTable + CSV export).
+- Then `npm run build` + run the verification checklist in AQUA_MONITOR_PLAN.md.
+
+**Dependency order:** Job 1 must be complete before Jobs 2–5 (they import `@/lib/*` and `@/components/ui/*`). Jobs 2–5 are file-disjoint and parallelizable. Job 6 is done.
+
+---
+
+## The 6-job split (from the Opus Boss — verbatim scope)
+
+- **Job 1 (foundation, first):** owns all of `frontend/` config + `src/main.tsx` + `src/index.css` + `src/lib/**` + `src/components/ui/**`. Scaffold, deps, shadcn primitives, thresholds/wqi/useSensorSocket/api libs.
+- **Job 2 (after 1):** `src/App.tsx` + `src/components/shell/**` — AppShell, sidebar, responsive nav, RightContextColumn; imports the 3 views by fixed export name (`DashboardView`/`CalibrationView`/`HistoryView`).
+- **Job 3 (after 1):** `src/components/dashboard/**` — WQI chart + 2×2 param grid + sparklines + 3 radial gauges, all with labeled reference lines.
+- **Job 4 (after 1):** `src/components/calibration/**` — 4-sensor list, two-point/k-factor forms, optimistic apply + toast, mode toggle.
+- **Job 5 (after 1):** `src/components/history/**` — `/history` table + sort + CSV export.
+- **Job 6 (independent, DONE):** `main.py` `/app` mount + `.gitignore` frontend entries.
+
+---
+
+## Other important context (from this session, already on `main`)
+- Backend `main.py` recently gained: backend-owned sensor calibration (turbidity 2-pt, TDS k-factor) + `/calibration*` API + `/calibrate` page (`web/calibrate.html`); `ec` derivation; windowed `/history?window=` (5m–24h, live buffer + Google Sheet); UTF-8 stdout fix for Windows.
+- **Google Sheets** logging works (verified); the user is considering replacing it with SQLite later to "avoid heavy things" — noted as future in AQUA_MONITOR_PLAN.md.
+- Two other dashboards exist and MUST keep working: `/` (black-box Lovable React SPA, `web-react/`, no source) and `/classic` (`web/`, editable vanilla). The new `/app` is additive.
+- Tooling installed this session (git-ignored, not shipped): `graphify` (knowledge graph in `graphify-out/`), `markitdown` (doc→markdown; skill at `.claude/skills/markitdown/`).
+- Run Python on Windows with `py` (Python 3.11). Node 24 + npm 11 available.
+
+## Skills shipped in this repo (`.claude/skills/`)
+- `claudes-plan/` — the Opus-boss/Sonnet-worker build pipeline (use `/claudes_plan <prompt>`).
+- `firmware-contract-check/` — guards the ESP32↔backend JSON contract.
+- `markitdown/` — document→Markdown conversion.
