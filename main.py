@@ -93,6 +93,12 @@ if os.path.isdir("web-react/assets"):
 else:
     print("⚠️ web-react not found; React SPA dashboard disabled (falling back to vanilla at /).")
 
+if os.path.isdir("frontend/dist"):
+    app.mount("/app", StaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
+    print("✅ Mounted new Aqua Monitor React app at /app.")
+else:
+    print("⚠️ frontend/dist not found; new Aqua Monitor app at /app disabled (run: cd frontend && npm run build).")
+
 if GOOGLE_SHEETS_WEBHOOK_URL:
     print("✅ Google Sheets relay enabled for /update readings.")
 else:
