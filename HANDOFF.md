@@ -2,7 +2,11 @@
 
 **Updated:** 2026-07-25 · **Branch:** `feat/aqua-monitor-dashboard` · **Repo:** github.com/chayapolsuriyajan-stack/WaterQualityChecker
 
-**Status: BUILD COMPLETE and verified.** All 6 jobs done, Opus review findings applied. Design spec: **`AQUA_MONITOR_PLAN.md`**. Built with the **`/claudes-plan`** pipeline (skill shipped at `.claude/skills/claudes-plan/SKILL.md`).
+**Status: PHASE 1 + PHASE 2 COMPLETE and verified.** Design spec: **`AQUA_MONITOR_PLAN.md`** (Phase 2 section covers the detail modal, theming, and i18n). Both phases built with the **`/claudes-plan`** pipeline (skill shipped at `.claude/skills/claudes-plan/SKILL.md`).
+
+**Phase 2 added:** click any metric card for an expanded detail modal (big chart with point numbers and two-sided level lines, 6 time ranges, min/avg/max, high/low warning, conditional info cards) · light/dark theme toggle on a mint/teal palette · **single-language** UI with an EN ⇄ ไทย switcher (all 131 strings centralised in `frontend/src/lib/strings.ts`) · `12h` window everywhere · nav hover/focus polish. No backend changes.
+
+> **Local testing gotcha:** on this Windows box **NVIDIA Broadcast binds `127.0.0.1:8080`** and wins over uvicorn's `0.0.0.0:8080`, so every `localhost` route 404s even though the server is fine. Use the LAN IP (e.g. `http://192.168.68.95:8080/app/`) or quit that app.
 
 ---
 
@@ -23,7 +27,7 @@ Dev loop with HMR: `cd frontend && npm run dev` (Vite proxies `/ws/app`, `/histo
 
 **`/app`** — a source-controlled Vite + React 19 + TS + Tailwind v4 SPA. Left sidebar (required) with **Dashboard / Calibration / History** tabs + static "Guest" badge. Existing `/` (black-box Lovable SPA), `/classic`, `/calibrate` are untouched and still work.
 
-- **Dashboard** — frontend-derived WQI area chart with labeled reference lines (Moderate 50 / Good 70) and a 5m/15m/1h/3h/24h window selector reading `GET /history?window=`; 2×2 live param grid (Temp / Turbidity / TDS / EC) over `WS /ws/app` (~2s) with 30s sparklines, each carrying its own numeric threshold line; 3 radial safety gauges; right context column (Ang Kaew metadata, station AK-001, GPS, live WS status + clock).
+- **Dashboard** — frontend-derived WQI area chart with labeled reference lines (Moderate 50 / Good 70) and a 5m/15m/1h/3h/**12h**/24h time-range selector reading `GET /history?window=`; 2×2 live param grid (Temp / Turbidity / TDS / EC) over `WS /ws/app` (~2s) with 30s sparklines, each carrying its own numeric threshold line; 3 radial safety gauges; right context column (Ang Kaew metadata, station AK-001, GPS, live WS status + clock). **Every card is clickable** and opens the Phase 2 detail modal.
 - **Calibration** — turbidity 2-point + TDS k-factor wired to the real `/calibration*` API with optimistic apply (instant preview + toast, background `capture → save → mode`, rollback on error), mode toggle, per-sensor reset, point delete. Temperature ("factory-calibrated") and EC ("derived from TDS") are read-only, matching what the backend can actually calibrate.
 - **History** — `/history` table, sortable, null-safe, client-side CSV export.
 - **Responsive** — ≥1024px full 256px sidebar + right column; 768–1023px 72px icon rail + 2-col grid; <768px hamburger `Sheet` drawer + fixed bottom nav + 1-col grid. No horizontal overflow at any of 375 / 768 / 1280.
@@ -45,6 +49,7 @@ Dev loop with HMR: `cd frontend && npm run dev` (Vite proxies `/ws/app`, `/histo
 6. **Stale `/app` shell** served a deleted bundle hash after each rebuild → `SpaStaticFiles`. Windows path separators made a naive `/assets/` check silently never match.
 
 ## Known limitations / next steps
+- **Editing UI copy**: change `frontend/src/lib/strings.ts` only. Both locales must keep identical key sets (the `satisfies` clause enforces it at build time). **CSV export headers are intentionally English and fixed** so spreadsheet consumers don't break when the UI language changes.
 - **kokonut UI / Bklit UI registries were not used** — components are shadcn/ui + Recharts + Motion. The plan explicitly permitted this fallback, but if you specifically want those libraries' visuals, that's outstanding work.
 - **Single ~950 kB chunk** (286 kB gzipped, acceptable). Code-splitting recharts/motion via `manualChunks` is the easy win if you want it smaller.
 - **No screenshots in `docs/`** for the new app — the Playwright CLI wouldn't install a browser in this environment; verification was done via DOM + computed styles instead.
