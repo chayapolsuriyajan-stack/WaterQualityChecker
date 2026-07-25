@@ -1,21 +1,25 @@
 import type { LucideIcon } from 'lucide-react'
 import { Droplets, Gauge, History, SlidersHorizontal } from 'lucide-react'
+import { motion } from 'motion/react'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
+import { LanguageSwitcher } from './LanguageSwitcher'
+import { ThemeToggle } from './ThemeToggle'
 import { UserBadge } from './UserBadge'
 
 export type ViewId = 'dashboard' | 'calibration' | 'history'
 
 export interface NavItem {
   id: ViewId
-  labelTh: string
-  labelEn: string
+  labelKey: MessageKey
   icon: LucideIcon
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { id: 'dashboard', labelTh: 'แดชบอร์ด', labelEn: 'Dashboard', icon: Gauge },
-  { id: 'calibration', labelTh: 'ปรับเทียบ', labelEn: 'Calibration', icon: SlidersHorizontal },
-  { id: 'history', labelTh: 'ประวัติ', labelEn: 'History', icon: History },
+  { id: 'dashboard', labelKey: 'nav.dashboard', icon: Gauge },
+  { id: 'calibration', labelKey: 'nav.calibration', icon: SlidersHorizontal },
+  { id: 'history', labelKey: 'nav.history', icon: History },
 ]
 
 interface SidebarProps {
@@ -28,6 +32,8 @@ interface SidebarProps {
 
 /** Fixed left navigation rail — full-width on desktop (lg+), icon-only rail on tablet (md) when collapsed. */
 export function Sidebar({ view, onChange, collapsed = false, className }: SidebarProps) {
+  const { t } = useT()
+
   return (
     <aside
       className={cn(
@@ -47,8 +53,8 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
         </div>
         {!collapsed && (
           <div className="min-w-0 leading-tight">
-            <p className="truncate text-sm font-semibold text-foreground">Aqua Monitor</p>
-            <p className="truncate text-xs text-muted-foreground">อ่างแก้ว / Ang Kaew</p>
+            <p className="truncate text-sm font-semibold text-foreground">{t('app.title')}</p>
+            <p className="truncate text-xs text-muted-foreground">{t('app.siteNameShort')}</p>
           </div>
         )}
       </div>
@@ -57,33 +63,42 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
           const active = view === item.id
+          const label = t(item.labelKey)
           return (
             <button
               key={item.id}
               type="button"
-              title={`${item.labelTh} / ${item.labelEn}`}
+              title={label}
               aria-current={active ? 'page' : undefined}
               onClick={() => onChange(item.id)}
               className={cn(
-                'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                'relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all motion-reduce:transition-none',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                 collapsed && 'w-11 justify-center px-0',
                 active
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                  ? 'text-primary'
+                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground hover:translate-x-0.5',
               )}
             >
-              <Icon className="h-[18px] w-[18px] shrink-0" />
-              {!collapsed && (
-                <span className="min-w-0 truncate">
-                  {item.labelTh} <span className="text-muted-foreground/70">/ {item.labelEn}</span>
-                </span>
+              {active && (
+                <motion.span
+                  layoutId="sidebar-active-indicator"
+                  className="absolute inset-0 rounded-lg bg-primary/10"
+                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                />
               )}
+              <Icon className="relative h-[18px] w-[18px] shrink-0" />
+              {!collapsed && <span className="relative min-w-0 truncate">{label}</span>}
             </button>
           )
         })}
       </nav>
 
-      <UserBadge collapsed={collapsed} />
+      <div className={cn('flex flex-col gap-1.5', collapsed && 'items-center')}>
+        <ThemeToggle className={collapsed ? undefined : 'w-full justify-start px-3'} />
+        <LanguageSwitcher collapsed={collapsed} className={collapsed ? undefined : 'w-full'} />
+        <UserBadge collapsed={collapsed} />
+      </div>
     </aside>
   )
 }

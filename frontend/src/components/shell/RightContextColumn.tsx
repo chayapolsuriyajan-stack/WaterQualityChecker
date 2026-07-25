@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { MapPin, Radio, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
 import { useSensorData } from '@/lib/SensorProvider'
 
 function useClock() {
@@ -19,6 +20,7 @@ interface RightContextColumnProps {
 /** Institution metadata card for the dashboard: station identity, GPS, live network status + clock. */
 export function RightContextColumn({ className }: RightContextColumnProps) {
   const { connected } = useSensorData()
+  const { t } = useT()
   const now = useClock()
 
   const timeLabel = now.toLocaleTimeString('en-GB', {
@@ -33,8 +35,8 @@ export function RightContextColumn({ className }: RightContextColumnProps) {
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-foreground">Ang Kaew Reservoir</h3>
-            <p className="truncate text-xs text-muted-foreground">อ่างเก็บน้ำอ่างแก้ว มหาวิทยาลัยเชียงใหม่</p>
+            <h3 className="truncate text-sm font-semibold text-foreground">{t('app.siteName')}</h3>
+            <p className="truncate text-xs text-muted-foreground">{t('app.subtitle')}</p>
           </div>
           <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
             AK-001
@@ -56,7 +58,7 @@ export function RightContextColumn({ className }: RightContextColumnProps) {
             )}
           >
             {connected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-            <span>{connected ? 'Online / ออนไลน์' : 'Offline / ออฟไลน์'}</span>
+            <span>{connected ? t('status.online') : t('status.offline')}</span>
             {connected && (
               <Radio className="h-3 w-3 animate-pulse text-success" aria-hidden="true" />
             )}

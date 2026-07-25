@@ -9,6 +9,12 @@
  * - ec: µS/cm (microsiemens per centimeter)
  * - temperature: °C
  * - wqi: unitless score 0-100
+ *
+ * NOTE on TEMPERATURE_THRESHOLDS.min/max: these are retained ONLY for back-compat
+ * with existing single-sided consumers (e.g. wqi.ts's symmetric falloff calc,
+ * chart reference lines). The authoritative two-sided band data now lives in
+ * RANGE_BANDS below, whose temperature good band (25-30 °C) intentionally
+ * differs from this legacy min/max (20-32 °C) — that change is approved.
  */
 
 export type Status = 'good' | 'warn' | 'danger'
@@ -58,28 +64,16 @@ export type ThresholdParam = 'turbidity' | 'tds' | 'ec' | 'temperature' | 'wqi'
 
 /**
  * Compute the status band for a given parameter's value.
- * For `temperature`, "good" is inside [min,max]; outside is "warn" (single band,
- * since temperature has no separate danger tier defined by the plan).
+ * For the 4 sensor params this simply delegates to `rangeStatusFor` (two-sided bands).
  * For `wqi`, higher is better ('good' >= good threshold, 'warn' >= moderate, else 'danger').
  */
 export function statusFor(param: ThresholdParam, value: number): Status {
   switch (param) {
     case 'turbidity':
-      if (value >= TURBIDITY_THRESHOLDS.danger) return 'danger'
-      if (value >= TURBIDITY_THRESHOLDS.warn) return 'warn'
-      return 'good'
     case 'tds':
-      if (value >= TDS_THRESHOLDS.danger) return 'danger'
-      if (value >= TDS_THRESHOLDS.warn) return 'warn'
-      return 'good'
     case 'ec':
-      if (value >= EC_THRESHOLDS.danger) return 'danger'
-      if (value >= EC_THRESHOLDS.warn) return 'warn'
-      return 'good'
     case 'temperature':
-      return value >= TEMPERATURE_THRESHOLDS.min && value <= TEMPERATURE_THRESHOLDS.max
-        ? 'good'
-        : 'warn'
+      return rangeStatusFor(param, value).status
     case 'wqi':
       if (value >= WQI_THRESHOLDS.good) return 'good'
       if (value >= WQI_THRESHOLDS.moderate) return 'warn'
@@ -92,4 +86,90 @@ export function statusFor(param: ThresholdParam, value: number): Status {
 /** Convenience: status -> color, one hop from a raw value. */
 export function colorFor(param: ThresholdParam, value: number): string {
   return STATUS_COLOR[statusFor(param, value)]
+}
+
+// ---------------------------------------------------------------------------
+// Two-sided range bands (WHO/EPA-informed), direction-aware evaluator.
+// ---------------------------------------------------------------------------
+
+export type RangeParam = 'temperature' | 'turbidity' | 'tds' | 'ec'
+
+export interface RangeBand {
+  unit: string
+  /** Lower bound of the "good" band. Omitted for upper-only params (turbidity). */
+  goodMin?: number
+  /** Upper bound of the "good" band. */
+  goodMax?: number
+  /** At/below this on the low side -> 'danger'. Between this and goodMin -> 'warn'. */
+  dangerMin?: number
+  /** At/above this on the high side -> 'danger'. Between goodMax and this -> 'warn'. */
+  dangerMax?: number
+  /**
+   * Turbidity only: an implausibly low reading (near-zero NTU) usually indicates a
+   * disconnected/faulty sensor rather than genuinely pristine water. See `isSensorFault`.
+   */
+  sensorFaultBelow?: number
+}
+
+/**
+ * Approved two-sided bands:
+ *
+ * | Param       | Good        | Caution              | Danger            |
+ * |-------------|-------------|----------------------|-------------------|
+ * | Temperature | 25-30 °C    | outside 25-30         | < 20 or > 32      |
+ * | TDS         | 100-300 ppm | 300-500 / 50-100      | < 50 or > 500     |
+ * | EC          | 200-600     | 600-1000 / 100-200    | < 100 or > 1000   |
+ * | Turbidity   | <= 25 NTU   | > 25                   | > 50              |
+ */
+export const RANGE_BANDS: Record<RangeParam, RangeBand> = {
+  temperature: { unit: '°C', goodMin: 25, goodMax: 30, dangerMin: 20, dangerMax: 32 },
+  tds: { unit: 'ppm', goodMin: 100, goodMax: 300, dangerMin: 50, dangerMax: 500 },
+  ec: { unit: 'µS/cm', goodMin: 200, goodMax: 600, dangerMin: 100, dangerMax: 1000 },
+  // Turbidity is upper-only: no low band (a low NTU is good), and a value below
+  // `sensorFaultBelow` is flagged as a likely sensor fault rather than a water problem.
+  turbidity: { unit: 'NTU', goodMax: 25, dangerMax: 50, sensorFaultBelow: 0.2 },
+}
+
+export interface RangeStatus {
+  status: Status
+  /** Which side of the good band the value falls on. 'ok' whenever status is 'good'. */
+  direction: 'high' | 'low' | 'ok'
+}
+
+/** Direction-aware status evaluator using the two-sided RANGE_BANDS. */
+export function rangeStatusFor(param: RangeParam, value: number): RangeStatus {
+  const band = RANGE_BANDS[param]
+
+  if (band.goodMin != null && value < band.goodMin) {
+    const status: Status = band.dangerMin != null && value <= band.dangerMin ? 'danger' : 'warn'
+    return { status, direction: 'low' }
+  }
+
+  if (band.goodMax != null && value > band.goodMax) {
+    const status: Status = band.dangerMax != null && value >= band.dangerMax ? 'danger' : 'warn'
+    return { status, direction: 'high' }
+  }
+
+  return { status: 'good', direction: 'ok' }
+}
+
+/** Language-neutral normal-range text, e.g. "25–30 °C" / "≤ 25 NTU". Drop into detail.normalRange. */
+export function normalRangeText(param: RangeParam): string {
+  const band = RANGE_BANDS[param]
+  if (band.goodMin != null && band.goodMax != null) {
+    return `${band.goodMin}–${band.goodMax} ${band.unit}`
+  }
+  if (band.goodMax != null) {
+    return `≤ ${band.goodMax} ${band.unit}`
+  }
+  if (band.goodMin != null) {
+    return `≥ ${band.goodMin} ${band.unit}`
+  }
+  return band.unit
+}
+
+/** True only for turbidity readings implausibly below `sensorFaultBelow` (likely a sensor fault). */
+export function isSensorFault(param: RangeParam, value: number): boolean {
+  const band = RANGE_BANDS[param]
+  return band.sensorFaultBelow != null && value < band.sensorFaultBelow
 }

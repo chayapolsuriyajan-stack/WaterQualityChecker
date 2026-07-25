@@ -5,15 +5,18 @@ import { getHistory } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
 import type { HistoryRow, HistoryWindow } from '@/lib/types'
 import { HistoryTable } from './HistoryTable'
 
-const WINDOWS: { value: HistoryWindow; labelTh: string; labelEn: string }[] = [
-  { value: '5m', labelTh: '5 นาที', labelEn: '5m' },
-  { value: '15m', labelTh: '15 นาที', labelEn: '15m' },
-  { value: '1h', labelTh: '1 ชั่วโมง', labelEn: '1h' },
-  { value: '3h', labelTh: '3 ชั่วโมง', labelEn: '3h' },
-  { value: '24h', labelTh: '24 ชั่วโมง', labelEn: '24h' },
+const WINDOWS: { value: HistoryWindow; labelKey: MessageKey }[] = [
+  { value: '5m', labelKey: 'window.5m' },
+  { value: '15m', labelKey: 'window.15m' },
+  { value: '1h', labelKey: 'window.1h' },
+  { value: '3h', labelKey: 'window.3h' },
+  { value: '12h', labelKey: 'window.12h' },
+  { value: '24h', labelKey: 'window.24h' },
 ]
 
 const LIVE_WINDOWS: HistoryWindow[] = ['5m', '15m', '1h']
@@ -71,6 +74,7 @@ function downloadCsv(rows: HistoryRow[], window: HistoryWindow) {
 }
 
 export function HistoryView() {
+  const { t } = useT()
   const [historyWindow, setHistoryWindow] = useState<HistoryWindow>('15m')
 
   const { data, isLoading, isFetching, isError } = useQuery({
@@ -85,16 +89,14 @@ export function HistoryView() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">
-            ประวัติข้อมูล <span className="text-muted-foreground">· History</span>
-          </h1>
+          <h1 className="text-xl font-semibold text-foreground">{t('history.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {isLoading
-              ? 'กำลังโหลด... · Loading...'
+              ? t('history.loading')
               : isError
-                ? 'โหลดข้อมูลไม่สำเร็จ · Failed to load'
-                : `${rows.length} rows · source: ${data?.source ?? '—'}${
-                    isFetching ? ' · refreshing…' : ''
+                ? t('history.failed')
+                : `${t('history.rowCount', { count: rows.length, source: data?.source ?? '—' })}${
+                    isFetching ? ` · ${t('history.refreshing')}` : ''
                   }`}
           </p>
         </div>
@@ -102,7 +104,7 @@ export function HistoryView() {
         <div className="flex flex-wrap items-center gap-2">
           <div
             role="group"
-            aria-label="History window"
+            aria-label={t('window.label')}
             className="flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1"
           >
             {WINDOWS.map((w) => (
@@ -117,7 +119,7 @@ export function HistoryView() {
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                 )}
               >
-                {w.labelEn}
+                {t(w.labelKey)}
               </button>
             ))}
           </div>
@@ -130,7 +132,7 @@ export function HistoryView() {
             onClick={() => downloadCsv(rows, historyWindow)}
           >
             <Download className="size-4" />
-            Export CSV
+            {t('history.exportCsv')}
           </Button>
         </div>
       </div>

@@ -22,6 +22,7 @@ import {
   setCalibrationMode,
 } from '@/lib/api'
 import type { CalibrationState } from '@/lib/types'
+import { useT } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -89,6 +90,7 @@ function applyOptimisticPatch(
 }
 
 export function CalibrationView() {
+  const { t } = useT()
   const [activeSensor, setActiveSensor] = useState<CalibrationSensorId>('turbidity')
   const [pendingSensor, setPendingSensor] = useState<CalibratableSensor | null>(null)
   const queryClient = useQueryClient()
@@ -116,20 +118,12 @@ export function CalibrationView() {
           sensor === 'turbidity' ? predictTurbidity(rows, latestRaw) : predictTds(rows)
         queryClient.setQueryData<CalibrationState>(QUERY_KEY, applyOptimisticPatch(previous, sensor, predicted))
       }
-      toast.success(
-        sensor === 'turbidity'
-          ? 'กำลังใช้ค่าสอบเทียบความขุ่น... / Applying turbidity calibration...'
-          : 'กำลังใช้ค่าสอบเทียบ TDS... / Applying TDS calibration...',
-      )
+      toast.success(sensor === 'turbidity' ? t('calib.applyingTurbidity') : t('calib.applyingTds'))
       return { previous }
     },
     onError: (_err, { sensor }, context) => {
       if (context?.previous) queryClient.setQueryData(QUERY_KEY, context.previous)
-      toast.error(
-        sensor === 'turbidity'
-          ? 'บันทึกค่าความขุ่นไม่สำเร็จ / Failed to apply turbidity calibration'
-          : 'บันทึกค่า TDS ไม่สำเร็จ / Failed to apply TDS calibration',
-      )
+      toast.error(sensor === 'turbidity' ? t('calib.failedTurbidity') : t('calib.failedTds'))
     },
     onSettled: () => {
       setPendingSensor(null)
@@ -155,10 +149,10 @@ export function CalibrationView() {
   const resetMutation = useMutation({
     mutationFn: (sensor: CalibratableSensor) => resetCalibration(sensor),
     onSuccess: () => {
-      toast.success('รีเซ็ตค่าสอบเทียบแล้ว / Calibration reset')
+      toast.success(t('calib.resetSuccess'))
     },
     onError: () => {
-      toast.error('รีเซ็ตไม่สำเร็จ / Reset failed')
+      toast.error(t('calib.resetFailed'))
     },
     onSettled: () => void queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
   })
@@ -173,7 +167,7 @@ export function CalibrationView() {
     },
     onError: (_err, _enabled, context) => {
       if (context?.previous) queryClient.setQueryData(QUERY_KEY, context.previous)
-      toast.error('เปลี่ยนโหมดไม่สำเร็จ / Failed to change mode')
+      toast.error(t('calib.modeChangeFailed'))
     },
     onSettled: () => void queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
   })
@@ -184,13 +178,11 @@ export function CalibrationView() {
     <div className="flex h-full flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">ปรับเทียบเซนเซอร์ / Sensor Calibration</h1>
-          <p className="text-sm text-muted-foreground">
-            ปรับค่าได้โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่ / recalibrate live, no reflash needed
-          </p>
+          <h1 className="text-lg font-semibold text-foreground">{t('calib.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('calib.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">โหมดสอบเทียบ / Calibration mode</span>
+          <span className="text-sm text-muted-foreground">{t('calib.modeLabel')}</span>
           <Button
             type="button"
             size="sm"
@@ -198,7 +190,7 @@ export function CalibrationView() {
             disabled={modeMutation.isPending || isLoading}
             onClick={() => modeMutation.mutate(!data?.mode)}
           >
-            {data?.mode ? 'เปิด / ON' : 'ปิด / OFF'}
+            {data?.mode ? t('calib.modeOn') : t('calib.modeOff')}
           </Button>
         </div>
       </div>
@@ -220,16 +212,14 @@ export function CalibrationView() {
             {activeSensor === 'temperature' && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">อุณหภูมิ / Temperature</CardTitle>
+                  <CardTitle className="text-base">{t('calib.temperatureTitle')}</CardTitle>
                   <CardDescription>DS18B20</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <Badge variant="secondary" className="mb-2">
-                    ไม่ต้องสอบเทียบ / no calibration needed
+                    {t('calib.noCalibrationNeeded')}
                   </Badge>
-                  <p className="text-sm text-muted-foreground">
-                    โรงงานปรับเทียบแล้ว / Factory-calibrated (DS18B20 ±0.5°C)
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t('calib.factoryCalibrated')}</p>
                 </CardContent>
               </Card>
             )}
@@ -237,16 +227,14 @@ export function CalibrationView() {
             {activeSensor === 'ec' && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">ค่าการนำไฟฟ้า / Electrical Conductivity (EC)</CardTitle>
+                  <CardTitle className="text-base">{t('calib.ecTitle')}</CardTitle>
                   <CardDescription>µS/cm</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <Badge variant="secondary" className="mb-2">
-                    ไม่มีเซนเซอร์แยก / no separate sensor
+                    {t('calib.noSeparateSensor')}
                   </Badge>
-                  <p className="text-sm text-muted-foreground">
-                    คำนวณจาก TDS / Derived from TDS (×0.5) — calibrate via TDS
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t('calib.derivedFromTds')}</p>
                 </CardContent>
               </Card>
             )}
@@ -281,7 +269,7 @@ export function CalibrationView() {
                     disabled={resetMutation.isPending}
                     onClick={() => resetMutation.mutate('turbidity')}
                   >
-                    รีเซ็ตความขุ่น / Reset turbidity
+                    {t('calib.resetTurbidity')}
                   </Button>
                 </div>
               </>
@@ -317,7 +305,7 @@ export function CalibrationView() {
                     disabled={resetMutation.isPending}
                     onClick={() => resetMutation.mutate('tds')}
                   >
-                    รีเซ็ต TDS / Reset TDS
+                    {t('calib.resetTds')}
                   </Button>
                 </div>
               </>
@@ -325,7 +313,7 @@ export function CalibrationView() {
 
             {(activeSensor === 'turbidity' || activeSensor === 'tds') && !data && isLoading && (
               <Card>
-                <CardContent className="p-6 text-sm text-muted-foreground">กำลังโหลด... / Loading...</CardContent>
+                <CardContent className="p-6 text-sm text-muted-foreground">{t('calib.loading')}</CardContent>
               </Card>
             )}
           </motion.div>

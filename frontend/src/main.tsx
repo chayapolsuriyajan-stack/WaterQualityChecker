@@ -2,9 +2,11 @@ import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
+import { ThemeProvider } from 'next-themes'
 import { Toaster } from 'sonner'
 import './index.css'
 import App from './App'
+import { LanguageProvider, translateStandalone } from '@/lib/i18n'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,15 +39,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
       return (
         <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-background p-6 text-center text-foreground">
           <div className="space-y-1">
-            <p className="text-lg font-semibold">เกิดข้อผิดพลาด</p>
-            <p className="text-sm text-muted-foreground">Something went wrong.</p>
+            <p className="text-lg font-semibold">{translateStandalone('common.error')}</p>
           </div>
           <button
             type="button"
             onClick={() => window.location.reload()}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
           >
-            รีโหลด / Reload
+            {translateStandalone('common.reload')}
           </button>
         </div>
       )
@@ -57,12 +58,21 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <MotionConfig reducedMotion="user">
-        <QueryClientProvider client={queryClient}>
-          <App />
-          <Toaster richColors position="top-right" />
-        </QueryClientProvider>
-      </MotionConfig>
+      <ThemeProvider
+        attribute="data-theme"
+        defaultTheme="system"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <LanguageProvider>
+          <MotionConfig reducedMotion="user">
+            <QueryClientProvider client={queryClient}>
+              <App />
+              <Toaster richColors position="top-right" />
+            </QueryClientProvider>
+          </MotionConfig>
+        </LanguageProvider>
+      </ThemeProvider>
     </ErrorBoundary>
   </StrictMode>,
 )

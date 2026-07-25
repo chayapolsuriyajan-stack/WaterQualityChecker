@@ -6,6 +6,8 @@
 import type { LucideIcon } from 'lucide-react'
 import { Droplet, Thermometer, Waves, Zap } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
 import { Badge } from '@/components/ui/badge'
 import type { CalibrationState } from '@/lib/types'
 
@@ -13,16 +15,15 @@ export type CalibrationSensorId = 'temperature' | 'turbidity' | 'tds' | 'ec'
 
 interface SensorDef {
   id: CalibrationSensorId
-  labelTh: string
-  labelEn: string
+  labelKey: MessageKey
   icon: LucideIcon
 }
 
 const SENSORS: SensorDef[] = [
-  { id: 'temperature', labelTh: 'อุณหภูมิ', labelEn: 'Temperature', icon: Thermometer },
-  { id: 'turbidity', labelTh: 'ความขุ่น', labelEn: 'Turbidity', icon: Waves },
-  { id: 'tds', labelTh: 'TDS', labelEn: 'TDS', icon: Droplet },
-  { id: 'ec', labelTh: 'ค่าการนำไฟฟ้า', labelEn: 'EC', icon: Zap },
+  { id: 'temperature', labelKey: 'param.temperature.label', icon: Thermometer },
+  { id: 'turbidity', labelKey: 'param.turbidity.label', icon: Waves },
+  { id: 'tds', labelKey: 'param.tds.label', icon: Droplet },
+  { id: 'ec', labelKey: 'param.ec.label', icon: Zap },
 ]
 
 interface SensorListProps {
@@ -41,9 +42,10 @@ function isCalibrated(id: CalibrationSensorId, calibration?: CalibrationState): 
 }
 
 export function SensorList({ active, onSelect, calibration, className }: SensorListProps) {
+  const { t } = useT()
   return (
     <nav
-      aria-label="Sensor selection / เลือกเซนเซอร์"
+      aria-label={t('calib.sensorSelectAria')}
       className={cn(
         'flex gap-2 overflow-x-auto pb-1 sm:flex-col sm:overflow-visible sm:pb-0',
         className,
@@ -67,9 +69,7 @@ export function SensorList({ active, onSelect, calibration, className }: SensorL
             )}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            <span className="whitespace-nowrap sm:whitespace-normal">
-              {sensor.labelTh} <span className="text-muted-foreground/70">/ {sensor.labelEn}</span>
-            </span>
+            <span className="whitespace-nowrap sm:whitespace-normal">{t(sensor.labelKey)}</span>
             {calibrated !== null && (
               <Badge variant={calibrated ? 'default' : 'outline'} className="ml-auto shrink-0 text-[10px]">
                 {calibrated ? 'OK' : '—'}

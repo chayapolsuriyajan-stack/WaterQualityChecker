@@ -4,11 +4,12 @@
  * the threshold number labeled on/near the gauge (hard requirement).
  */
 import { RadialBar, RadialBarChart, PolarAngleAxis, ResponsiveContainer } from 'recharts'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
 import { colorFor, statusFor, type ThresholdParam } from '@/lib/thresholds'
 
 interface RadialGaugeProps {
-  labelTh: string
-  labelEn: string
+  labelKey: MessageKey
   value: number | null
   unit: string
   precision?: number
@@ -19,8 +20,7 @@ interface RadialGaugeProps {
 }
 
 export function RadialGauge({
-  labelTh,
-  labelEn,
+  labelKey,
   value,
   unit,
   precision = 0,
@@ -29,6 +29,8 @@ export function RadialGauge({
   thresholdWarn,
   thresholdDanger,
 }: RadialGaugeProps) {
+  const { t } = useT()
+  const label = t(labelKey)
   const safeValue = value ?? 0
   const pct = Math.min(100, Math.max(0, (safeValue / max) * 100))
   const color = value === null ? 'hsl(var(--muted-foreground))' : colorFor(param, value)
@@ -53,7 +55,7 @@ export function RadialGauge({
       <div
         className="relative h-40 w-40"
         role="img"
-        aria-label={`${labelEn}: ${value === null ? 'no data' : `${safeValue.toFixed(precision)} ${unit}`}`}
+        aria-label={`${label}: ${value === null ? t('status.noData') : `${safeValue.toFixed(precision)} ${unit}`}`}
       >
         <div aria-hidden="true" className="h-full w-full">
           <ResponsiveContainer width="100%" height="100%">
@@ -94,9 +96,7 @@ export function RadialGauge({
         </div>
       </div>
       <div className="text-center">
-        <p className="text-xs font-medium text-muted-foreground">
-          {labelTh} <span className="opacity-70">/ {labelEn}</span>
-        </p>
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
         <p className="text-[10px] text-muted-foreground">
           warn {thresholdWarn}
           {unit} · danger {thresholdDanger}
@@ -104,7 +104,7 @@ export function RadialGauge({
         </p>
         {status && (
           <p className="text-[10px] font-medium" style={{ color }}>
-            {status === 'good' ? 'Safe' : status === 'warn' ? 'Caution' : 'Danger'}
+            {status === 'good' ? t('status.safe') : status === 'warn' ? t('status.caution') : t('status.danger')}
           </p>
         )}
       </div>

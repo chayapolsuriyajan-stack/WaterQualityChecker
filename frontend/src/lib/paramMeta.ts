@@ -1,0 +1,78 @@
+/**
+ * Single per-parameter metadata definition (label/about/impact/recommendation
+ * message keys, unit, display precision, icon, and which HistoryRow field to
+ * plot) so ParamGrid and the parameter detail modal stop duplicating this
+ * information in their own local arrays/objects.
+ */
+import type { LucideIcon } from 'lucide-react'
+import { Activity, Droplets, FlaskConical, Thermometer } from 'lucide-react'
+import type { MessageKey } from './strings'
+
+export type ParamKey = 'temperature' | 'turbidity' | 'tds' | 'ec'
+
+export interface ParamMeta {
+  key: ParamKey
+  labelKey: MessageKey
+  aboutKey: MessageKey
+  impactKey: MessageKey
+  recommendationKey: MessageKey
+  unit: string
+  /** Decimal places for display, e.g. value.toFixed(precision). */
+  precision: number
+  icon: LucideIcon
+  /**
+   * Which field on a `HistoryRow` (lib/types.ts) to plot in the detail chart.
+   * Turbidity plots `turbidityNtu` (the calibrated NTU column) — a HistoryRow's
+   * `turbidity` field is always raw ADC, never a value to score/chart directly.
+   */
+  historyField: 'temperature' | 'turbidityNtu' | 'tds' | 'ec'
+}
+
+export const PARAM_META: Record<ParamKey, ParamMeta> = {
+  temperature: {
+    key: 'temperature',
+    labelKey: 'param.temperature.label',
+    aboutKey: 'param.temperature.about',
+    impactKey: 'param.temperature.impact',
+    recommendationKey: 'param.temperature.recommendation',
+    unit: '°C',
+    precision: 1,
+    icon: Thermometer,
+    historyField: 'temperature',
+  },
+  turbidity: {
+    key: 'turbidity',
+    labelKey: 'param.turbidity.label',
+    aboutKey: 'param.turbidity.about',
+    impactKey: 'param.turbidity.impact',
+    recommendationKey: 'param.turbidity.recommendation',
+    unit: 'NTU',
+    precision: 1,
+    icon: Droplets,
+    historyField: 'turbidityNtu',
+  },
+  tds: {
+    key: 'tds',
+    labelKey: 'param.tds.label',
+    aboutKey: 'param.tds.about',
+    impactKey: 'param.tds.impact',
+    recommendationKey: 'param.tds.recommendation',
+    unit: 'ppm',
+    precision: 0,
+    icon: FlaskConical,
+    historyField: 'tds',
+  },
+  ec: {
+    key: 'ec',
+    labelKey: 'param.ec.label',
+    aboutKey: 'param.ec.about',
+    impactKey: 'param.ec.impact',
+    recommendationKey: 'param.ec.recommendation',
+    unit: 'µS/cm',
+    precision: 0,
+    icon: Activity,
+    historyField: 'ec',
+  },
+}
+
+export const PARAM_ORDER: ParamKey[] = ['temperature', 'turbidity', 'tds', 'ec']

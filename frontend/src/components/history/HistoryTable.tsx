@@ -10,6 +10,8 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
 import { statusFor, type Status } from '@/lib/thresholds'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
 import type { HistoryRow } from '@/lib/types'
 
 type SortKey = 'timestamp' | 'temperature' | 'turbidity' | 'tds' | 'ec'
@@ -17,16 +19,15 @@ type SortDir = 'asc' | 'desc'
 
 interface Column {
   key: SortKey
-  labelTh: string
-  labelEn: string
+  labelKey: MessageKey
 }
 
 const COLUMNS: Column[] = [
-  { key: 'timestamp', labelTh: 'เวลา', labelEn: 'Time' },
-  { key: 'temperature', labelTh: 'อุณหภูมิ', labelEn: 'Temperature (°C)' },
-  { key: 'turbidity', labelTh: 'ความขุ่น', labelEn: 'Turbidity' },
-  { key: 'tds', labelTh: 'ของแข็งละลาย', labelEn: 'TDS (ppm)' },
-  { key: 'ec', labelTh: 'ค่าการนำไฟฟ้า', labelEn: 'EC (µS/cm)' },
+  { key: 'timestamp', labelKey: 'history.col.time' },
+  { key: 'temperature', labelKey: 'history.col.temperature' },
+  { key: 'turbidity', labelKey: 'history.col.turbidity' },
+  { key: 'tds', labelKey: 'history.col.tds' },
+  { key: 'ec', labelKey: 'history.col.ec' },
 ]
 
 /** Format a possibly-null numeric value, or '—' when unavailable. */
@@ -42,11 +43,11 @@ function statusForMaybe(
   return typeof value === 'number' && Number.isFinite(value) ? statusFor(param, value) : null
 }
 
-function statusBadge(status: Status | null) {
+function statusBadge(status: Status | null, t: (key: MessageKey) => string) {
   if (status == null) return null
   const variant =
     status === 'good' ? 'secondary' : status === 'warn' ? 'default' : 'destructive'
-  const label = status === 'good' ? 'Good' : status === 'warn' ? 'Warn' : 'Danger'
+  const label = status === 'good' ? t('status.good') : status === 'warn' ? t('status.caution') : t('status.danger')
   return (
     <Badge
       variant={variant}
@@ -108,6 +109,7 @@ export interface HistoryTableProps {
 }
 
 export function HistoryTable({ rows }: HistoryTableProps) {
+  const { t } = useT()
   const [sortKey, setSortKey] = useState<SortKey>('timestamp')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
@@ -133,7 +135,7 @@ export function HistoryTable({ rows }: HistoryTableProps) {
   if (rows.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-        ไม่มีข้อมูลในช่วงเวลานี้ · No data in this window
+        {t('history.empty')}
       </div>
     )
   }
@@ -156,21 +158,21 @@ export function HistoryTable({ rows }: HistoryTableProps) {
                 {formatTime(row.timestamp)}
               </div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
-                <dt className="text-muted-foreground">อุณหภูมิ / Temp</dt>
+                <dt className="text-muted-foreground">{t('param.temperature.label')}</dt>
                 <dd className="text-right">
-                  {fmt(row.temperature, 1)} °C {statusBadge(tempStatus)}
+                  {fmt(row.temperature, 1)} °C {statusBadge(tempStatus, t)}
                 </dd>
-                <dt className="text-muted-foreground">ความขุ่น / Turbidity</dt>
+                <dt className="text-muted-foreground">{t('param.turbidity.label')}</dt>
                 <dd className="text-right">
-                  {turb.value} {statusBadge(turb.status)}
+                  {turb.value} {statusBadge(turb.status, t)}
                 </dd>
-                <dt className="text-muted-foreground">TDS</dt>
+                <dt className="text-muted-foreground">{t('param.tds.label')}</dt>
                 <dd className="text-right">
-                  {fmt(row.tds, 0)} ppm {statusBadge(tdsStatus)}
+                  {fmt(row.tds, 0)} ppm {statusBadge(tdsStatus, t)}
                 </dd>
-                <dt className="text-muted-foreground">EC</dt>
+                <dt className="text-muted-foreground">{t('param.ec.label')}</dt>
                 <dd className="text-right">
-                  {fmt(row.ec, 0)} µS/cm {statusBadge(ecStatus)}
+                  {fmt(row.ec, 0)} µS/cm {statusBadge(ecStatus, t)}
                 </dd>
               </dl>
             </div>
@@ -191,10 +193,7 @@ export function HistoryTable({ rows }: HistoryTableProps) {
                     className="flex min-h-11 w-full items-center gap-1 px-3 py-2 text-left font-medium hover:text-foreground"
                   >
                     <span className="flex flex-col leading-tight">
-                      <span>{col.labelTh}</span>
-                      <span className="text-xs font-normal text-muted-foreground">
-                        {col.labelEn}
-                      </span>
+                      <span>{t(col.labelKey)}</span>
                     </span>
                     {sortKey === col.key && (
                       <span aria-hidden className="text-xs">
@@ -216,16 +215,16 @@ export function HistoryTable({ rows }: HistoryTableProps) {
                 <TableRow key={`${row.timestamp}-${i}`}>
                   <TableCell className="whitespace-nowrap">{formatTime(row.timestamp)}</TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {fmt(row.temperature, 1)} °C {statusBadge(tempStatus)}
+                    {fmt(row.temperature, 1)} °C {statusBadge(tempStatus, t)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {turb.value} {statusBadge(turb.status)}
+                    {turb.value} {statusBadge(turb.status, t)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {fmt(row.tds, 0)} {statusBadge(tdsStatus)}
+                    {fmt(row.tds, 0)} {statusBadge(tdsStatus, t)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {fmt(row.ec, 0)} {statusBadge(ecStatus)}
+                    {fmt(row.ec, 0)} {statusBadge(ecStatus, t)}
                   </TableCell>
                 </TableRow>
               )

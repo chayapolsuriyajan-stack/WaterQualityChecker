@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useT } from '@/lib/i18n'
+import { PARAM_META } from '@/lib/paramMeta'
 
 export interface TwoPointFormPoint {
   reference: number
@@ -34,26 +36,6 @@ interface TwoPointFormProps {
   onDeletePoint: (index: number) => void
 }
 
-const COPY = {
-  turbidity: {
-    title: 'สอบเทียบความขุ่น (2 จุด) / Turbidity calibration (2-point)',
-    referenceLabel: 'ค่ามาตรฐาน (NTU) / Standard Input (NTU)',
-    rawLabel: 'ค่าที่วัดได้ (Raw ADC) / Measured (raw ADC)',
-    rawHint: 'เว้นว่างเพื่อใช้ค่าปัจจุบัน / leave blank to use the live reading',
-    unit: 'NTU',
-    applyLabel: 'ใช้ค่า / Apply',
-  },
-  tds: {
-    title: 'สอบเทียบ TDS (k-factor) / TDS calibration (k-factor)',
-    referenceLabel: 'ค่ามาตรฐาน (ppm) / Known ppm (reference)',
-    rawLabel: 'ค่าที่วัดได้ (ppm) / Measured (ppm, optional)',
-    rawHint:
-      'ใช้เพื่อดูตัวอย่าง k เท่านั้น ไม่ถูกส่งไปเซิร์ฟเวอร์ — กรอกค่า ppm ที่ยังไม่ได้ปรับเทียบ (ไม่ใช่แรงดันไฟฟ้า) / preview only, not sent to the server — enter the uncalibrated ppm reading, not the raw voltage',
-    unit: 'ppm',
-    applyLabel: 'ใช้ค่า / Apply',
-  },
-} as const
-
 export function TwoPointForm({
   sensor,
   pointCount,
@@ -63,7 +45,22 @@ export function TwoPointForm({
   onApply,
   onDeletePoint,
 }: TwoPointFormProps) {
-  const copy = COPY[sensor]
+  const { t } = useT()
+  const unit = PARAM_META[sensor].unit
+  const copy =
+    sensor === 'turbidity'
+      ? {
+          title: t('calib.turbidityFormTitle'),
+          referenceLabel: t('calib.turbidityReferenceLabel'),
+          rawLabel: t('calib.turbidityRawLabel'),
+          rawHint: t('calib.turbidityRawHint'),
+        }
+      : {
+          title: t('calib.tdsFormTitle'),
+          referenceLabel: t('calib.tdsReferenceLabel'),
+          rawLabel: t('calib.tdsRawLabel'),
+          rawHint: t('calib.tdsRawHint'),
+        }
   const [rows, setRows] = useState<{ reference: string; raw: string }[]>(
     Array.from({ length: pointCount }, () => ({ reference: '', raw: '' })),
   )
@@ -90,11 +87,11 @@ export function TwoPointForm({
       <CardHeader>
         <CardTitle className="text-base">{copy.title}</CardTitle>
         <CardDescription>
-          {pointCount === 2 ? 'ต้องการ 2 จุด / needs 2 points' : 'จุดเดียว / single point'}
+          {pointCount === 2 ? t('calib.needTwoPoints') : t('calib.singlePoint')}
           {latestRaw != null && (
             <>
               {' — '}
-              ค่าปัจจุบัน / live reading:{' '}
+              {t('calib.liveReading')}:{' '}
               {sensor === 'tds' ? (
                 <span className="font-mono">{latestRaw.toFixed(3)} V</span>
               ) : (
@@ -109,7 +106,7 @@ export function TwoPointForm({
           <div key={i} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor={`${sensor}-ref-${i}`}>
-                {pointCount === 2 ? `จุดที่ ${i + 1} / Point ${i + 1} — ` : ''}
+                {pointCount === 2 ? `${t('calib.pointLabel', { n: i + 1 })} — ` : ''}
                 {copy.referenceLabel}
               </Label>
               <Input
@@ -139,12 +136,12 @@ export function TwoPointForm({
         ))}
 
         <Button className="w-full sm:w-auto" disabled={!canSubmit || applying} onClick={handleApply}>
-          {applying ? 'กำลังบันทึก... / Applying...' : copy.applyLabel}
+          {applying ? t('calib.applying') : t('calib.applyLabel')}
         </Button>
 
         {existingPoints.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3">
-            <p className="text-xs font-medium text-muted-foreground">จุดที่บันทึกแล้ว / Saved points</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('calib.savedPoints')}</p>
             <ul className="space-y-1.5">
               {existingPoints.map((point, i) => (
                 <li
@@ -152,7 +149,7 @@ export function TwoPointForm({
                   className="flex items-center justify-between gap-2 rounded-md bg-secondary/50 px-3 py-1.5 text-sm"
                 >
                   <span className="min-w-0 truncate">
-                    {point.reference} {copy.unit}
+                    {point.reference} {unit}
                     {point.raw != null ? ` — raw ${point.raw}` : ''}
                     {point.label ? ` (${point.label})` : ''}
                   </span>
@@ -162,7 +159,7 @@ export function TwoPointForm({
                     size="icon"
                     className="h-7 w-7 shrink-0"
                     onClick={() => onDeletePoint(i)}
-                    aria-label="Delete point / ลบจุด"
+                    aria-label={t('calib.deletePoint')}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>

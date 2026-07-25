@@ -19,6 +19,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getHistory } from '@/lib/api'
+import { useT } from '@/lib/i18n'
 import { WQI_THRESHOLDS } from '@/lib/thresholds'
 import { wqiFromHistoryRow } from '@/lib/wqi'
 import type { HistoryWindow } from '@/lib/types'
@@ -36,6 +37,7 @@ function formatTime(ts: number, window: HistoryWindow): string {
 }
 
 export function WqiHistoryChart() {
+  const { t } = useT()
   const [window, setWindow] = useState<HistoryWindow>('15m')
   const isShort = SHORT_WINDOWS.includes(window)
 
@@ -57,18 +59,16 @@ export function WqiHistoryChart() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-        <CardTitle className="text-base">
-          ดัชนีคุณภาพน้ำ <span className="font-normal text-muted-foreground">/ Water Quality Index (WQI)</span>
-        </CardTitle>
+        <CardTitle className="text-base">{t('wqi.title')}</CardTitle>
         <WindowSelector value={window} onChange={setWindow} />
       </CardHeader>
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-56 w-full" />
         ) : isError ? (
-          <p className="text-sm text-destructive">Failed to load history for this window.</p>
+          <p className="text-sm text-destructive">{t('wqi.error')}</p>
         ) : chartData.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No history data yet for this window.</p>
+          <p className="text-sm text-muted-foreground">{t('wqi.empty')}</p>
         ) : (
           <div className="h-56 w-full sm:h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -100,13 +100,13 @@ export function WqiHistoryChart() {
                   y={WQI_THRESHOLDS.moderate}
                   stroke="#f59e0b"
                   strokeDasharray="4 4"
-                  label={{ value: `Moderate (${WQI_THRESHOLDS.moderate})`, position: 'insideBottomLeft', fontSize: 11, fill: '#f59e0b' }}
+                  label={{ value: `${t('wqi.moderate')} (${WQI_THRESHOLDS.moderate})`, position: 'insideBottomLeft', fontSize: 11, fill: '#f59e0b' }}
                 />
                 <ReferenceLine
                   y={WQI_THRESHOLDS.good}
                   stroke="#22c55e"
                   strokeDasharray="4 4"
-                  label={{ value: `Good (${WQI_THRESHOLDS.good})`, position: 'insideTopLeft', fontSize: 11, fill: '#22c55e' }}
+                  label={{ value: `${t('wqi.good')} (${WQI_THRESHOLDS.good})`, position: 'insideTopLeft', fontSize: 11, fill: '#22c55e' }}
                 />
                 <Area
                   type="monotone"
