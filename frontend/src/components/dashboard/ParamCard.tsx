@@ -1,23 +1,27 @@
 /**
- * One live metric card in the ParamGrid: bilingual label, live value, status
+ * One live metric card in the ParamGrid: i18n label, live value, status
  * badge/color from lib/thresholds.ts, and an embedded Sparkline (with its own
- * labeled threshold line) built from the rolling ~30s series.
+ * labeled threshold line) built from the rolling ~30s series. Genuinely
+ * interactive — click, Enter, or Space opens the parameter detail modal.
  */
+import type { KeyboardEvent } from 'react'
 import { motion } from 'motion/react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
+import type { MessageKey } from '@/lib/strings'
 import { colorFor, statusFor, type Status, type ThresholdParam } from '@/lib/thresholds'
 import type { SeriesPoint } from '@/lib/useSensorSocket'
 import { Sparkline } from './Sparkline'
 
 type CardStatus = Status | 'unknown'
 
-const STATUS_LABEL: Record<CardStatus, string> = {
-  good: 'Good',
-  warn: 'Caution',
-  danger: 'Danger',
-  unknown: '—',
+const STATUS_KEY: Record<CardStatus, MessageKey> = {
+  good: 'status.good',
+  warn: 'status.caution',
+  danger: 'status.danger',
+  unknown: 'status.unknown',
 }
 
 const STATUS_BADGE_CLASS: Record<CardStatus, string> = {
@@ -28,8 +32,7 @@ const STATUS_BADGE_CLASS: Record<CardStatus, string> = {
 }
 
 interface ParamCardProps {
-  labelTh: string
-  labelEn: string
+  labelKey: MessageKey
   value: number | null
   unit: string
   precision?: number
@@ -39,15 +42,15 @@ interface ParamCardProps {
   thresholdLabel: string
   /** Whether the sparkline should draw its threshold reference line. Defaults to true. */
   showThreshold?: boolean
-  /** Optional bilingual hint shown under the value, e.g. for an unscorable/uncalibrated reading. */
+  /** Optional hint shown under the value, e.g. for an unscorable/uncalibrated reading. */
   hint?: string
   series: SeriesPoint[]
   index?: number
+  onOpen: () => void
 }
 
 export function ParamCard({
-  labelTh,
-  labelEn,
+  labelKey,
   value,
   unit,
   precision = 1,
@@ -58,9 +61,18 @@ export function ParamCard({
   hint,
   series,
   index = 0,
+  onOpen,
 }: ParamCardProps) {
+  const { t } = useT()
   const status: CardStatus = value === null || param === undefined ? 'unknown' : statusFor(param, value)
   const color = status === 'unknown' ? 'hsl(var(--muted-foreground))' : colorFor(param!, value!)
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onOpen()
+    }
+  }
 
   return (
     <motion.div
@@ -69,13 +81,18 @@ export function ParamCard({
       transition={{ duration: 0.35, delay: index * 0.05, ease: 'easeOut' }}
       className="motion-reduce:transition-none"
     >
-      <Card className="overflow-hidden transition-shadow hover:shadow-md">
+      <Card
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={handleKeyDown}
+        aria-label={t(labelKey)}
+        className="cursor-pointer overflow-hidden transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
         <CardContent className="p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-muted-foreground">
-                {labelTh} <span className="opacity-70">/ {labelEn}</span>
-              </p>
+              <p className="truncate text-xs font-medium text-muted-foreground">{t(labelKey)}</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color }}>
                 {value === null ? '—' : value.toFixed(precision)}
                 <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span>
@@ -83,7 +100,7 @@ export function ParamCard({
               {hint && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{hint}</p>}
             </div>
             <Badge variant="outline" className={cn('shrink-0 whitespace-nowrap', STATUS_BADGE_CLASS[status])}>
-              {STATUS_LABEL[status]}
+              {t(STATUS_KEY[status])}
             </Badge>
           </div>
           <div className="mt-3">

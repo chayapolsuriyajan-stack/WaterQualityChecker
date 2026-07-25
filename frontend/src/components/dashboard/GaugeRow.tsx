@@ -3,6 +3,7 @@
  * their danger threshold from lib/thresholds.ts.
  */
 import { EC_THRESHOLDS, TDS_THRESHOLDS, TURBIDITY_THRESHOLDS } from '@/lib/thresholds'
+import { PARAM_META } from '@/lib/paramMeta'
 import type { SensorReading } from '@/lib/types'
 import { RadialGauge } from './RadialGauge'
 
@@ -17,8 +18,7 @@ export function GaugeRow({ reading }: GaugeRowProps) {
   return (
     <div className="grid grid-cols-1 gap-6 rounded-xl border bg-card p-4 sm:grid-cols-3">
       <RadialGauge
-        labelTh="ความขุ่น"
-        labelEn="Turbidity"
+        labelKey={PARAM_META.turbidity.labelKey}
         value={turbidityValue}
         unit="NTU"
         precision={1}
@@ -28,8 +28,7 @@ export function GaugeRow({ reading }: GaugeRowProps) {
         thresholdDanger={TURBIDITY_THRESHOLDS.danger}
       />
       <RadialGauge
-        labelTh="สารละลายทั้งหมด"
-        labelEn="TDS"
+        labelKey={PARAM_META.tds.labelKey}
         value={reading?.tds ?? null}
         unit="ppm"
         precision={0}
@@ -39,8 +38,7 @@ export function GaugeRow({ reading }: GaugeRowProps) {
         thresholdDanger={TDS_THRESHOLDS.danger}
       />
       <RadialGauge
-        labelTh="การนำไฟฟ้า"
-        labelEn="EC"
+        labelKey={PARAM_META.ec.labelKey}
         value={reading?.ec ?? null}
         unit="µS/cm"
         precision={0}

@@ -34,7 +34,7 @@ export interface HistoryRow {
   ec: number | null
 }
 
-export type HistoryWindow = '5m' | '15m' | '1h' | '3h' | '24h'
+export type HistoryWindow = '5m' | '15m' | '1h' | '3h' | '12h' | '24h'
 
 interface CalibrationPointBase {
   reference: number
