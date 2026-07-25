@@ -1,61 +1,62 @@
-# HANDOFF — Aqua Monitor `/app` dashboard build (in progress)
+# HANDOFF — Aqua Monitor `/app` dashboard
 
-**Date:** 2026-07-23 · **Branch:** `feat/aqua-monitor-dashboard` · **Repo:** github.com/chayapolsuriyajan-stack/WaterQualityChecker
+**Updated:** 2026-07-25 · **Branch:** `feat/aqua-monitor-dashboard` · **Repo:** github.com/chayapolsuriyajan-stack/WaterQualityChecker
 
-This is a mid-build checkpoint (committed because a usage limit was near). The new `/app` React dashboard is **partially built**. Full design spec: **`AQUA_MONITOR_PLAN.md`**. Build is driven by the **`/claudes-plan`** skill (shipped in this repo at `.claude/skills/claudes-plan/SKILL.md`).
-
----
-
-## Quick resume (other device or after limit reset)
-
-1. `git fetch && git checkout feat/aqua-monitor-dashboard`
-2. `cd frontend && npm install`  (node_modules is git-ignored)
-3. Resume the build — re-run the pipeline:
-   `/claudes_plan finish the Aqua Monitor /app build per AQUA_MONITOR_PLAN.md and HANDOFF.md — Job 6 + backend done, Job 1 partial, Jobs 2-5 not started` (switch to Opus 4.8 first: `/model claude-opus-4-8`).
-4. When code lands: `cd frontend && npm run build`, then `python main.py` (Windows: needs UTF-8; already handled in main.py) and open `http://localhost:8080/app`.
-
-Backend already serves `/app` from `frontend/dist` (built output). Until `npm run build` runs, `/app` 404s by design.
+**Status: BUILD COMPLETE and verified.** All 6 jobs done, Opus review findings applied. Design spec: **`AQUA_MONITOR_PLAN.md`**. Built with the **`/claudes-plan`** pipeline (skill shipped at `.claude/skills/claudes-plan/SKILL.md`).
 
 ---
 
-## Status
+## Quick start (other device / after a break)
 
-### DONE
-- **Planning**: `AQUA_MONITOR_PLAN.md` approved (design + fixed backend contract). Boss produced the 6-job split (below).
-- **Job 6 — backend mount + gitignore** ✅: `main.py` has the `os.path.isdir`-guarded `app.mount("/app", StaticFiles(directory="frontend/dist", html=True), name="aquamonitor")` (~line 96); `.gitignore` has `frontend/node_modules/` + `frontend/dist/`. No existing routes touched.
-- **Job 1 — scaffold (PARTIAL)**: `frontend/` Vite+React+TS+Tailwind scaffold present; `package.json` has all deps (react, motion, recharts, @tanstack/react-query, sonner, class-variance-authority, clsx, tailwind-merge, lucide-react, radix primitives; dev: vite, typescript, tailwind, @vitejs/plugin-react, oxlint). `node_modules` installed. Present: `src/main.tsx`, `src/index.css`, `src/lib/cn.ts`, `src/vite-env.d.ts`, and **14 shadcn UI primitives** now correctly at `src/components/ui/*` (badge, button, card, dropdown-menu, input, label, select, separator, sheet, skeleton, sonner, table, tabs, tooltip). Note: the `@`-alias Windows bug that dumped these into `frontend/@/` was fixed (moved to `src/components/ui/`).
+```bash
+git fetch && git checkout feat/aqua-monitor-dashboard
+cd frontend && npm install && npm run build   # node_modules + dist are git-ignored
+cd .. && python main.py                        # UTF-8 handled in main.py
+```
+Open **http://localhost:8080/app** — the new dashboard. `frontend/dist` must be built or `/app` 404s by design (the mount is `os.path.isdir`-guarded).
 
-### LEFT
-- **Job 1 finish**: create `src/lib/api.ts`, `src/lib/types.ts`, `src/lib/thresholds.ts`, `src/lib/wqi.ts`, `src/lib/useSensorSocket.ts` (specs in AQUA_MONITOR_PLAN.md "Key technical decisions"). Verify UI components' `cn` import path — they may import `@/lib/utils`; this project uses `src/lib/cn.ts`, so either add a `lib/utils.ts` re-export or fix imports. Optionally attempt `npx shadcn add @kokonutui/... @bklit/...` (animated card/button, chart, ring gauge); fall back to Recharts if unavailable.
-- **Job 2 — app shell** (`src/App.tsx` + `src/components/shell/`: Sidebar, MobileNav, RightContextColumn, UserBadge). `main.tsx` already imports `./App` which does NOT exist yet — this is why a full build currently fails. Responsive sidebar → drawer/bottom-nav.
-- **Job 3 — dashboard** (`src/components/dashboard/`: DashboardView, WqiHistoryChart, WindowSelector, ParamGrid, ParamCard, Sparkline, GaugeRow, RadialGauge). Reference lines required.
-- **Job 4 — calibration** (`src/components/calibration/`: CalibrationView, SensorList, TwoPointForm, CoefficientPreview). Optimistic mutations to `/calibration*`.
-- **Job 5 — history** (`src/components/history/`: HistoryView, HistoryTable + CSV export).
-- Then `npm run build` + run the verification checklist in AQUA_MONITOR_PLAN.md.
-
-**Dependency order:** Job 1 must be complete before Jobs 2–5 (they import `@/lib/*` and `@/components/ui/*`). Jobs 2–5 are file-disjoint and parallelizable. Job 6 is done.
+Dev loop with HMR: `cd frontend && npm run dev` (Vite proxies `/ws/app`, `/history`, `/calibration*`, `/update` → :8080, so run `python main.py` alongside).
 
 ---
 
-## The 6-job split (from the Opus Boss — verbatim scope)
+## What was built
 
-- **Job 1 (foundation, first):** owns all of `frontend/` config + `src/main.tsx` + `src/index.css` + `src/lib/**` + `src/components/ui/**`. Scaffold, deps, shadcn primitives, thresholds/wqi/useSensorSocket/api libs.
-- **Job 2 (after 1):** `src/App.tsx` + `src/components/shell/**` — AppShell, sidebar, responsive nav, RightContextColumn; imports the 3 views by fixed export name (`DashboardView`/`CalibrationView`/`HistoryView`).
-- **Job 3 (after 1):** `src/components/dashboard/**` — WQI chart + 2×2 param grid + sparklines + 3 radial gauges, all with labeled reference lines.
-- **Job 4 (after 1):** `src/components/calibration/**` — 4-sensor list, two-point/k-factor forms, optimistic apply + toast, mode toggle.
-- **Job 5 (after 1):** `src/components/history/**` — `/history` table + sort + CSV export.
-- **Job 6 (independent, DONE):** `main.py` `/app` mount + `.gitignore` frontend entries.
+**`/app`** — a source-controlled Vite + React 19 + TS + Tailwind v4 SPA. Left sidebar (required) with **Dashboard / Calibration / History** tabs + static "Guest" badge. Existing `/` (black-box Lovable SPA), `/classic`, `/calibrate` are untouched and still work.
+
+- **Dashboard** — frontend-derived WQI area chart with labeled reference lines (Moderate 50 / Good 70) and a 5m/15m/1h/3h/24h window selector reading `GET /history?window=`; 2×2 live param grid (Temp / Turbidity / TDS / EC) over `WS /ws/app` (~2s) with 30s sparklines, each carrying its own numeric threshold line; 3 radial safety gauges; right context column (Ang Kaew metadata, station AK-001, GPS, live WS status + clock).
+- **Calibration** — turbidity 2-point + TDS k-factor wired to the real `/calibration*` API with optimistic apply (instant preview + toast, background `capture → save → mode`, rollback on error), mode toggle, per-sensor reset, point delete. Temperature ("factory-calibrated") and EC ("derived from TDS") are read-only, matching what the backend can actually calibrate.
+- **History** — `/history` table, sortable, null-safe, client-side CSV export.
+- **Responsive** — ≥1024px full 256px sidebar + right column; 768–1023px 72px icon rail + 2-col grid; <768px hamburger `Sheet` drawer + fixed bottom nav + 1-col grid. No horizontal overflow at any of 375 / 768 / 1280.
+- **Backend delta is tiny**: a guarded `/app` static mount (`SpaStaticFiles`: `no-store` on the HTML shell, `immutable` on hashed assets) + `GZipMiddleware`. No sensor/route logic changed.
+
+## Verified (evidence, not assumption)
+- `npm run build` clean; 950 kB JS → **286 kB gzipped** over the wire (gzip confirmed via `content-encoding: gzip`).
+- Theme: built CSS contains `.bg-card` / `.text-primary` / `.border-border` etc. (were **0** before the P0 fix); computed styles resolve real colors (card `rgb(19,22,32)` vs body `rgb(12,15,23)`, border `rgb(37,42,55)`).
+- All 3 tabs switch; sparkline history survives tab round-trips (single shared socket); **zero console errors**.
+- Live: with readings flowing, turbidity shows **24.1 NTU** calibrated; with calibration mode **OFF** it correctly shows raw ADC + "uncalibrated" and a muted badge (no bogus red "Danger").
+- Routes still 200: `/`, `/classic`, `/calibrate`, `/calibration`, `/history?window=5m`, `/history?window=24h`, `/app/`.
+
+## Notable bugs found and fixed during verification
+1. **Tailwind v4 didn't load `tailwind.config.js`** → the entire semantic color system compiled to nothing. Ported to `@theme` in `index.css`. *(Caught by the Opus review, not by my own layout-focused checks — a genuine blind spot: measuring computed widths passes while colors are dead.)*
+2. **`AnimatePresence mode="wait"` deadlocks on React 19 + motion 12** — the exiting child never resolved, so tab/panel switches never mounted the new view. Replaced with a keyed `motion.div`.
+3. **WQI fed raw ADC into the NTU sub-index** when uncalibrated, capping the score ~65 so the chart could never reach its own "Good (70)" line.
+4. **Prime WS frame fabricated zeros** (`hasData:false` → 0.0 °C / 0 ppm badged green) because the guard branch was unreachable.
+5. **Two `/ws/app` sockets** were open; hoisted into a `SensorProvider`.
+6. **Stale `/app` shell** served a deleted bundle hash after each rebuild → `SpaStaticFiles`. Windows path separators made a naive `/assets/` check silently never match.
+
+## Known limitations / next steps
+- **kokonut UI / Bklit UI registries were not used** — components are shadcn/ui + Recharts + Motion. The plan explicitly permitted this fallback, but if you specifically want those libraries' visuals, that's outstanding work.
+- **Single ~950 kB chunk** (286 kB gzipped, acceptable). Code-splitting recharts/motion via `manualChunks` is the easy win if you want it smaller.
+- **No screenshots in `docs/`** for the new app — the Playwright CLI wouldn't install a browser in this environment; verification was done via DOM + computed styles instead.
+- **pH / dissolved oxygen** have no sensors, so they're absent (the old black-box SPA showed placeholders).
+- `/app` is additive; **promoting it to `/`** (retiring `web-react/`) is a separate decision.
+- **Google Sheets → SQLite** migration for history still open (your "avoid heavy things" idea); `/history` long windows currently round-trip to Apps Script.
+- Auth is a static "Guest" badge — no login.
 
 ---
 
-## Other important context (from this session, already on `main`)
-- Backend `main.py` recently gained: backend-owned sensor calibration (turbidity 2-pt, TDS k-factor) + `/calibration*` API + `/calibrate` page (`web/calibrate.html`); `ec` derivation; windowed `/history?window=` (5m–24h, live buffer + Google Sheet); UTF-8 stdout fix for Windows.
-- **Google Sheets** logging works (verified); the user is considering replacing it with SQLite later to "avoid heavy things" — noted as future in AQUA_MONITOR_PLAN.md.
-- Two other dashboards exist and MUST keep working: `/` (black-box Lovable React SPA, `web-react/`, no source) and `/classic` (`web/`, editable vanilla). The new `/app` is additive.
-- Tooling installed this session (git-ignored, not shipped): `graphify` (knowledge graph in `graphify-out/`), `markitdown` (doc→markdown; skill at `.claude/skills/markitdown/`).
-- Run Python on Windows with `py` (Python 3.11). Node 24 + npm 11 available.
-
-## Skills shipped in this repo (`.claude/skills/`)
-- `claudes-plan/` — the Opus-boss/Sonnet-worker build pipeline (use `/claudes_plan <prompt>`).
-- `firmware-contract-check/` — guards the ESP32↔backend JSON contract.
-- `markitdown/` — document→Markdown conversion.
+## Repo context
+- Backend `main.py` (FastAPI, port 8080): sensor ingest `POST /update`, WS fan-out `/ws/app`, backend-owned calibration + `/calibration*`, windowed `/history`, UDP firmware discovery on 8888, Google Sheets relay. Run Python via `py` (3.11) on this Windows box; Node 24 + npm 11 available.
+- Firmware `firmware/esp32/esp32.ino` POSTs raw `{temperature, turbidity, tdsVoltage}`; contract is **not** auto-synced with the backend — see the `firmware-contract-check` skill.
+- Skills in `.claude/skills/`: `claudes-plan` (this build pipeline), `firmware-contract-check`, `markitdown`.
+- `graphify-out/` holds a local knowledge graph (git-ignored); regenerate with `graphify . --update`.
