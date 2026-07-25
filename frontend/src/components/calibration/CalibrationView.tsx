@@ -94,12 +94,6 @@ export function CalibrationView() {
   const queryClient = useQueryClient()
   const reduceMotion = useReducedMotion()
 
-  const { data, isLoading } = useQuery({
-    queryKey: QUERY_KEY,
-    queryFn: getCalibration,
-    refetchInterval: 1500,
-  })
-
   const applyMutation = useMutation({
     mutationFn: async ({ sensor, rows }: ApplyVariables) => {
       for (const row of rows) {
@@ -141,6 +135,16 @@ export function CalibrationView() {
       setPendingSensor(null)
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
     },
+  })
+
+  // Poll live calibration state, but pause while an apply is in flight — otherwise the
+  // next scheduled poll (captures + save can easily exceed 1.5s) overwrites the
+  // optimistic patch from onMutate with stale pre-save server state before the
+  // mutation's own onSettled refetch has a chance to reconcile.
+  const { data, isLoading } = useQuery({
+    queryKey: QUERY_KEY,
+    queryFn: getCalibration,
+    refetchInterval: applyMutation.isPending ? false : 1500,
   })
 
   const deleteMutation = useMutation({

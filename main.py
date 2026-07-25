@@ -9,6 +9,7 @@ import urllib.request
 from collections import deque
 from urllib.parse import parse_qs, urlencode
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,6 +22,7 @@ except (AttributeError, ValueError):
     pass
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 CONFIG_PATH = "webconfig.json"
 try:

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { MapPin, Radio, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/cn'
-import { useSensorSocket } from '@/lib/useSensorSocket'
+import { useSensorData } from '@/lib/SensorProvider'
 
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -18,7 +18,7 @@ interface RightContextColumnProps {
 
 /** Institution metadata card for the dashboard: station identity, GPS, live network status + clock. */
 export function RightContextColumn({ className }: RightContextColumnProps) {
-  const { connected } = useSensorSocket()
+  const { connected } = useSensorData()
   const now = useClock()
 
   const timeLabel = now.toLocaleTimeString('en-GB', {

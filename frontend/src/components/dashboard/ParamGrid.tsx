@@ -18,9 +18,10 @@ interface ParamGridProps {
 }
 
 export function ParamGrid({ reading, series }: ParamGridProps) {
+  const turbidityIsNtu = reading?.turbidityUnit === 'NTU'
   const turbidityValue =
-    reading === null ? null : reading.turbidityUnit === 'NTU' ? reading.turbidityNtu ?? reading.turbidity : reading.turbidity
-  const turbidityUnit = reading?.turbidityUnit === 'NTU' ? 'NTU' : 'ADC'
+    reading === null ? null : turbidityIsNtu ? reading.turbidityNtu ?? reading.turbidity : reading.turbidity
+  const turbidityUnit = turbidityIsNtu ? 'NTU' : 'ADC'
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
@@ -42,9 +43,11 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
         value={turbidityValue}
         unit={turbidityUnit}
         precision={turbidityUnit === 'NTU' ? 1 : 0}
-        param="turbidity"
+        param={turbidityIsNtu ? 'turbidity' : undefined}
         threshold={TURBIDITY_THRESHOLDS.warn}
         thresholdLabel={`${TURBIDITY_THRESHOLDS.warn} ${TURBIDITY_THRESHOLDS.unit}`}
+        showThreshold={turbidityIsNtu}
+        hint={turbidityIsNtu ? undefined : 'ยังไม่สอบเทียบ / uncalibrated (raw ADC)'}
         series={series.turbidity}
       />
       <ParamCard
