@@ -19,7 +19,8 @@ const WINDOWS: { value: HistoryWindow; labelTh: string; labelEn: string }[] = [
 const LIVE_WINDOWS: HistoryWindow[] = ['5m', '15m', '1h']
 const REFETCH_MS = 15_000
 
-function csvEscape(value: string | number): string {
+function csvEscape(value: string | number | null): string {
+  if (value == null) return ''
   const s = String(value)
   if (/[",\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`

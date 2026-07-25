@@ -29,7 +29,21 @@ const COLUMNS: Column[] = [
   { key: 'ec', labelTh: 'ค่าการนำไฟฟ้า', labelEn: 'EC (µS/cm)' },
 ]
 
-function statusBadge(status: Status) {
+/** Format a possibly-null numeric value, or '—' when unavailable. */
+function fmt(value: number | null | undefined, digits: number): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—'
+}
+
+/** statusFor requires a real number; returns null (unscorable) when the value is missing. */
+function statusForMaybe(
+  param: Parameters<typeof statusFor>[0],
+  value: number | null | undefined
+): Status | null {
+  return typeof value === 'number' && Number.isFinite(value) ? statusFor(param, value) : null
+}
+
+function statusBadge(status: Status | null) {
+  if (status == null) return null
   const variant =
     status === 'good' ? 'secondary' : status === 'warn' ? 'default' : 'destructive'
   const label = status === 'good' ? 'Good' : status === 'warn' ? 'Warn' : 'Danger'
@@ -58,28 +72,35 @@ function formatTime(ms: number): string {
   })
 }
 
-function turbidityDisplay(row: HistoryRow): { value: string; status: Status } {
+function turbidityDisplay(row: HistoryRow): { value: string; status: Status | null } {
   if (row.turbidityNtu != null) {
-    return { value: `${row.turbidityNtu.toFixed(1)} NTU`, status: statusFor('turbidity', row.turbidityNtu) }
+    return { value: `${fmt(row.turbidityNtu, 1)} NTU`, status: statusFor('turbidity', row.turbidityNtu) }
   }
-  return { value: `${row.turbidity.toFixed(0)} ADC`, status: 'good' }
+  if (row.turbidity != null) {
+    return { value: `${fmt(row.turbidity, 0)} ADC`, status: 'good' }
+  }
+  return { value: '—', status: null }
 }
 
 function sortValue(row: HistoryRow, key: SortKey): number {
-  switch (key) {
-    case 'timestamp':
-      return row.timestamp
-    case 'temperature':
-      return row.temperature
-    case 'turbidity':
-      return row.turbidityNtu ?? row.turbidity
-    case 'tds':
-      return row.tds
-    case 'ec':
-      return row.ec
-    default:
-      return 0
-  }
+  // Missing values sort to the end regardless of direction.
+  const raw = (() => {
+    switch (key) {
+      case 'timestamp':
+        return row.timestamp
+      case 'temperature':
+        return row.temperature
+      case 'turbidity':
+        return row.turbidityNtu ?? row.turbidity
+      case 'tds':
+        return row.tds
+      case 'ec':
+        return row.ec
+      default:
+        return 0
+    }
+  })()
+  return raw ?? Number.POSITIVE_INFINITY
 }
 
 export interface HistoryTableProps {
@@ -123,9 +144,9 @@ export function HistoryTable({ rows }: HistoryTableProps) {
       <div className="flex flex-col gap-3 md:hidden">
         {sorted.map((row, i) => {
           const turb = turbidityDisplay(row)
-          const tempStatus = statusFor('temperature', row.temperature)
-          const tdsStatus = statusFor('tds', row.tds)
-          const ecStatus = statusFor('ec', row.ec)
+          const tempStatus = statusForMaybe('temperature', row.temperature)
+          const tdsStatus = statusForMaybe('tds', row.tds)
+          const ecStatus = statusForMaybe('ec', row.ec)
           return (
             <div
               key={`${row.timestamp}-${i}`}
@@ -137,7 +158,7 @@ export function HistoryTable({ rows }: HistoryTableProps) {
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
                 <dt className="text-muted-foreground">อุณหภูมิ / Temp</dt>
                 <dd className="text-right">
-                  {row.temperature.toFixed(1)} °C {statusBadge(tempStatus)}
+                  {fmt(row.temperature, 1)} °C {statusBadge(tempStatus)}
                 </dd>
                 <dt className="text-muted-foreground">ความขุ่น / Turbidity</dt>
                 <dd className="text-right">
@@ -145,11 +166,11 @@ export function HistoryTable({ rows }: HistoryTableProps) {
                 </dd>
                 <dt className="text-muted-foreground">TDS</dt>
                 <dd className="text-right">
-                  {row.tds.toFixed(0)} ppm {statusBadge(tdsStatus)}
+                  {fmt(row.tds, 0)} ppm {statusBadge(tdsStatus)}
                 </dd>
                 <dt className="text-muted-foreground">EC</dt>
                 <dd className="text-right">
-                  {row.ec.toFixed(0)} µS/cm {statusBadge(ecStatus)}
+                  {fmt(row.ec, 0)} µS/cm {statusBadge(ecStatus)}
                 </dd>
               </dl>
             </div>
@@ -188,23 +209,23 @@ export function HistoryTable({ rows }: HistoryTableProps) {
           <TableBody>
             {sorted.map((row, i) => {
               const turb = turbidityDisplay(row)
-              const tempStatus = statusFor('temperature', row.temperature)
-              const tdsStatus = statusFor('tds', row.tds)
-              const ecStatus = statusFor('ec', row.ec)
+              const tempStatus = statusForMaybe('temperature', row.temperature)
+              const tdsStatus = statusForMaybe('tds', row.tds)
+              const ecStatus = statusForMaybe('ec', row.ec)
               return (
                 <TableRow key={`${row.timestamp}-${i}`}>
                   <TableCell className="whitespace-nowrap">{formatTime(row.timestamp)}</TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {row.temperature.toFixed(1)} °C {statusBadge(tempStatus)}
+                    {fmt(row.temperature, 1)} °C {statusBadge(tempStatus)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
                     {turb.value} {statusBadge(turb.status)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {row.tds.toFixed(0)} {statusBadge(tdsStatus)}
+                    {fmt(row.tds, 0)} {statusBadge(tdsStatus)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    {row.ec.toFixed(0)} {statusBadge(ecStatus)}
+                    {fmt(row.ec, 0)} {statusBadge(ecStatus)}
                   </TableCell>
                 </TableRow>
               )

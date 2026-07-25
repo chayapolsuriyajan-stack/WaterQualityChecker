@@ -13,12 +13,12 @@ export interface SensorReading {
   /** Always the raw ADC reading, regardless of calibration state. */
   turbidityRaw: number
   turbidityUnit: 'NTU' | 'ADC'
-  /** TDS in ppm (calibrated). */
-  tds: number
+  /** TDS in ppm (calibrated). Null if the backend hasn't received a tds/tdsVoltage reading yet. */
+  tds: number | null
   /** Raw TDS sensor voltage. */
   tdsVoltage: number
-  /** Electrical conductivity in µS/cm, derived from tds. */
-  ec: number
+  /** Electrical conductivity in µS/cm, derived from tds. Null when tds is unavailable. */
+  ec: number | null
   timestamp?: number
 }
 
@@ -26,12 +26,12 @@ export interface SensorReading {
 export interface HistoryRow {
   /** Epoch milliseconds. */
   timestamp: number
-  temperature: number
+  temperature: number | null
   /** Raw ADC turbidity value, as logged historically. */
-  turbidity: number
+  turbidity: number | null
   turbidityNtu: number | null
-  tds: number
-  ec: number
+  tds: number | null
+  ec: number | null
 }
 
 export type HistoryWindow = '5m' | '15m' | '1h' | '3h' | '24h'

@@ -47,7 +47,8 @@ const COPY = {
     title: 'สอบเทียบ TDS (k-factor) / TDS calibration (k-factor)',
     referenceLabel: 'ค่ามาตรฐาน (ppm) / Known ppm (reference)',
     rawLabel: 'ค่าที่วัดได้ (ppm) / Measured (ppm, optional)',
-    rawHint: 'ใช้เพื่อดูตัวอย่าง k เท่านั้น ไม่ถูกส่งไปเซิร์ฟเวอร์ / preview only, not sent to the server',
+    rawHint:
+      'ใช้เพื่อดูตัวอย่าง k เท่านั้น ไม่ถูกส่งไปเซิร์ฟเวอร์ — กรอกค่า ppm ที่ยังไม่ได้ปรับเทียบ (ไม่ใช่แรงดันไฟฟ้า) / preview only, not sent to the server — enter the uncalibrated ppm reading, not the raw voltage',
     unit: 'ppm',
     applyLabel: 'ใช้ค่า / Apply',
   },
@@ -93,7 +94,12 @@ export function TwoPointForm({
           {latestRaw != null && (
             <>
               {' — '}
-              ค่าปัจจุบัน / live: <span className="font-mono">{latestRaw.toFixed(sensor === 'tds' ? 3 : 0)}</span>
+              ค่าปัจจุบัน / live reading:{' '}
+              {sensor === 'tds' ? (
+                <span className="font-mono">{latestRaw.toFixed(3)} V</span>
+              ) : (
+                <span className="font-mono">{latestRaw.toFixed(0)}</span>
+              )}
             </>
           )}
         </CardDescription>
@@ -123,7 +129,9 @@ export function TwoPointForm({
                 inputMode="decimal"
                 value={row.raw}
                 onChange={(e) => updateRow(i, 'raw', e.target.value)}
-                placeholder={latestRaw != null ? String(latestRaw) : ''}
+                placeholder={
+                  sensor === 'turbidity' && latestRaw != null ? String(latestRaw) : ''
+                }
               />
               <p className="text-xs text-muted-foreground">{copy.rawHint}</p>
             </div>

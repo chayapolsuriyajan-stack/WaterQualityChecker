@@ -19,7 +19,20 @@
  *     around the [min,max] good band: 100 inside the band, decaying linearly to 0 at
  *     +/-10C past the nearest edge.
  *
- * Final score = weighted average of sub-indices, rounded to nearest integer.
+ * Missing/unscorable parameters (e.g. turbidity before it's been calibrated to real NTU —
+ * see below) are DROPPED from the calculation rather than scored as 0, and the remaining
+ * weights are renormalized to still sum to 1 (each included weight divided by the sum of
+ * included weights). If every parameter is missing, the result is 'unknown' with a null
+ * score rather than a fabricated number.
+ *
+ * IMPORTANT: turbidity is only scored when it's a genuine NTU value (`turbidityNtu`, or a
+ * raw `turbidity` field explicitly labeled NTU via `turbidityUnit`). The backend's
+ * `calibration_mode` defaults OFF, in which case `turbidity` is a raw ADC value (~1000s)
+ * that must never be run through the NTU thresholds — doing so caps the score permanently
+ * low regardless of actual water quality.
+ *
+ * Final score = weighted average of sub-indices (using renormalized weights), rounded to
+ * the nearest integer.
  * Bands: score >= 70 -> 'good', score >= 50 -> 'moderate', else 'poor'
  * (matches WQI_THRESHOLDS.good / WQI_THRESHOLDS.moderate in thresholds.ts).
  */
@@ -32,25 +45,33 @@ import {
 } from './thresholds'
 import type { HistoryRow, SensorReading } from './types'
 
-const WEIGHTS = {
+export type WqiParam = 'turbidity' | 'tds' | 'ec' | 'temperature'
+
+const WEIGHTS: Record<WqiParam, number> = {
   turbidity: 0.35,
   tds: 0.35,
   ec: 0.1,
   temperature: 0.2,
-} as const
+}
 
-export type WqiBand = 'good' | 'moderate' | 'poor'
+const ALL_PARAMS = Object.keys(WEIGHTS) as WqiParam[]
+
+export type WqiBand = 'good' | 'moderate' | 'poor' | 'unknown'
 
 export interface WqiResult {
-  score: number
+  /** Weighted score 0-100, or null if no parameter was scorable. */
+  score: number | null
   band: WqiBand
   color: string
+  /** Parameters that were unavailable/unscorable and excluded (with weight renormalized away). */
+  excluded: WqiParam[]
 }
 
 const WQI_BAND_COLOR: Record<WqiBand, string> = {
   good: '#22c55e',
   moderate: '#f59e0b',
   poor: '#ef4444',
+  unknown: '#9ca3af',
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -78,52 +99,80 @@ function temperatureSubIndex(value: number): number {
 }
 
 interface WqiInputs {
-  temperature: number
-  turbidity: number
-  tds: number
-  ec: number
+  temperature: number | null
+  /** Must already be a genuine NTU value (or null if no calibrated NTU is available). */
+  turbidity: number | null
+  tds: number | null
+  ec: number | null
 }
 
 function computeWqi(inputs: WqiInputs): WqiResult {
-  const turbiditySub = subIndexLowerIsBetter(
-    inputs.turbidity,
-    TURBIDITY_THRESHOLDS.warn,
-    TURBIDITY_THRESHOLDS.danger,
-  )
-  const tdsSub = subIndexLowerIsBetter(inputs.tds, TDS_THRESHOLDS.warn, TDS_THRESHOLDS.danger)
-  const ecSub = subIndexLowerIsBetter(inputs.ec, EC_THRESHOLDS.warn, EC_THRESHOLDS.danger)
-  const temperatureSub = temperatureSubIndex(inputs.temperature)
+  const subIndices: Partial<Record<WqiParam, number>> = {}
 
-  const weighted =
-    turbiditySub * WEIGHTS.turbidity +
-    tdsSub * WEIGHTS.tds +
-    ecSub * WEIGHTS.ec +
-    temperatureSub * WEIGHTS.temperature
+  if (inputs.turbidity != null) {
+    subIndices.turbidity = subIndexLowerIsBetter(
+      inputs.turbidity,
+      TURBIDITY_THRESHOLDS.warn,
+      TURBIDITY_THRESHOLDS.danger,
+    )
+  }
+  if (inputs.tds != null) {
+    subIndices.tds = subIndexLowerIsBetter(inputs.tds, TDS_THRESHOLDS.warn, TDS_THRESHOLDS.danger)
+  }
+  if (inputs.ec != null) {
+    subIndices.ec = subIndexLowerIsBetter(inputs.ec, EC_THRESHOLDS.warn, EC_THRESHOLDS.danger)
+  }
+  if (inputs.temperature != null) {
+    subIndices.temperature = temperatureSubIndex(inputs.temperature)
+  }
+
+  const included = ALL_PARAMS.filter((p) => p in subIndices)
+  const excluded = ALL_PARAMS.filter((p) => !(p in subIndices))
+
+  if (included.length === 0) {
+    return { score: null, band: 'unknown', color: WQI_BAND_COLOR.unknown, excluded }
+  }
+
+  const weightSum = included.reduce((sum, p) => sum + WEIGHTS[p], 0)
+  const weighted = included.reduce(
+    (sum, p) => sum + subIndices[p]! * (WEIGHTS[p] / weightSum),
+    0,
+  )
 
   const score = Math.round(clamp(weighted, 0, 100))
   const band: WqiBand =
     score >= WQI_THRESHOLDS.good ? 'good' : score >= WQI_THRESHOLDS.moderate ? 'moderate' : 'poor'
 
-  return { score, band, color: WQI_BAND_COLOR[band] }
+  return { score, band, color: WQI_BAND_COLOR[band], excluded }
 }
 
-/** Compute WQI from a live sensor reading. Uses turbidityNtu when present, else raw turbidity. */
+/**
+ * Compute WQI from a live sensor reading. Only scores turbidity when a genuine NTU value
+ * is available (`turbidityNtu`, or `turbidity` explicitly labeled NTU via `turbidityUnit`) —
+ * a raw uncalibrated ADC reading is never fed into the NTU thresholds.
+ */
 export function wqiFromReading(
-  r: Pick<SensorReading, 'temperature' | 'turbidity' | 'turbidityNtu' | 'tds' | 'ec'>,
+  r: Pick<
+    SensorReading,
+    'temperature' | 'turbidity' | 'turbidityNtu' | 'turbidityUnit' | 'tds' | 'ec'
+  >,
 ): WqiResult {
   return computeWqi({
     temperature: r.temperature,
-    turbidity: r.turbidityNtu ?? r.turbidity,
+    turbidity: r.turbidityNtu ?? (r.turbidityUnit === 'NTU' ? r.turbidity : null),
     tds: r.tds,
     ec: r.ec,
   })
 }
 
-/** Compute WQI from a `/history` row. Shares the same sub-index logic as live readings. */
+/**
+ * Compute WQI from a `/history` row. Shares the same sub-index logic as live readings.
+ * `HistoryRow.turbidity` is always raw ADC (see types.ts), so only `turbidityNtu` is used.
+ */
 export function wqiFromHistoryRow(row: HistoryRow): WqiResult {
   return computeWqi({
     temperature: row.temperature,
-    turbidity: row.turbidityNtu ?? row.turbidity,
+    turbidity: row.turbidityNtu,
     tds: row.tds,
     ec: row.ec,
   })

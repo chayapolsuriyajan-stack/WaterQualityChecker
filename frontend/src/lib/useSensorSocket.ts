@@ -32,8 +32,8 @@ function pushSample(series: SensorSeries, reading: SensorReading, now: number): 
   const next: SensorSeries = {
     temperature: [...series.temperature, { t: now, v: reading.temperature }],
     turbidity: [...series.turbidity, { t: now, v: reading.turbidityNtu ?? reading.turbidity }],
-    tds: [...series.tds, { t: now, v: reading.tds }],
-    ec: [...series.ec, { t: now, v: reading.ec }],
+    tds: [...series.tds, ...(reading.tds != null ? [{ t: now, v: reading.tds }] : [])],
+    ec: [...series.ec, ...(reading.ec != null ? [{ t: now, v: reading.ec }] : [])],
   }
   const cutoff = now - SPARKLINE_WINDOW_MS
   for (const key of Object.keys(next) as SeriesParam[]) {
@@ -68,14 +68,23 @@ function extractReading(data: unknown): SensorReading | null {
   const msg = data as Record<string, unknown>
 
   // { type: 'sensor_update', payload: {...} }
+  // Covers both real broadcasts AND the connect-time "prime" frame, which is sent in this
+  // same envelope (see main.py websocket_app): { type: 'sensor_update', payload: { hasData,
+  // stats, lastTimestamp, [...last reading fields if any]} }. When hasData is false (no
+  // reading has ever been recorded), or the payload otherwise carries no actual reading
+  // (no `temperature` key), there is nothing to show yet — return null rather than letting
+  // normalizeReading coerce the missing fields to fabricated zeros.
   if (msg.type === 'sensor_update' && msg.payload && typeof msg.payload === 'object') {
-    return normalizeReading(msg.payload as Record<string, unknown>)
+    const payload = msg.payload as Record<string, unknown>
+    if (payload.hasData === false || !('temperature' in payload)) return null
+    return normalizeReading(payload)
   }
 
-  // Prime frame: { hasData, lastTimestamp, last: {...} } (or payload under `reading`)
+  // Prime frame arriving unwrapped: { hasData, lastTimestamp, last: {...} } (or payload
+  // under `reading`).
   if ('hasData' in msg || 'lastTimestamp' in msg) {
     const last = (msg.last ?? msg.reading ?? msg.payload) as Record<string, unknown> | undefined
-    if (msg.hasData === false || !last) return null
+    if (msg.hasData === false || !last || !('temperature' in last)) return null
     return normalizeReading(last)
   }
 
@@ -90,16 +99,23 @@ function extractReading(data: unknown): SensorReading | null {
 function normalizeReading(obj: Record<string, unknown>): SensorReading {
   const num = (v: unknown, fallback = 0): number => (typeof v === 'number' ? v : fallback)
   const numOrNull = (v: unknown): number | null => (typeof v === 'number' ? v : null)
+  const tds = numOrNull(obj.tds)
+  const ec = numOrNull(obj.ec) ?? (tds != null ? tds * 2 : null)
+  // The prime frame's `timestamp` is epoch SECONDS (matching /history's convention); live
+  // `sensor_update` broadcasts and history_buffer both use epoch MILLISECONDS. Normalize
+  // both onto milliseconds.
+  const rawTimestamp = typeof obj.timestamp === 'number' ? obj.timestamp : Date.now()
+  const timestamp = rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp
   return {
     temperature: num(obj.temperature),
     turbidity: num(obj.turbidity),
     turbidityNtu: numOrNull(obj.turbidityNtu),
     turbidityRaw: num(obj.turbidityRaw, num(obj.turbidity)),
     turbidityUnit: obj.turbidityUnit === 'NTU' ? 'NTU' : 'ADC',
-    tds: num(obj.tds),
+    tds,
     tdsVoltage: num(obj.tdsVoltage),
-    ec: num(obj.ec, num(obj.tds) * 2),
-    timestamp: typeof obj.timestamp === 'number' ? obj.timestamp : Date.now(),
+    ec,
+    timestamp,
   }
 }
 

@@ -12,12 +12,21 @@ interface SparklineProps {
   color: string
   threshold: number
   thresholdLabel: string
+  /** Draw the threshold reference line. Set false when the series isn't scorable against it. */
+  showThreshold?: boolean
   height?: number
 }
 
-export function Sparkline({ data, color, threshold, thresholdLabel, height = 56 }: SparklineProps) {
+export function Sparkline({
+  data,
+  color,
+  threshold,
+  thresholdLabel,
+  showThreshold = true,
+  height = 56,
+}: SparklineProps) {
   const values = data.map((p) => p.v)
-  const domainMax = Math.max(threshold * 1.15, ...values, 1)
+  const domainMax = showThreshold ? Math.max(threshold * 1.15, ...values, 1) : Math.max(...values, 1)
   const domainMin = Math.min(0, ...values)
 
   return (
@@ -31,19 +40,21 @@ export function Sparkline({ data, color, threshold, thresholdLabel, height = 56 
             </linearGradient>
           </defs>
           <YAxis domain={[domainMin, domainMax]} hide />
-          <ReferenceLine
-            y={threshold}
-            stroke="currentColor"
-            strokeOpacity={0.45}
-            strokeDasharray="3 3"
-            label={{
-              value: thresholdLabel,
-              position: 'insideTopRight',
-              fontSize: 9,
-              fill: 'currentColor',
-              opacity: 0.6,
-            }}
-          />
+          {showThreshold && (
+            <ReferenceLine
+              y={threshold}
+              stroke="currentColor"
+              strokeOpacity={0.45}
+              strokeDasharray="3 3"
+              label={{
+                value: thresholdLabel,
+                position: 'insideTopRight',
+                fontSize: 9,
+                fill: 'currentColor',
+                opacity: 0.6,
+              }}
+            />
+          )}
           <Area
             type="monotone"
             dataKey="v"

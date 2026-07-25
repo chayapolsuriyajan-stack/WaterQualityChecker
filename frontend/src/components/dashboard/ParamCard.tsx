@@ -11,16 +11,20 @@ import { colorFor, statusFor, type Status, type ThresholdParam } from '@/lib/thr
 import type { SeriesPoint } from '@/lib/useSensorSocket'
 import { Sparkline } from './Sparkline'
 
-const STATUS_LABEL: Record<Status, string> = {
+type CardStatus = Status | 'unknown'
+
+const STATUS_LABEL: Record<CardStatus, string> = {
   good: 'Good',
   warn: 'Caution',
   danger: 'Danger',
+  unknown: '—',
 }
 
-const STATUS_BADGE_CLASS: Record<Status, string> = {
+const STATUS_BADGE_CLASS: Record<CardStatus, string> = {
   good: 'bg-[hsl(var(--success))]/15 text-[hsl(var(--success))] border-transparent',
   warn: 'bg-[hsl(var(--warning))]/15 text-[hsl(var(--warning))] border-transparent',
   danger: 'bg-destructive/15 text-destructive border-transparent',
+  unknown: 'bg-muted text-muted-foreground border-transparent',
 }
 
 interface ParamCardProps {
@@ -29,9 +33,14 @@ interface ParamCardProps {
   value: number | null
   unit: string
   precision?: number
-  param: ThresholdParam
+  /** Omit when the value can't be scored against a threshold (e.g. uncalibrated raw ADC). */
+  param?: ThresholdParam
   threshold: number
   thresholdLabel: string
+  /** Whether the sparkline should draw its threshold reference line. Defaults to true. */
+  showThreshold?: boolean
+  /** Optional bilingual hint shown under the value, e.g. for an unscorable/uncalibrated reading. */
+  hint?: string
   series: SeriesPoint[]
   index?: number
 }
@@ -45,11 +54,13 @@ export function ParamCard({
   param,
   threshold,
   thresholdLabel,
+  showThreshold = true,
+  hint,
   series,
   index = 0,
 }: ParamCardProps) {
-  const status = value === null ? 'good' : statusFor(param, value)
-  const color = value === null ? 'hsl(var(--muted-foreground))' : colorFor(param, value)
+  const status: CardStatus = value === null || param === undefined ? 'unknown' : statusFor(param, value)
+  const color = status === 'unknown' ? 'hsl(var(--muted-foreground))' : colorFor(param!, value!)
 
   return (
     <motion.div
@@ -69,13 +80,20 @@ export function ParamCard({
                 {value === null ? '—' : value.toFixed(precision)}
                 <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span>
               </p>
+              {hint && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{hint}</p>}
             </div>
             <Badge variant="outline" className={cn('shrink-0 whitespace-nowrap', STATUS_BADGE_CLASS[status])}>
               {STATUS_LABEL[status]}
             </Badge>
           </div>
           <div className="mt-3">
-            <Sparkline data={series} color={color} threshold={threshold} thresholdLabel={thresholdLabel} />
+            <Sparkline
+              data={series}
+              color={color}
+              threshold={threshold}
+              thresholdLabel={thresholdLabel}
+              showThreshold={showThreshold}
+            />
           </div>
         </CardContent>
       </Card>
