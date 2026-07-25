@@ -93,8 +93,31 @@ if os.path.isdir("web-react/assets"):
 else:
     print("⚠️ web-react not found; React SPA dashboard disabled (falling back to vanilla at /).")
 
+class SpaStaticFiles(StaticFiles):
+    """StaticFiles for a Vite build: `no-store` on the HTML shell, long cache on hashed assets.
+
+    Vite emits content-hashed asset filenames (index-<hash>.js), so those are safe to cache
+    immutably -- a rebuild produces a new name. `index.html` is the opposite: its name never
+    changes but its contents point at the current hash, so a cached shell keeps requesting a
+    bundle that no longer exists and the app silently loads stale code (hit for real during
+    this build). Only the shell needs `no-store`.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # Normalize separators first: on Windows StaticFiles hands back OS-native paths
+        # (assets\index-<hash>.js), so a "/assets/" substring test silently never matches.
+        normalized = path.replace("\\", "/").lstrip("/")
+        if normalized in ("", ".") or normalized.endswith(".html"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        elif normalized.startswith("assets/"):
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+
 if os.path.isdir("frontend/dist"):
-    app.mount("/app", StaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
+    app.mount("/app", SpaStaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
     print("✅ Mounted new Aqua Monitor React app at /app.")
 else:
     print("⚠️ frontend/dist not found; new Aqua Monitor app at /app disabled (run: cd frontend && npm run build).")
