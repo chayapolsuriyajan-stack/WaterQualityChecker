@@ -4,8 +4,15 @@
  * an optional measured-ppm hint used only for the client-side k preview).
  * Submission is deferred to the parent's optimistic "Apply" mutation — this
  * component only collects values and lists/deletes already-saved points.
+ *
+ * Turbidity only also tracks the observed min/max of the live raw ADC while
+ * this form is mounted (client-side, mirrors the old standalone /calibrate
+ * page), with "Use min"/"Use max" buttons per row and a "Reset range" button.
+ * TDS doesn't get this: its raw field is documented as an uncalibrated ppm
+ * value, not the raw voltage `latestRaw` carries, so filling it from the
+ * observed voltage range would insert the wrong kind of number.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -67,6 +74,26 @@ export function TwoPointForm({
 
   const updateRow = (index: number, field: 'reference' | 'raw', value: string) => {
     setRows((prev) => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)))
+  }
+
+  // Observed raw-ADC range while this form is mounted, turbidity only (see file header).
+  const trackRange = sensor === 'turbidity'
+  const [observed, setObserved] = useState<{ min: number | null; max: number | null }>({
+    min: null,
+    max: null,
+  })
+  useEffect(() => {
+    if (!trackRange || latestRaw == null) return
+    setObserved((prev) => ({
+      min: prev.min === null ? latestRaw : Math.min(prev.min, latestRaw),
+      max: prev.max === null ? latestRaw : Math.max(prev.max, latestRaw),
+    }))
+  }, [trackRange, latestRaw])
+  const resetRange = () => setObserved({ min: null, max: null })
+  const useObserved = (index: number, which: 'min' | 'max') => {
+    const value = observed[which]
+    if (value == null) return
+    updateRow(index, 'raw', String(Math.round(value)))
   }
 
   const canSubmit = rows.every((row) => row.reference.trim() !== '' && !Number.isNaN(Number(row.reference)))
@@ -131,9 +158,54 @@ export function TwoPointForm({
                 }
               />
               <p className="text-xs text-muted-foreground">{copy.rawHint}</p>
+              {trackRange && (
+                <div className="flex gap-1.5 pt-0.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    disabled={observed.min == null}
+                    onClick={() => useObserved(i, 'min')}
+                  >
+                    {t('calib.useMin')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    disabled={observed.max == null}
+                    onClick={() => useObserved(i, 'max')}
+                  >
+                    {t('calib.useMax')}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         ))}
+
+        {trackRange && (
+          <div className="flex items-center justify-between gap-2 rounded-md bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+            <span>
+              {t('calib.observedRange', {
+                min: observed.min == null ? '—' : Math.round(observed.min),
+                max: observed.max == null ? '—' : Math.round(observed.max),
+              })}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              disabled={observed.min == null && observed.max == null}
+              onClick={resetRange}
+            >
+              {t('calib.resetRange')}
+            </Button>
+          </div>
+        )}
 
         <Button className="w-full sm:w-auto" disabled={!canSubmit || applying} onClick={handleApply}>
           {applying ? t('calib.applying') : t('calib.applyLabel')}

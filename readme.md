@@ -64,8 +64,8 @@ ESP32 station ──raw readings──▶  FastAPI server (main.py)  ──live�
   calibration saved in `calibration.json`, pushes them to every open dashboard over a WebSocket,
   and relays each reading to Google Sheets for history. Calibration lives on the server, so
   sensors are re-tuned from the web page without touching the firmware.
-- **Dashboard** (`web-react/` at `/`, plus a plain-HTML version at `/classic`) subscribes to the
-  WebSocket and renders the live values, indicators, and history chart.
+- **Dashboard** (`frontend/`, served at `/`) subscribes to the WebSocket and renders the live
+  values, indicators, and history chart.
 
 More detail — wiring, the calibration math, the discovery protocol, and the Google Sheets
 relay — is in [`CLAUDE.md`](CLAUDE.md).

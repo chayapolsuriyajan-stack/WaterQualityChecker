@@ -131,4 +131,37 @@ Nav labels are single-language via `t()`; `NAV_ITEMS` remains the one source sha
 - Zero console errors or warnings across all three tabs plus modals.
 
 ## Note for local testing
-On this Windows machine **NVIDIA Broadcast binds `127.0.0.1:8080`**, which beats uvicorn's `0.0.0.0:8080` for `localhost` requests and makes every route 404. Use the LAN IP (e.g. `http://192.168.68.95:8080/app/`) or stop that app.
+On this Windows machine **NVIDIA Broadcast binds `127.0.0.1:8080`**, which beats uvicorn's `0.0.0.0:8080` for `localhost` requests and makes every route 404. Use the LAN IP (e.g. `http://192.168.68.95:8080/`) or stop that app.
+
+---
+
+# Phase 3 — production wiring: promote to `/`, real Sheets order, real data only (built)
+
+Requested once the full ESP32 → backend → Google Sheets → frontend chain needed to be genuinely production-ready, not a `/app`-prefixed add-on next to legacy dashboards.
+
+## 1. Promoted to the default page, old dashboards removed
+- `vite.config.ts` `base` changed from `/app/` to `/`; rebuilt so all asset URLs are root-relative.
+- `main.py`: removed the black-box React SPA (`web-react/`, its `/assets` mount, and `get_index`) and the vanilla dashboard (`web/index.html`+`app.js`+`style.css`, its `/static` mount, and `get_classic_index`/`/classic`). The now-dead `NoStoreStaticFiles` helper class went with them.
+- The Vite build's `SpaStaticFiles` mount moved from an early `/app` mount to **the very last line before `if __name__ == "__main__":`**, now serving `/` — Starlette matches routes in registration order, so every explicit route (`/history`, `/calibrate`, `/calibration*`, `/ws/app`, `/update`, the `Build/` WebGL mount) registered earlier in the file still wins; the root mount only catches what nothing else matched (`/`, `/favicon.svg`, `/icons.svg`, `/assets/*.js/css` — no separate `/assets` mount needed, `StaticFiles(html=True)` serves the whole `frontend/dist/` tree from one root mount).
+- `web/calibrate.html`'s "← dashboard" link updated from `/classic` to `/`. `webconfig.json`'s now-orphaned `indexFile` key removed.
+- Files deleted: `web/index.html`, `web/app.js`, `web/style.css`, all of `web-react/`.
+
+## 2. Google Sheets: newest row at the top
+`google_apps_script.gs` `doPost` now `insertRowBefore(2)` instead of `appendRow` — every new reading lands right after the header, pushing older rows down, so opening the sheet by hand always shows the latest data first with no scrolling. `doGet` reads the matching **leading** slice (rows 2..N) instead of a trailing one, then reverses it back to chronological ascending order before the existing cutoff-filter/stride-downsample logic (unchanged) — `main.py`'s `/history` needed no changes, since it just consumes whatever `doGet` returns. **Requires manually redeploying the Apps Script as a new version** — this file is reference-only and doesn't run from the repo; until redeployed, the live sheet keeps its old append-at-bottom behavior (still fully correct, just not newest-first for manual viewing).
+
+## 3. Sparklines hydrate from history on load
+`useSensorSocket.ts` now fires `getHistory('5m')` on mount (alongside, not before, the WS `connect()`) and merges the result into the rolling series via a new `seriesFromHistory`/`mergeSeries` pair, de-duplicated by timestamp. Previously the per-card sparklines started empty and only filled in as live pushes arrived, so a reload showed blank charts for up to ~30s.
+
+## 4. No more fake data on disconnect
+Removed `simulatedReading()` and the entire `startSimulation`/`stopSimulation`/`simulationTimerRef` machinery from `useSensorSocket.ts`. Previously, 5s of WS silence triggered a client-side generator fabricating plausible-looking random readings every 2s (temp 24–28°C, etc.) so the UI "stayed populated" — a demo-era behavior inherited conceptually from the old vanilla dashboard's `startSimulation()`. Now, on disconnect/stale data the hook only flips `connected` to `false` (driving an "Offline" badge) and leaves `reading`/`series` exactly where they were — the last real values stay on screen, frozen, rather than being silently replaced by synthetic noise. For a monitoring system whose entire purpose is surfacing real conditions, indistinguishable fake data during a real outage was actively misleading.
+
+## 5. Calibration observed-range (turbidity only)
+`TwoPointForm.tsx` now tracks the observed min/max of the live raw ADC while turbidity's form is open (client-side, resets on unmount or the new **Reset range** button), with a **Use min**/**Use max** button next to each row's raw-ADC input — porting the old standalone `/calibrate` page's UX. **Deliberately not added to TDS**: that sensor's raw input field is documented as wanting an uncalibrated *ppm* preview value, not the raw voltage `latestRaw` carries, so reusing the same min/max buttons there would insert the wrong kind of number.
+
+## Phase 3 verification (evidence)
+- `npm run build` clean; root-relative asset paths confirmed in the built `index.html`.
+- Live end-to-end: a firmware-shaped `POST /update` reached the backend (temp/NTU/TDS/EC all correctly derived), was relayed to the **actual deployed** Google Sheet (confirmed via a `/history?window=3h` round-trip showing the new reading as the sheet's most recent row), and was visible over `/ws/app` in the browser.
+- `/` returns 200, `/classic` returns 404, `/calibrate`/`/calibration`/`/assets/*.js`/`/favicon.svg` all 200 through the single root mount.
+- History hydration confirmed with a controlled test: fed a short burst of readings, stopped the feed entirely, reloaded, and found **5 chart points already present** within ~10s with zero live traffic possible in that window — the only source for those points is the history seed.
+- Frozen-not-fake confirmed with a controlled test: after the last real POST, the displayed temperature/turbidity/TDS/EC stayed byte-for-byte identical across repeated checks while the status badge read "Offline" — no drifting numbers.
+- Not independently re-verified live: the reconnect transition back to "Online" after a real gap (the underlying `ws.onmessage` handler unconditionally sets `connected=true` on any message, by inspection) — the browser automation tool in this session became unresponsive mid-check on this specific case.
