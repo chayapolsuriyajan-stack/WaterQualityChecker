@@ -20,7 +20,7 @@ built for an educational / community-monitoring setting.
 
 ### How to use
 
-![Dashboard](docs/dashboard.png)
+![Dashboard](docs/dashboard.png?v=49b675d)
 
 ```bash
 pip install -r requirements.txt
@@ -56,7 +56,7 @@ A separate lightweight page at **`/calibrate`** offers the same sensor calibrati
 single self-contained HTML file, useful for calibrating from a phone or a machine that
 doesn't need the full dashboard.
 
-![Calibration page](docs/calibrate.png)
+![Calibration page](docs/calibrate.png?v=49b675d)
 
 ### How it works, briefly
 
@@ -95,7 +95,7 @@ architecture — is in [`CLAUDE.md`](CLAUDE.md) and [`AQUA_MONITOR_PLAN.md`](AQU
 
 ### วิธีใช้งาน
 
-![แดชบอร์ด](docs/dashboard.png)
+![แดชบอร์ด](docs/dashboard.png?v=49b675d)
 
 ```bash
 pip install -r requirements.txt
@@ -125,7 +125,7 @@ python main.py
 นอกจากนี้ยังมีหน้าเบา ๆ แยกต่างหากที่ **`/calibrate`** สำหรับปรับเทียบเซนเซอร์ในไฟล์ HTML เดียวจบ
 เหมาะสำหรับปรับเทียบจากมือถือหรือเครื่องที่ไม่จำเป็นต้องเปิดแดชบอร์ดเต็มรูปแบบ
 
-![หน้าปรับเทียบเซนเซอร์](docs/calibrate.png)
+![หน้าปรับเทียบเซนเซอร์](docs/calibrate.png?v=49b675d)
 
 ### หลักการทำงานโดยสรุป
 
