@@ -1,76 +1,70 @@
-# Session Handoff — Sensor Calibration Mode + README
+# HANDOFF — Aqua Monitor dashboard
 
-**Date:** 2026-07-18
-**Repo:** WaterQualityChecker (HydroMonitor) · branch `master` · remote `origin` (GitHub)
-**Purpose:** Continue this work on a second device. All the work below is **committed nowhere yet — it's uncommitted in the working tree**, so the first step to sync is commit + push (see "How to sync" at the bottom).
+**Updated:** 2026-07-26 · **Branch:** `feat/aqua-monitor-dashboard` · **Repo:** github.com/chayapolsuriyajan-stack/WaterQualityChecker
 
----
+**Status: PHASE 1 + 2 + 3 COMPLETE and verified.** Design spec: **`AQUA_MONITOR_PLAN.md`** (Phase 2 = detail modal/theming/i18n, Phase 3 = production wiring). All three phases built with the **`/claudes-plan`** pipeline (skill shipped at `.claude/skills/claudes-plan/SKILL.md`).
 
-## What was done this session
+**Phase 3 (latest) — production wiring:** the app is now promoted to **`/`** (no more `/app` prefix); the old black-box React SPA and the vanilla `/classic` dashboard are **deleted**, not just superseded. Google Sheets now inserts new rows at the top (needs a manual redeploy — see below). Sparklines hydrate from `/history` on page load instead of starting blank. The client-side fake-data fallback that used to kick in after 5s of silence is **removed** — on disconnect the UI now freezes the last real reading and shows "Offline", never synthetic numbers. Calibration's turbidity form got the old standalone page's observed min/max/reset UX back.
 
-1. **Backend-owned sensor calibration mode** (the main feature)
-   - Firmware now streams *raw* values; the backend converts + owns calibration, so sensors are re-tuned live with **no reflash**.
-   - Turbidity: 2-point linear ADC→NTU. TDS: DFRobot temp-compensated ppm × a single k-factor.
-   - New standalone **`/calibrate`** web page to capture reference points, see coefficients, save/reset.
-   - Persisted to `calibration.json` (git-ignored — it's per-device/per-sensor).
-2. **Primary dashboard now shows real NTU** — the React SPA at `/` read `turbidity` and labeled it "NTU" but was getting raw ADC (showed absurd values like "1539 NTU"). Backend now puts calibrated NTU into `turbidity` (raw kept in `turbidityRaw`, unit in `turbidityUnit`); `/classic` dashboard updated to match.
-3. **README rewritten** ([readme.md](readme.md)) — what it's for / how to use (with screenshots) / how it works. Screenshots in `docs/` (`dashboard.png`, `calibrate.png`), captured via Playwright against the running app.
-4. **Windows UTF-8 startup fix** — `main.py` now forces UTF-8 on stdout/stderr, so `python main.py` no longer crashes on a cp1252 console (previously needed `PYTHONUTF8=1`).
-5. **Docs/skill** — `CLAUDE.md` documents the new calibration system + changed firmware contract; the `sensor-calibration` skill was rewritten for the runtime workflow.
-
-## Changed / new files
-| File | Change |
-|---|---|
-| `main.py` | calibration state + `calibration.json` load/save, `apply_turbidity`/`apply_tds`, `/update` emits raw+calibrated fields (legacy-`tds` fallback), `/calibration*` REST API, `/calibrate` route, UTF-8 fix |
-| `firmware/esp32/esp32.ino` | sends raw `tdsVoltage` instead of computing ppm on-device |
-| `web/calibrate.html` | **new** standalone calibration page |
-| `web/app.js` | `/classic` dashboard shows NTU/ADC per `turbidityUnit` |
-| `webconfig.json` | `calibrationFile` key |
-| `CLAUDE.md`, `readme.md` | docs |
-| `.gitignore` | ignores `calibration.json` |
-| `docs/` | **new** README screenshots |
-| `.claude/skills/sensor-calibration/` | rewritten skill |
-| `skill-observations/` | task-observer log (obs #1, #2) |
-
-## Data contract (firmware ↔ backend) — keep in sync
-- Firmware POSTs `{temperature, turbidity (raw ADC), tdsVoltage}` to `/update`.
-- Backend broadcasts `{temperature, turbidity (=NTU when calibrated else ADC), turbidityRaw, turbidityNtu, turbidityUnit, tdsVoltage, tds (ppm), stats}`.
-- Legacy boards that still POST `tds` (ppm) keep working (backend passes it through).
-
-## Verification already done (all passed)
-- Turbidity 2-pt fit exact (1500 ADC → 250 NTU), TDS k-factor makes a known solution read its rated ppm, save writes `calibration.json`, legacy `tds` passthrough, reset clears, UI capture works, UTF-8 startup no longer crashes.
-- To re-verify on device 2: `pip install -r requirements.txt && python main.py`, then
-  `curl -X POST localhost:8080/update -H "Content-Type: application/json" -d '{"temperature":25,"turbidity":1500,"tdsVoltage":1.41}'`
-  and open `http://localhost:8080/calibrate`.
-
-## Open items (nothing blocking)
-- **Redundant nested clone `WaterQualityChecker/`** — a pristine duplicate git clone sitting inside the repo (clean, fully pushed, same commit). Safe to delete; the delete was blocked by Claude Code's auto-mode safety guard, so it needs a manual `rm -rf WaterQualityChecker` (PowerShell: `Remove-Item -Recurse -Force .\WaterQualityChecker`). **Do NOT `git add` this folder.**
-- **TDS "abnormal" on the dashboard** is cosmetic — the SPA's normal range is 50–300 ppm; sample data sat ~368. Real readings decide the color.
-- **Google Sheets** still logs raw ADC turbidity (column header says so); NTU columns would need an Apps Script schema change.
-- `main.py` startup still uses the deprecated `@app.on_event("startup")` (FastAPI lifespan) — works, just a warning.
-
-## Reference
-- Approved implementation plan: `C:\Users\chaya\.claude\plans\i-wanna-create-a-reactive-conway.md` (local to device 1 — not in the repo).
-- Full architecture / wiring / calibration math: [CLAUDE.md](CLAUDE.md).
-- Calibration procedure + sensor math: `.claude/skills/sensor-calibration/SKILL.md`.
+> **Local testing gotcha:** on this Windows box **NVIDIA Broadcast binds `127.0.0.1:8080`** and wins over uvicorn's `0.0.0.0:8080`, so every `localhost` route 404s even though the server is fine. Use the LAN IP (e.g. `http://192.168.68.95:8080/`) or quit that app.
 
 ---
 
-## How to sync to the other device
+## Quick start (other device / after a break)
 
-**On this device (push):**
 ```bash
-# from the repo root; do NOT add the nested WaterQualityChecker/ folder
-git add .gitignore CLAUDE.md readme.md HANDOFF.md main.py firmware web webconfig.json docs .claude skill-observations
-git status                 # confirm the nested WaterQualityChecker/ is NOT staged
-git commit -m "Add backend sensor calibration mode, /calibrate page, README + screenshots"
-git push origin master
+git fetch && git checkout feat/aqua-monitor-dashboard
+cd frontend && npm install && npm run build   # node_modules + dist are git-ignored
+cd .. && python main.py                        # UTF-8 handled in main.py
 ```
+Open **http://localhost:8080/** — this is now the only dashboard. `frontend/dist` must be built or `/` 404s by design (the mount is `os.path.isdir`-guarded).
 
-**On the other device (pull):**
-```bash
-git pull origin master
-pip install -r requirements.txt      # deps unchanged, but safe
-python main.py
-```
-Note: `calibration.json` is git-ignored, so each device keeps its **own** calibration (correct — calibration is per physical sensor). If you want the *same* calibration on both, copy `calibration.json` manually or re-capture on device 2 via `/calibrate`.
+**Google Sheets**: if you haven't already, paste the updated `google_apps_script.gs` into the spreadsheet's Apps Script editor and **redeploy as a new version** — the currently-live deployment still appends at the bottom (harmless, just not newest-first for manual viewing) until you do.
+
+Dev loop with HMR: `cd frontend && npm run dev` (Vite proxies `/ws/app`, `/history`, `/calibration*`, `/update` → :8080, so run `python main.py` alongside).
+
+---
+
+## What was built
+
+**`/`** — a source-controlled Vite + React 19 + TS + Tailwind v4 SPA, now the **only** dashboard (promoted from `/app` in Phase 3; the old black-box SPA and `/classic` are deleted). Left sidebar (required) with **Dashboard / Calibration / History** tabs + static "Guest" badge. `/calibrate` (the standalone vanilla calibration page) is the one other surviving route, kept deliberately alongside the app's own Calibration tab.
+
+- **Dashboard** — frontend-derived WQI area chart with labeled reference lines (Moderate 50 / Good 70) and a 5m/15m/1h/3h/**12h**/24h time-range selector reading `GET /history?window=`; 2×2 live param grid (Temp / Turbidity / TDS / EC) over `WS /ws/app` (~2s) with 30s sparklines, each carrying its own numeric threshold line; 3 radial safety gauges; right context column (Ang Kaew metadata, station AK-001, GPS, live WS status + clock). **Every card is clickable** and opens the Phase 2 detail modal.
+- **Calibration** — turbidity 2-point + TDS k-factor wired to the real `/calibration*` API with optimistic apply (instant preview + toast, background `capture → save → mode`, rollback on error), mode toggle, per-sensor reset, point delete. Temperature ("factory-calibrated") and EC ("derived from TDS") are read-only, matching what the backend can actually calibrate.
+- **History** — `/history` table, sortable, null-safe, client-side CSV export.
+- **Responsive** — ≥1024px full 256px sidebar + right column; 768–1023px 72px icon rail + 2-col grid; <768px hamburger `Sheet` drawer + fixed bottom nav + 1-col grid. No horizontal overflow at any of 375 / 768 / 1280.
+- **Backend delta** (Phase 1: tiny; Phase 3 restructured the mounts, no sensor/route *logic* changed): a guarded `SpaStaticFiles` mount (`no-store` on the HTML shell, `immutable` on hashed assets) + `GZipMiddleware`, now serving `frontend/dist` at root `/` as the very last route registered (catches only what no explicit API route already matched). The old `web-react`/`web` mounts and their `/classic`/`get_index` handlers are gone along with the files they served.
+
+## Verified (evidence, not assumption)
+- `npm run build` clean; 950 kB JS → **286 kB gzipped** over the wire (gzip confirmed via `content-encoding: gzip`).
+- Theme: built CSS contains `.bg-card` / `.text-primary` / `.border-border` etc. (were **0** before the P0 fix); computed styles resolve real colors (card `rgb(19,22,32)` vs body `rgb(12,15,23)`, border `rgb(37,42,55)`).
+- All 3 tabs switch; sparkline history survives tab round-trips (single shared socket); **zero console errors**.
+- Live: with readings flowing, turbidity shows **24.1 NTU** calibrated; with calibration mode **OFF** it correctly shows raw ADC + "uncalibrated" and a muted badge (no bogus red "Danger").
+- Routes still 200 (Phase 1/2, historical — `/classic`/`/app` no longer exist post-Phase 3, see below): `/`, `/classic`, `/calibrate`, `/calibration`, `/history?window=5m`, `/history?window=24h`, `/app/`.
+
+## Notable bugs found and fixed during verification
+1. **Tailwind v4 didn't load `tailwind.config.js`** → the entire semantic color system compiled to nothing. Ported to `@theme` in `index.css`. *(Caught by the Opus review, not by my own layout-focused checks — a genuine blind spot: measuring computed widths passes while colors are dead.)*
+2. **`AnimatePresence mode="wait"` deadlocks on React 19 + motion 12** — the exiting child never resolved, so tab/panel switches never mounted the new view. Replaced with a keyed `motion.div`.
+3. **WQI fed raw ADC into the NTU sub-index** when uncalibrated, capping the score ~65 so the chart could never reach its own "Good (70)" line.
+4. **Prime WS frame fabricated zeros** (`hasData:false` → 0.0 °C / 0 ppm badged green) because the guard branch was unreachable.
+5. **Two `/ws/app` sockets** were open; hoisted into a `SensorProvider`.
+6. **Stale `/app` shell** served a deleted bundle hash after each rebuild → `SpaStaticFiles`. Windows path separators made a naive `/assets/` check silently never match.
+
+## Known limitations / next steps
+- **Editing UI copy**: change `frontend/src/lib/strings.ts` only. Both locales must keep identical key sets (the `satisfies` clause enforces it at build time). **CSV export headers are intentionally English and fixed** so spreadsheet consumers don't break when the UI language changes.
+- **kokonut UI / Bklit UI registries were not used** — components are shadcn/ui + Recharts + Motion. The plan explicitly permitted this fallback, but if you specifically want those libraries' visuals, that's outstanding work.
+- **Single ~950 kB chunk** (286 kB gzipped, acceptable). Code-splitting recharts/motion via `manualChunks` is the easy win if you want it smaller.
+- **No screenshots in `docs/`** for the new app — the Playwright CLI wouldn't install a browser in this environment; verification was done via DOM + computed styles instead.
+- **pH / dissolved oxygen** have no sensors, so they're absent (the old black-box SPA showed placeholders).
+- **Google Sheets → SQLite** migration for history still open (your "avoid heavy things" idea); `/history` long windows currently round-trip to Apps Script.
+- Auth is a static "Guest" badge — no login.
+- **Not independently re-verified live**: the WS reconnect transition back to "Online" after a real gap. The `ws.onmessage` handler unconditionally sets `connected=true` on any message (confirmed by reading the code), but the browser automation tool in the verification session became unresponsive partway through observing this specific transition live. Worth a quick manual check.
+- **Google Sheets insert-at-top requires a manual redeploy** in the Apps Script editor (see Quick start above) — this repo's copy is reference-only and never runs on its own.
+
+---
+
+## Repo context
+- Backend `main.py` (FastAPI, port 8080): sensor ingest `POST /update`, WS fan-out `/ws/app`, backend-owned calibration + `/calibration*`, windowed `/history`, UDP firmware discovery on 8888, Google Sheets relay. Run Python via `py` (3.11) on this Windows box; Node 24 + npm 11 available.
+- Firmware `firmware/esp32/esp32.ino` POSTs raw `{temperature, turbidity, tdsVoltage}`; contract is **not** auto-synced with the backend — see the `firmware-contract-check` skill.
+- Skills in `.claude/skills/`: `claudes-plan` (this build pipeline), `firmware-contract-check`, `markitdown`.
+- `graphify-out/` holds a local knowledge graph (git-ignored); regenerate with `graphify . --update`.

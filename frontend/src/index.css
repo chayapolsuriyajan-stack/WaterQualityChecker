@@ -1,0 +1,225 @@
+@import 'tailwindcss';
+
+/*
+  Aqua Monitor theme
+  Accent: mint/teal (brand) — a fresh spring-green/teal, deliberately kept apart
+  in hue from --success so brand accent and water-quality status never collide.
+  Status colors (good/moderate/poor) are separate semantic tokens used by
+  thresholds.ts / wqi.ts.
+*/
+
+/*
+  Tailwind v4 does NOT auto-load a v3-style tailwind.config.js. These tokens
+  map Tailwind's generated utilities (bg-card, text-primary, border-border, ...)
+  onto the CSS custom properties defined below in :root / [data-theme='dark'].
+  Keep this in sync with any new --token added below.
+*/
+@theme {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  :root {
+    --background: 165 40% 97%;
+    --foreground: 200 24% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 200 24% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 200 24% 14%;
+
+    --primary: 168 76% 42%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 165 25% 94%;
+    --secondary-foreground: 200 30% 16%;
+
+    --muted: 165 25% 94%;
+    --muted-foreground: 200 10% 45%;
+
+    --accent: 168 76% 96%;
+    --accent-foreground: 168 76% 28%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 70% 35%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 30 40% 10%;
+
+    --border: 165 20% 88%;
+    --input: 165 20% 88%;
+    --ring: 168 76% 42%;
+
+    --radius: 0.875rem;
+  }
+
+  :root[data-theme='dark'],
+  .dark {
+    --background: 200 32% 8%;
+    --foreground: 165 20% 96%;
+
+    --card: 200 28% 11%;
+    --card-foreground: 165 20% 96%;
+
+    --popover: 200 28% 11%;
+    --popover-foreground: 165 20% 96%;
+
+    --primary: 162 70% 55%;
+    --primary-foreground: 200 30% 8%;
+
+    --secondary: 200 22% 16%;
+    --secondary-foreground: 165 20% 92%;
+
+    --muted: 200 22% 16%;
+    --muted-foreground: 165 10% 65%;
+
+    --accent: 162 40% 20%;
+    --accent-foreground: 162 70% 85%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 65% 48%;
+    --success-foreground: 200 30% 8%;
+
+    --warning: 38 92% 55%;
+    --warning-foreground: 30 40% 10%;
+
+    --border: 200 22% 18%;
+    --input: 200 22% 18%;
+    --ring: 162 70% 55%;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --background: 200 32% 8%;
+      --foreground: 165 20% 96%;
+
+      --card: 200 28% 11%;
+      --card-foreground: 165 20% 96%;
+
+      --popover: 200 28% 11%;
+      --popover-foreground: 165 20% 96%;
+
+      --primary: 162 70% 55%;
+      --primary-foreground: 200 30% 8%;
+
+      --secondary: 200 22% 16%;
+      --secondary-foreground: 165 20% 92%;
+
+      --muted: 200 22% 16%;
+      --muted-foreground: 165 10% 65%;
+
+      --accent: 162 40% 20%;
+      --accent-foreground: 162 70% 85%;
+
+      --destructive: 0 70% 55%;
+      --destructive-foreground: 0 0% 100%;
+
+      --success: 142 65% 48%;
+      --success-foreground: 200 30% 8%;
+
+      --warning: 38 92% 55%;
+      --warning-foreground: 30 40% 10%;
+
+      --border: 200 22% 18%;
+      --input: 200 22% 18%;
+      --ring: 162 70% 55%;
+    }
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    color: hsl(var(--foreground));
+    font-family: 'Noto Sans Thai', 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /*
+    Soft gradient surfaces (picture 4): applied directly to body so every view
+    gets the airy mint wash for free, without other components needing to
+    adopt a new class. Layered radial washes over the flat --background so
+    text contrast (which is computed against --background) is unaffected.
+  */
+  body {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(1100px 640px at 8% -10%, hsl(var(--primary) / 0.10), transparent 60%),
+      radial-gradient(900px 560px at 100% 0%, hsl(var(--accent) / 0.55), transparent 55%),
+      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
+    background-attachment: fixed;
+  }
+
+  :root[data-theme='dark'] body,
+  .dark body {
+    background-image:
+      radial-gradient(1100px 640px at 8% -10%, hsl(var(--primary) / 0.14), transparent 60%),
+      radial-gradient(900px 560px at 100% 0%, hsl(var(--accent) / 0.6), transparent 55%),
+      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
+  }
+}
+
+@layer utilities {
+  /* Optional airy gradient wash for a standalone section/hero surface. */
+  .app-gradient {
+    background-image:
+      radial-gradient(800px 420px at 0% 0%, hsl(var(--primary) / 0.12), transparent 60%),
+      radial-gradient(700px 420px at 100% 100%, hsl(var(--accent) / 0.5), transparent 60%);
+  }
+
+  /* Optional softened card treatment: a faint gradient instead of a flat fill.
+     Existing `.bg-card` consumers keep working unchanged; opt in per-component. */
+  .card-soft {
+    background-image: linear-gradient(165deg, hsl(var(--card)) 0%, hsl(var(--accent) / 0.35) 140%);
+  }
+}
