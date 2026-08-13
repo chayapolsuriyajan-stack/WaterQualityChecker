@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Droplets, Gauge, History, SlidersHorizontal } from 'lucide-react'
 import { motion } from 'motion/react'
 import { cn } from '@/lib/cn'
@@ -25,38 +26,58 @@ export const NAV_ITEMS: NavItem[] = [
 interface SidebarProps {
   view: ViewId
   onChange: (view: ViewId) => void
-  /** Icon-only collapsed rail for md (tablet) breakpoints. */
+  /**
+   * Icon-only collapsed rail. Unlike a hard show/hide, the width itself
+   * transitions (`transition-[width]` below) and every label is always
+   * present in the DOM, revealed via a `max-width`+opacity transition on its
+   * own wrapper — so toggling this prop reads as the SAME rail smoothly
+   * growing/shrinking in place, not content popping in and out. This matters
+   * because `RailHoverPanel` renders exactly one `Sidebar` and just flips
+   * this prop on hover — two separately-rendered Sidebars (a static
+   * collapsed rail plus a second full one sliding on top) is what used to
+   * happen here, and looked like a panel awkwardly overlaying the rail
+   * instead of the rail itself expanding.
+   */
   collapsed?: boolean
   className?: string
 }
 
-/** Fixed left navigation rail — full-width on desktop (lg+), icon-only rail on tablet (md) when collapsed. */
+/** A label that reveals via width/opacity instead of mounting/unmounting, so the rail's own width transition and its text stay in sync. */
+function RevealLabel({ collapsed, className, children }: { collapsed: boolean; className?: string; children: ReactNode }) {
+  return (
+    <span
+      className={cn(
+        'overflow-hidden whitespace-nowrap transition-all duration-300 ease-out motion-reduce:transition-none',
+        collapsed ? 'max-w-0 opacity-0' : 'max-w-[10rem] opacity-100',
+        className,
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+/** Fixed left navigation rail. `collapsed` drives an icon-only vs. full-width layout, transitioning smoothly between them (see `RailHoverPanel`, which hovers this between the two). */
 export function Sidebar({ view, onChange, collapsed = false, className }: SidebarProps) {
   const { t } = useT()
 
   return (
     <aside
       className={cn(
-        'flex h-full flex-col border-r border-border bg-card/60 backdrop-blur-sm',
-        collapsed ? 'w-[72px] items-center px-2 py-4' : 'w-64 px-4 py-5',
+        'flex h-full flex-col overflow-hidden border-r border-sidebar-border bg-sidebar/92 text-sidebar-foreground backdrop-blur-xl',
+        'transition-[width,padding] duration-300 ease-out motion-reduce:transition-none',
+        collapsed ? 'w-[72px] items-center px-2 py-4' : 'w-64 items-stretch px-4 py-5',
         className,
       )}
     >
-      <div
-        className={cn(
-          'mb-6 flex items-center gap-2.5',
-          collapsed && 'justify-center',
-        )}
-      >
+      <div className="mb-6 flex items-center gap-2.5">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
           <Droplets className="h-5 w-5" />
         </div>
-        {!collapsed && (
-          <div className="min-w-0 leading-tight">
-            <p className="truncate text-sm font-semibold text-foreground">{t('app.title')}</p>
-            <p className="truncate text-xs text-muted-foreground">{t('app.siteNameShort')}</p>
-          </div>
-        )}
+        <RevealLabel collapsed={collapsed} className="min-w-0 leading-tight">
+          <p className="truncate text-sm font-semibold text-foreground">{t('app.title')}</p>
+          <p className="truncate text-xs text-muted-foreground">{t('app.siteNameShort')}</p>
+        </RevealLabel>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
@@ -88,7 +109,9 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
                 />
               )}
               <Icon className="relative h-[18px] w-[18px] shrink-0" />
-              {!collapsed && <span className="relative min-w-0 truncate">{label}</span>}
+              <RevealLabel collapsed={collapsed} className="relative min-w-0">
+                {label}
+              </RevealLabel>
             </button>
           )
         })}

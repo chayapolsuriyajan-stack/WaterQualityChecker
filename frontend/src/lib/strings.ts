@@ -20,6 +20,7 @@ const en = {
   'nav.dashboard': 'Dashboard',
   'nav.calibration': 'Calibration',
   'nav.history': 'History',
+  'nav.expandMenu': 'Expand menu',
 
   // --- app shell -----------------------------------------------------------
   'app.title': 'Aqua Monitor',
@@ -200,6 +201,7 @@ export const messages = {
     'nav.dashboard': 'แดชบอร์ด',
     'nav.calibration': 'ปรับเทียบ',
     'nav.history': 'ประวัติ',
+    'nav.expandMenu': 'ขยายเมนู',
 
     'app.title': 'Aqua Monitor',
     'app.siteName': 'อ่างเก็บน้ำอ่างแก้ว',

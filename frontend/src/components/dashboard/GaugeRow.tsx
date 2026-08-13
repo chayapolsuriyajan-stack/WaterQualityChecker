@@ -16,7 +16,7 @@ export function GaugeRow({ reading }: GaugeRowProps) {
     reading === null ? null : reading.turbidityUnit === 'NTU' ? reading.turbidityNtu ?? reading.turbidity : null
 
   return (
-    <div className="grid grid-cols-1 gap-6 rounded-xl border bg-card p-4 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 rounded-xl border bg-card/70 p-4 backdrop-blur-md sm:grid-cols-3">
       <RadialGauge
         labelKey={PARAM_META.turbidity.labelKey}
         value={turbidityValue}

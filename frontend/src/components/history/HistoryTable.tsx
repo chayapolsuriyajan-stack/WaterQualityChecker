@@ -134,7 +134,7 @@ export function HistoryTable({ rows }: HistoryTableProps) {
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+      <div className="rounded-lg border border-border bg-card/70 p-8 text-center text-sm text-muted-foreground backdrop-blur-md">
         {t('history.empty')}
       </div>
     )
@@ -152,7 +152,7 @@ export function HistoryTable({ rows }: HistoryTableProps) {
           return (
             <div
               key={`${row.timestamp}-${i}`}
-              className="rounded-lg border border-border bg-card p-4 shadow-sm"
+              className="rounded-lg border border-border bg-card/70 p-4 shadow-sm backdrop-blur-md"
             >
               <div className="mb-2 text-sm font-semibold text-foreground">
                 {formatTime(row.timestamp)}

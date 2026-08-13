@@ -32,7 +32,7 @@ export function RightContextColumn({ className }: RightContextColumnProps) {
 
   return (
     <div className={cn('flex flex-col gap-4', className)}>
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="rounded-xl border border-border bg-card/70 p-4 shadow-sm backdrop-blur-md">
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-foreground">{t('app.siteName')}</h3>

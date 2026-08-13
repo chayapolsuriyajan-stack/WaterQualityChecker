@@ -105,7 +105,7 @@ export function HistoryView() {
           <div
             role="group"
             aria-label={t('window.label')}
-            className="flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1"
+            className="flex flex-wrap gap-1 rounded-lg border border-border bg-card/70 p-1 backdrop-blur-md"
           >
             {WINDOWS.map((w) => (
               <button
