@@ -24,7 +24,7 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
   const { t } = useT()
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 px-3 backdrop-blur-sm md:hidden">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border bg-sidebar/92 px-3 text-sidebar-foreground backdrop-blur-xl md:hidden">
       <div className="flex items-center gap-2">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
           <Droplets className="h-4 w-4" />
@@ -94,7 +94,7 @@ export function MobileBottomNav({ view, onChange }: MobileNavProps) {
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-border bg-card/95 backdrop-blur-sm md:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-sidebar-border bg-sidebar/92 backdrop-blur-xl md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       {NAV_ITEMS.map((item) => {

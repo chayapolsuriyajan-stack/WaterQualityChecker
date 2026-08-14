@@ -49,6 +49,10 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
 
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -90,6 +94,14 @@
     --input: 165 20% 88%;
     --ring: 168 76% 42%;
 
+    /* Sidebar/chrome surface: kept apart from --card so the nav rail, mobile
+       top bar, and mobile bottom nav read as a distinct, near-solid rail
+       (whiter than the glassier content cards) against the animated
+       background, instead of blending into it. */
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 200 24% 14%;
+    --sidebar-border: 165 20% 82%;
+
     --radius: 0.875rem;
   }
 
@@ -128,6 +140,10 @@
     --border: 200 22% 18%;
     --input: 200 22% 18%;
     --ring: 162 70% 55%;
+
+    --sidebar: 200 35% 6%;
+    --sidebar-foreground: 165 20% 96%;
+    --sidebar-border: 200 24% 15%;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -165,6 +181,10 @@
       --border: 200 22% 18%;
       --input: 200 22% 18%;
       --ring: 162 70% 55%;
+
+      --sidebar: 200 35% 6%;
+      --sidebar-foreground: 165 20% 96%;
+      --sidebar-border: 200 24% 15%;
     }
   }
 
@@ -186,30 +206,28 @@
   }
 
   /*
-    Soft gradient surfaces (picture 4): applied directly to body so every view
-    gets the airy mint wash for free, without other components needing to
-    adopt a new class. Layered radial washes over the flat --background so
-    text contrast (which is computed against --background) is unaffected.
+    Flat background color only — the animated wavy-dot canvas
+    (AnimatedBackground.tsx, mounted once in App.tsx behind the whole shell)
+    now supplies the visual texture that used to live here as a static
+    radial-gradient wash. Kept flat (no gradient) so the dot canvas reads
+    cleanly against it in both themes without a second competing texture.
   */
   body {
     background-color: hsl(var(--background));
-    background-image:
-      radial-gradient(1100px 640px at 8% -10%, hsl(var(--primary) / 0.10), transparent 60%),
-      radial-gradient(900px 560px at 100% 0%, hsl(var(--accent) / 0.55), transparent 55%),
-      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
-    background-attachment: fixed;
-  }
-
-  :root[data-theme='dark'] body,
-  .dark body {
-    background-image:
-      radial-gradient(1100px 640px at 8% -10%, hsl(var(--primary) / 0.14), transparent 60%),
-      radial-gradient(900px 560px at 100% 0%, hsl(var(--accent) / 0.6), transparent 55%),
-      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
   }
 }
 
 @layer utilities {
+  /* Light frosted-glass surface: modest blur + translucency over the
+     animated background, used directly (bg-card/70 backdrop-blur-md) by
+     most card-like containers; kept here as a reusable class for anything
+     that isn't already going through the Card primitive's own classes. */
+  .glass-surface {
+    background-color: hsl(var(--card) / 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
   /* Optional airy gradient wash for a standalone section/hero surface. */
   .app-gradient {
     background-image:

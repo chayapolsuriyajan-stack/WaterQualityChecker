@@ -20,6 +20,7 @@ const en = {
   'nav.dashboard': 'Dashboard',
   'nav.calibration': 'Calibration',
   'nav.history': 'History',
+  'nav.expandMenu': 'Expand menu',
 
   // --- app shell -----------------------------------------------------------
   'app.title': 'Aqua Monitor',
@@ -128,6 +129,10 @@ const en = {
   'calib.derivedFromTds': 'Derived from TDS (×0.5). Calibrate it through TDS.',
   'calib.resetTurbidity': 'Reset turbidity',
   'calib.resetTds': 'Reset TDS',
+  'calib.observedRange': 'Observed while calibrating: {min} min, {max} max',
+  'calib.useMin': 'Use min',
+  'calib.useMax': 'Use max',
+  'calib.resetRange': 'Reset range',
   'calib.loading': 'Loading...',
   'calib.sensorSelectAria': 'Sensor selection',
   'calib.turbidityFormTitle': 'Turbidity calibration (2-point)',
@@ -196,6 +201,7 @@ export const messages = {
     'nav.dashboard': 'แดชบอร์ด',
     'nav.calibration': 'ปรับเทียบ',
     'nav.history': 'ประวัติ',
+    'nav.expandMenu': 'ขยายเมนู',
 
     'app.title': 'Aqua Monitor',
     'app.siteName': 'อ่างเก็บน้ำอ่างแก้ว',
@@ -296,6 +302,10 @@ export const messages = {
     'calib.derivedFromTds': 'คำนวณจาก TDS (×0.5) สอบเทียบผ่าน TDS',
     'calib.resetTurbidity': 'รีเซ็ตความขุ่น',
     'calib.resetTds': 'รีเซ็ต TDS',
+    'calib.observedRange': 'ค่าที่พบระหว่างสอบเทียบ: ต่ำสุด {min}, สูงสุด {max}',
+    'calib.useMin': 'ใช้ค่าต่ำสุด',
+    'calib.useMax': 'ใช้ค่าสูงสุด',
+    'calib.resetRange': 'รีเซ็ตช่วงค่า',
     'calib.loading': 'กำลังโหลด...',
     'calib.sensorSelectAria': 'เลือกเซนเซอร์',
     'calib.turbidityFormTitle': 'สอบเทียบความขุ่น (2 จุด)',

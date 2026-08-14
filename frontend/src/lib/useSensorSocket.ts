@@ -1,14 +1,20 @@
 /**
  * React hook: live sensor readings over `/ws/app`, with a rolling per-parameter
- * sample history for sparklines and a simulation fallback when disconnected or
- * stale (per AQUA_MONITOR_PLAN.md "useSensorSocket").
+ * sample history for sparklines. On disconnect or stale data, this freezes at the
+ * last real reading and flips `connected` to false rather than fabricating plausible-
+ * looking numbers -- a real water-quality monitor must show an honest "offline" state,
+ * not synthetic noise that could be mistaken for the water actually changing. (An
+ * earlier version of this hook had a random-data simulation fallback for demo/dev
+ * purposes; removed once the full ESP32 -> backend -> Sheets -> frontend chain was
+ * wired to real hardware, since it made a real sensor outage indistinguishable from
+ * normal operation.)
  */
 import { useEffect, useRef, useState } from 'react'
-import type { SensorReading } from './types'
+import { getHistory } from './api'
+import type { HistoryRow, SensorReading } from './types'
 
 const SPARKLINE_WINDOW_MS = 30_000
 const STALE_TIMEOUT_MS = 5_000
-const SIMULATION_INTERVAL_MS = 2_000
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 15_000
 
@@ -42,24 +48,39 @@ function pushSample(series: SensorSeries, reading: SensorReading, now: number): 
   return next
 }
 
-function randomBetween(min: number, max: number): number {
-  return min + Math.random() * (max - min)
+/** Maps `/history` rows onto the same series shape `pushSample` builds live, so a page
+ * reload doesn't start every sparkline empty and wait ~30s for it to refill from scratch. */
+function seriesFromHistory(rows: HistoryRow[], now: number): SensorSeries {
+  const cutoff = now - SPARKLINE_WINDOW_MS
+  const next = emptySeries()
+  for (const row of rows) {
+    if (typeof row.timestamp !== 'number' || row.timestamp < cutoff) continue
+    if (typeof row.temperature === 'number') next.temperature.push({ t: row.timestamp, v: row.temperature })
+    const turbidityValue = row.turbidityNtu ?? row.turbidity
+    if (typeof turbidityValue === 'number') next.turbidity.push({ t: row.timestamp, v: turbidityValue })
+    if (typeof row.tds === 'number') next.tds.push({ t: row.timestamp, v: row.tds })
+    if (typeof row.ec === 'number') next.ec.push({ t: row.timestamp, v: row.ec })
+  }
+  return next
 }
 
-function simulatedReading(): SensorReading {
-  const turbidityRaw = randomBetween(1500, 1900)
-  const tds = randomBetween(150, 250)
-  return {
-    temperature: randomBetween(24, 28),
-    turbidity: turbidityRaw,
-    turbidityNtu: null,
-    turbidityRaw,
-    turbidityUnit: 'ADC',
-    tds,
-    tdsVoltage: tds / 500, // plausible placeholder, not used for calibration
-    ec: tds * 2,
-    timestamp: Date.now(),
+/** Combines the history seed with whatever live points may already have landed while the
+ * `/history` fetch was in flight, de-duplicated by timestamp and re-sorted ascending. */
+function mergeSeries(live: SensorSeries, seeded: SensorSeries, now: number): SensorSeries {
+  const cutoff = now - SPARKLINE_WINDOW_MS
+  const next = emptySeries()
+  for (const key of Object.keys(next) as SeriesParam[]) {
+    const seen = new Set<number>()
+    const combined: SeriesPoint[] = []
+    for (const p of [...seeded[key], ...live[key]]) {
+      if (p.t < cutoff || seen.has(p.t)) continue
+      seen.add(p.t)
+      combined.push(p)
+    }
+    combined.sort((a, b) => a.t - b.t)
+    next[key] = combined
   }
+  return next
 }
 
 /** Normalizes any of the tolerated WS message shapes into a SensorReading, or null. */
@@ -128,7 +149,6 @@ export function useSensorSocket(): UseSensorSocketResult {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const simulationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastMessageAtRef = useRef<number>(0)
   const unmountedRef = useRef(false)
 
@@ -141,25 +161,13 @@ export function useSensorSocket(): UseSensorSocketResult {
       setSeries((prev) => pushSample(prev, r, now))
     }
 
-    const stopSimulation = () => {
-      if (simulationTimerRef.current) {
-        clearInterval(simulationTimerRef.current)
-        simulationTimerRef.current = null
-      }
-    }
-
-    const startSimulation = () => {
-      if (simulationTimerRef.current) return
-      setConnected(false)
-      simulationTimerRef.current = setInterval(() => {
-        applyReading(simulatedReading())
-      }, SIMULATION_INTERVAL_MS)
-    }
-
+    // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch `reading` or
+    // `series`: the last real values stay on screen (frozen) rather than being replaced with
+    // fabricated numbers, so a genuine sensor outage reads as "stale", not as new data.
     const armStaleTimer = () => {
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
       staleTimerRef.current = setTimeout(() => {
-        startSimulation()
+        setConnected(false)
       }, STALE_TIMEOUT_MS)
     }
 
@@ -174,14 +182,12 @@ export function useSensorSocket(): UseSensorSocketResult {
       ws.onopen = () => {
         reconnectAttemptRef.current = 0
         setConnected(true)
-        stopSimulation()
         lastMessageAtRef.current = Date.now()
         armStaleTimer()
       }
 
       ws.onmessage = (event) => {
         lastMessageAtRef.current = Date.now()
-        stopSimulation()
         setConnected(true)
         armStaleTimer()
         try {
@@ -195,7 +201,6 @@ export function useSensorSocket(): UseSensorSocketResult {
 
       ws.onclose = () => {
         setConnected(false)
-        startSimulation()
         scheduleReconnect()
       }
 
@@ -216,13 +221,27 @@ export function useSensorSocket(): UseSensorSocketResult {
       }, delay)
     }
 
+    // Seed the sparklines from recent history so a reload shows the last few minutes
+    // immediately instead of a blank chart that only fills back in as new live readings
+    // trickle in over the next ~30s. Runs alongside connect(), not before it -- a live
+    // point that lands first is safe, mergeSeries de-dupes by timestamp either way.
+    getHistory('5m')
+      .then(({ rows }) => {
+        if (unmountedRef.current) return
+        const now = Date.now()
+        setSeries((prev) => mergeSeries(prev, seriesFromHistory(rows, now), now))
+      })
+      .catch(() => {
+        // No history yet (fresh server, or the short window's live buffer is still empty)
+        // -- sparklines just start empty and fill in live, same as before this seeding existed.
+      })
+
     connect()
 
     return () => {
       unmountedRef.current = true
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
-      stopSimulation()
       wsRef.current?.close()
       wsRef.current = null
     }

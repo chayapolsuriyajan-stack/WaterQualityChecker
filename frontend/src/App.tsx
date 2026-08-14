@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
+import { AnimatedBackground } from '@/components/shell/AnimatedBackground'
 import { CalibrationView } from '@/components/calibration/CalibrationView'
 import { DashboardView } from '@/components/dashboard/DashboardView'
 import { HistoryView } from '@/components/history/HistoryView'
 import { MobileBottomNav, MobileTopBar } from '@/components/shell/MobileNav'
+import { RailHoverPanel } from '@/components/shell/RailHoverPanel'
 import { RightContextColumn } from '@/components/shell/RightContextColumn'
-import { Sidebar, type ViewId } from '@/components/shell/Sidebar'
+import type { ViewId } from '@/components/shell/Sidebar'
 import { SensorProvider } from '@/lib/SensorProvider'
 
 /** Aqua Monitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
@@ -18,12 +20,15 @@ export default function App() {
     // shared /ws/app socket and its 30s rolling series survive `view` changes instead of being
     // torn down and reconnected/reset on every tab switch.
     <SensorProvider>
-      <div className="flex h-full w-full overflow-hidden bg-background">
-        {/* Desktop (lg+): full sidebar. Tablet (md): collapsed icon rail. Phone (<md): hidden. */}
-        <Sidebar view={view} onChange={setView} className="hidden md:flex lg:hidden" collapsed />
-        <Sidebar view={view} onChange={setView} className="hidden lg:flex" />
+      <div className="relative flex h-full w-full overflow-hidden bg-background">
+        <AnimatedBackground reducedMotion={!!reducedMotion} />
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Tablet and desktop (md+): collapsed icon-only rail by default, expanding
+            to the full labeled sidebar on hover or via the trigger button. Phone
+            (<md): hidden (MobileTopBar/Sheet instead). */}
+        <RailHoverPanel view={view} onChange={setView} className="relative z-20 hidden md:flex" />
+
+        <div className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden">
           <MobileTopBar view={view} onChange={setView} />
 
           <main className="flex-1 overflow-y-auto overflow-x-hidden pb-20 md:pb-0">

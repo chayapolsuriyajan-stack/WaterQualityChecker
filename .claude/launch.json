@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aqua-monitor-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--host"],
+      "port": 5173
+    },
+    {
+      "name": "aqua-monitor-backend",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["main.py"],
+      "port": 8080
+    }
+  ]
+}

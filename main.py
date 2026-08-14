@@ -76,25 +76,6 @@ if os.path.isdir(BUILD_DIR):
 else:
     print(f"⚠️ {BUILD_DIR} directory not found; WebGL static asset mount disabled.")
 
-if os.path.isdir("web"):
-    # Same no-store rationale as /assets: web/app.js + style.css are hand-edited with no
-    # build step or cache-busting query string, so a cached copy silently hides edits.
-    app.mount("/static", NoStoreStaticFiles(directory="web"), name="static")
-    print("✅ Mounted web directory for frontend static assets at /static.")
-else:
-    print("⚠️ web directory not found; frontend static mount disabled.")
-
-# React SPA dashboard (built from the Lovable "river-watch" project into web-react/).
-# It's a TanStack Start SPA that only works served at the site root "/" (its prerendered
-# shell + router assume root; a subpath basepath causes hydration mismatch), so it's the
-# primary dashboard at "/" (see get_index) and its assets are served from /assets/*.
-# The original vanilla dashboard is preserved at /classic (see get_classic_index).
-if os.path.isdir("web-react/assets"):
-    app.mount("/assets", NoStoreStaticFiles(directory="web-react/assets"), name="react_assets")
-    print("✅ Mounted React SPA dashboard assets at /assets.")
-else:
-    print("⚠️ web-react not found; React SPA dashboard disabled (falling back to vanilla at /).")
-
 class SpaStaticFiles(StaticFiles):
     """StaticFiles for a Vite build: `no-store` on the HTML shell, long cache on hashed assets.
 
@@ -117,12 +98,6 @@ class SpaStaticFiles(StaticFiles):
             response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
         return response
 
-
-if os.path.isdir("frontend/dist"):
-    app.mount("/app", SpaStaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
-    print("✅ Mounted new Aqua Monitor React app at /app.")
-else:
-    print("⚠️ frontend/dist not found; new Aqua Monitor app at /app disabled (run: cd frontend && npm run build).")
 
 if GOOGLE_SHEETS_WEBHOOK_URL:
     print("✅ Google Sheets relay enabled for /update readings.")
@@ -675,32 +650,6 @@ async def reset_calibration(request: Request):
     return JSONResponse({sensor: calibration[sensor]})
 
 
-@app.get("/")
-async def get_index():
-    print("🌐 Web Browser accessed the dashboard endpoint!")
-    # Primary dashboard: the React SPA (web-react/). Falls back to the vanilla dashboard
-    # if the React build isn't present.
-    react_index = "web-react/index.html"
-    # no-cache => the browser always revalidates the unhashed SPA shell, so a rebuilt
-    # dashboard shows up on a normal reload. (/assets/* is served no-store as well --
-    # see NoStoreStaticFiles: the hashed names are hand-edited in place.)
-    if os.path.isfile(react_index):
-        return FileResponse(react_index, headers={"Cache-Control": "no-cache"})
-    if not os.path.isfile(webconfig.get("indexFile", "index.html")):
-        raise HTTPException(status_code=404, detail="Index file not found")
-    return FileResponse(webconfig.get("indexFile", "index.html"), headers={"Cache-Control": "no-cache"})
-
-
-@app.get("/classic")
-async def get_classic_index():
-    # Original hand-built vanilla dashboard (web/), wired to real ESP32 sensor data via /ws/app.
-    # Its assets load from /static/*, so it works served from any path.
-    index_file = webconfig.get("indexFile", "index.html")
-    if not os.path.isfile(index_file):
-        raise HTTPException(status_code=404, detail="Classic index file not found")
-    return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
-
-
 @app.websocket("/ws/app")
 async def websocket_app(websocket: WebSocket):
     await websocket.accept()
@@ -763,6 +712,19 @@ async def websocket_app(websocket: WebSocket):
     finally:
         async with ui_clients_lock:
             ui_clients.discard(websocket)
+
+
+# The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
+# only catches requests that no explicit route above already matched (Starlette tries
+# routes in registration order; specific routes like /history, /calibrate, /ws/app all win
+# over this root Mount since they were registered earlier). StaticFiles(html=True) serves
+# frontend/dist/index.html for "/" and transparently serves every nested file the built app
+# needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.
+if os.path.isdir("frontend/dist"):
+    app.mount("/", SpaStaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
+    print("✅ Mounted Aqua Monitor React app as the default page at /.")
+else:
+    print("⚠️ frontend/dist not found; default page disabled (run: cd frontend && npm run build).")
 
 
 if __name__ == "__main__":
