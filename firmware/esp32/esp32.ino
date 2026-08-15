@@ -23,6 +23,15 @@ const char* ssid = "W7";
 const char* password = "Asdfghjkl";
 const int backendPort = 8080;
 
+// IFTTT Maker Webhooks fallback: used only when the backend PC (main.py) can't be reached but
+// Wi-Fi/internet still work, so a reading isn't silently dropped during a backend outage.
+// Fill in iftttWebhookKey with your own key from https://ifttt.com/maker_webhooks (the
+// "Documentation" link on that page shows your personal key). iftttEventName must match the
+// event name configured in the IFTTT applet's Webhooks "Receive a web request" trigger.
+const char* iftttEventName = "hydro_reading";
+const char* iftttWebhookKey = "YOUR_IFTTT_WEBHOOKS_KEY"; // <-- fill in your own key
+const String iftttWebhookUrl = "https://maker.ifttt.com/trigger/" + String(iftttEventName) + "/with/key/" + String(iftttWebhookKey);
+
 // Backend IP is found at runtime via UDP broadcast discovery (see discoverBackend())
 // instead of being hardcoded, so the sketch keeps working after the backend PC's
 // DHCP-assigned IP changes. main.py must be running its discovery listener on this port.
@@ -40,6 +49,9 @@ const int maxFailuresBeforeRediscover = 3;
 
 unsigned long lastBroadcastTime = 0;
 const unsigned long broadcastInterval = 2000;
+
+unsigned long lastIftttPostTime = 0;
+const unsigned long iftttPostInterval = 60000; // 60s, independent of broadcastInterval -- respects IFTTT free-tier rate limits
 
 // Broadcasts a discovery request and waits for the backend to reply. On success,
 // sets backendUrl from the reply's source IP. Returns false (and leaves backendUrl
@@ -109,12 +121,12 @@ void loop() {
     lastBroadcastTime = currentMillis;
 
     if (!backendKnown) {
-      if (!discoverBackend()) {
+      if (discoverBackend()) {
+        backendKnown = true;
+        consecutiveFailures = 0;
+      } else {
         Serial.println("Still searching for backend...");
-        return;
       }
-      backendKnown = true;
-      consecutiveFailures = 0;
     }
 
     sensors.requestTemperatures();
@@ -149,32 +161,63 @@ void loop() {
     String outputPayload;
     serializeJson(jsonDoc, outputPayload);
 
-    if (WiFi.status() == WL_CONNECTED) {
-      WiFiClient client;
-      HTTPClient http;
-      http.begin(client, backendUrl);
-      http.addHeader("Content-Type", "application/json");
-      int httpCode = http.POST(outputPayload);
+    bool backendPostFailed = false;
 
-      if (httpCode > 0) {
-        Serial.printf("POST %s -> %d\n", backendUrl.c_str(), httpCode);
-        String response = http.getString();
-        if (response.length() > 0) {
-          Serial.println(response);
-        }
-        consecutiveFailures = 0;
-      } else {
-        Serial.printf("HTTP POST failed: %s\n", http.errorToString(httpCode).c_str());
-        consecutiveFailures++;
-        if (consecutiveFailures >= maxFailuresBeforeRediscover) {
-          Serial.println("Backend unreachable; will re-discover its IP.");
-          backendKnown = false;
+    if (backendKnown) {
+      if (WiFi.status() == WL_CONNECTED) {
+        WiFiClient client;
+        HTTPClient http;
+        http.begin(client, backendUrl);
+        http.addHeader("Content-Type", "application/json");
+        int httpCode = http.POST(outputPayload);
+
+        if (httpCode > 0) {
+          Serial.printf("POST %s -> %d\n", backendUrl.c_str(), httpCode);
+          String response = http.getString();
+          if (response.length() > 0) {
+            Serial.println(response);
+          }
           consecutiveFailures = 0;
+        } else {
+          Serial.printf("HTTP POST failed: %s\n", http.errorToString(httpCode).c_str());
+          consecutiveFailures++;
+          backendPostFailed = true;
+          if (consecutiveFailures >= maxFailuresBeforeRediscover) {
+            Serial.println("Backend unreachable; will re-discover its IP.");
+            backendKnown = false;
+            consecutiveFailures = 0;
+          }
         }
+        http.end();
+      } else {
+        Serial.println("Wi-Fi disconnected; skipping backend POST.");
       }
-      http.end();
-    } else {
-      Serial.println("Wi-Fi disconnected; skipping backend POST.");
+    }
+
+    // IFTTT fallback: fires when the backend is unreachable (never discovered, or this
+    // attempt's POST just failed) so a reading isn't silently dropped during a backend
+    // outage. Needs real internet (not just LAN), and is throttled independently of the
+    // 2s sensor-read cadence to respect IFTTT's free-tier rate limits.
+    if ((!backendKnown || backendPostFailed) && WiFi.status() == WL_CONNECTED) {
+      if (currentMillis - lastIftttPostTime >= iftttPostInterval) {
+        lastIftttPostTime = currentMillis;
+
+        StaticJsonDocument<192> iftttDoc;
+        iftttDoc["value1"] = temperatureC;
+        iftttDoc["value2"] = turbidityADC;
+        iftttDoc["value3"] = tdsVoltage;
+
+        String iftttPayload;
+        serializeJson(iftttDoc, iftttPayload);
+
+        WiFiClient iftttClient;
+        HTTPClient iftttHttp;
+        iftttHttp.begin(iftttClient, iftttWebhookUrl);
+        iftttHttp.addHeader("Content-Type", "application/json");
+        int iftttHttpCode = iftttHttp.POST(iftttPayload);
+        Serial.printf("IFTTT fallback POST -> %d\n", iftttHttpCode);
+        iftttHttp.end();
+      }
     }
   }
 }
