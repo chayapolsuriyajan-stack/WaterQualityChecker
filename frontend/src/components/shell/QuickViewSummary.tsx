@@ -54,6 +54,12 @@ function unitFor(reading: SensorReading, param: ParamKey): string {
   return PARAM_META[param].unit
 }
 
+/** Omitted for uncalibrated turbidity, whose displayed unit is raw "ADC", not "NTU". */
+function unitFullNameKeyFor(reading: SensorReading, param: ParamKey) {
+  if (param === 'turbidity' && reading.turbidityUnit !== 'NTU') return undefined
+  return PARAM_META[param].unitFullNameKey
+}
+
 /**
  * One-line, language-aware analysis of the current situation: leads with any
  * likely sensor faults (a faulting param's apparent "danger" status is a
@@ -115,6 +121,8 @@ function QuickViewRow({ param, reading }: QuickViewRowProps) {
   const scorable = param === 'turbidity' ? reading?.turbidityUnit === 'NTU' : true
   const color =
     value === null || !scorable ? 'hsl(var(--muted-foreground))' : colorFor(param, value)
+  const unitFullNameKey = reading ? unitFullNameKeyFor(reading, param) : undefined
+  const unitTitle = value !== null && unitFullNameKey ? t(unitFullNameKey) : undefined
 
   return (
     <div className="flex items-center justify-between gap-2 py-1.5">
@@ -128,7 +136,10 @@ function QuickViewRow({ param, reading }: QuickViewRowProps) {
           {t('quickview.sensorFault')}
         </span>
       ) : (
-        <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium tabular-nums text-foreground">
+        <span
+          className="flex shrink-0 items-center gap-1.5 text-xs font-medium tabular-nums text-foreground"
+          title={unitTitle}
+        >
           {value === null ? '—' : `${value.toFixed(meta.precision)} ${unitFor(reading!, param)}`}
           <span
             className="h-2 w-2 shrink-0 rounded-full"

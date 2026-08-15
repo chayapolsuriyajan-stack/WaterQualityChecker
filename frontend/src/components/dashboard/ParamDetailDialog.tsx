@@ -92,6 +92,10 @@ export function ParamDetailDialog({
   const Icon = meta.icon
   const label = t(meta.labelKey)
   const fullName = meta.fullNameKey ? t(meta.fullNameKey) : null
+  // Only show the unit full name when the rendered unit is actually meta's
+  // calibrated unit -- e.g. uncalibrated turbidity overrides to raw "ADC" via
+  // liveUnit, which has no meaningful NTU full name.
+  const unitFullName = meta.unitFullNameKey && unit === meta.unit ? t(meta.unitFullNameKey) : null
 
   return (
     <Dialog open={param !== null} onOpenChange={(open) => !open && onClose()}>
@@ -129,6 +133,12 @@ export function ParamDetailDialog({
                 <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span>
               </p>
             )}
+            {/* Spelled-out unit name for abbreviations (NTU, ppm, µS/cm) that
+                aren't self-explanatory to a non-technical viewer. Same
+                subtext pattern as the param full name above. Omitted for
+                temperature (°C) and for uncalibrated turbidity (raw ADC has
+                no meaningful full name). */}
+            {unitFullName && <p className="mt-0.5 text-xs text-muted-foreground">{unitFullName}</p>}
           </div>
           <Badge variant="outline" className={cn('shrink-0 whitespace-nowrap', STATUS_BADGE_CLASS[status])}>
             {t(

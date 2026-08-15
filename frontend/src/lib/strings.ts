@@ -62,6 +62,7 @@ const en = {
     'Check the shading, the inflow, and whether the probe has shifted. Watch the next few readings before acting.',
 
   'param.turbidity.label': 'Turbidity',
+  'param.turbidity.fullName': 'Turbidity',
   'param.turbidity.about':
     'Turbidity is a measure of the particles suspended in the water, which limit how far light reaches.',
   'param.turbidity.impact':
@@ -86,6 +87,11 @@ const en = {
     'An unusual EC reading means the dissolved salts or minerals have changed, which can point to pollution or mineral runoff.',
   'param.ec.recommendation':
     'Check the TDS reading too, since EC is derived from it. A sudden change in both is worth investigating.',
+
+  // --- units ---------------------------------------------------------------
+  'unit.ntu.fullName': 'Nephelometric Turbidity Units',
+  'unit.ppm.fullName': 'parts per million',
+  'unit.ecUnit.fullName': 'microsiemens per centimeter',
 
   // --- parameter detail modal ------------------------------------------------
   'detail.currentValue': 'Current value',
@@ -250,6 +256,7 @@ export const messages = {
       'ตรวจสอบร่มเงา ทางน้ำเข้า และตำแหน่งของหัววัดว่าขยับหรือไม่ แล้วเฝ้าดูค่าอีกสองสามรอบก่อนดำเนินการ',
 
     'param.turbidity.label': 'ความขุ่น',
+    'param.turbidity.fullName': 'ความขุ่น (Turbidity)',
     'param.turbidity.about':
       'ความขุ่นคือปริมาณอนุภาคที่แขวนลอยอยู่ในน้ำ ซึ่งจำกัดระยะที่แสงส่องลงไปได้',
     'param.turbidity.impact':
@@ -274,6 +281,10 @@ export const messages = {
       'ค่า EC ที่ผิดปกติหมายถึงเกลือหรือแร่ธาตุที่ละลายอยู่เปลี่ยนไป ซึ่งอาจบ่งชี้มลพิษหรือแร่ธาตุที่ไหลมากับน้ำ',
     'param.ec.recommendation':
       'ตรวจสอบค่า TDS ประกอบด้วย เพราะ EC คำนวณมาจากค่านั้น หากทั้งสองค่าเปลี่ยนกะทันหันควรตรวจสอบเพิ่มเติม',
+
+    'unit.ntu.fullName': 'หน่วยวัดความขุ่นแบบเนฟีโลเมตริก (Nephelometric Turbidity Units)',
+    'unit.ppm.fullName': 'ส่วนในล้านส่วน (parts per million)',
+    'unit.ecUnit.fullName': 'ไมโครซีเมนส์ต่อเซนติเมตร (microsiemens per centimeter)',
 
     'detail.currentValue': 'ค่าปัจจุบัน',
     'detail.noRecord': 'ยังไม่มีข้อมูล',

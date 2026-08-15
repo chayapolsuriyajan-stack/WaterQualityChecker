@@ -20,6 +20,14 @@ export interface ParamMeta {
    * label is already a plain word.
    */
   fullNameKey?: MessageKey
+  /**
+   * Spelled-out name of the unit symbol (e.g. "Nephelometric Turbidity
+   * Units" for NTU), for params whose `unit` is an abbreviation that isn't
+   * self-explanatory to a non-technical viewer. Shown alongside the unit
+   * wherever it renders. Omitted for temperature, whose unit (°C) is
+   * self-explanatory.
+   */
+  unitFullNameKey?: MessageKey
   aboutKey: MessageKey
   impactKey: MessageKey
   recommendationKey: MessageKey
@@ -50,10 +58,12 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
   turbidity: {
     key: 'turbidity',
     labelKey: 'param.turbidity.label',
+    fullNameKey: 'param.turbidity.fullName',
     aboutKey: 'param.turbidity.about',
     impactKey: 'param.turbidity.impact',
     recommendationKey: 'param.turbidity.recommendation',
     unit: 'NTU',
+    unitFullNameKey: 'unit.ntu.fullName',
     precision: 1,
     icon: Droplets,
     historyField: 'turbidityNtu',
@@ -66,6 +76,7 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
     impactKey: 'param.tds.impact',
     recommendationKey: 'param.tds.recommendation',
     unit: 'ppm',
+    unitFullNameKey: 'unit.ppm.fullName',
     precision: 0,
     icon: FlaskConical,
     historyField: 'tds',
@@ -78,6 +89,7 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
     impactKey: 'param.ec.impact',
     recommendationKey: 'param.ec.recommendation',
     unit: 'µS/cm',
+    unitFullNameKey: 'unit.ecUnit.fullName',
     precision: 0,
     icon: Activity,
     historyField: 'ec',
