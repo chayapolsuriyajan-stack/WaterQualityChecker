@@ -91,6 +91,7 @@ export function ParamDetailDialog({
 
   const Icon = meta.icon
   const label = t(meta.labelKey)
+  const fullName = meta.fullNameKey ? t(meta.fullNameKey) : null
 
   return (
     <Dialog open={param !== null} onOpenChange={(open) => !open && onClose()}>
@@ -105,6 +106,10 @@ export function ParamDetailDialog({
             </div>
             <div className="min-w-0">
               <DialogTitle>{label}</DialogTitle>
+              {/* Spelled-out name for TDS/EC -- an acronym alone isn't self-explanatory
+                  to a non-technical viewer. Omitted for params whose label is already
+                  a plain word (temperature, turbidity). */}
+              {fullName && <p className="text-xs text-muted-foreground">{fullName}</p>}
               <DialogDescription>
                 {t('detail.normalRange', { range: normalRangeText(param) })}
               </DialogDescription>

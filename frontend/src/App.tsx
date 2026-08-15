@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { AnimatedBackground } from '@/components/shell/AnimatedBackground'
 import { CalibrationView } from '@/components/calibration/CalibrationView'
@@ -8,7 +8,21 @@ import { MobileBottomNav, MobileTopBar } from '@/components/shell/MobileNav'
 import { RailHoverPanel } from '@/components/shell/RailHoverPanel'
 import { RightContextColumn } from '@/components/shell/RightContextColumn'
 import type { ViewId } from '@/components/shell/Sidebar'
-import { SensorProvider } from '@/lib/SensorProvider'
+import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
+
+/**
+ * Syncs the browser tab title to the live `/ws/app` connection state. Runs
+ * regardless of which `view` tab is active (connection state is global, not
+ * per-view) and always in English -- an explicit decision to not follow the
+ * EN/ไทย toggle, since a tab title is glanced at, not read.
+ */
+function TabTitleSync() {
+  const { connected } = useSensorData()
+  useEffect(() => {
+    document.title = connected ? 'Aqua Monitor — Connected' : 'Aqua Monitor — Offline'
+  }, [connected])
+  return null
+}
 
 /** Aqua Monitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
 export default function App() {
@@ -20,6 +34,7 @@ export default function App() {
     // shared /ws/app socket and its 30s rolling series survive `view` changes instead of being
     // torn down and reconnected/reset on every tab switch.
     <SensorProvider>
+      <TabTitleSync />
       <div className="relative flex h-full w-full overflow-hidden bg-background">
         <AnimatedBackground reducedMotion={!!reducedMotion} />
 

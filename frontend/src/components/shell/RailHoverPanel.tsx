@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { Sidebar, type ViewId } from './Sidebar'
 
@@ -21,56 +21,29 @@ interface RailHoverPanelProps {
  * that looked like a panel awkwardly appearing over the rail rather than the
  * rail itself expanding, since they were two unrelated DOM subtrees.
  *
- * `expanded` is the OR of two sources: `hovering` (plain mouseenter/
- * mouseleave — the primary desktop/trackpad interaction) and `pinned`
- * (toggled by clicking the rail, the fallback for touch devices which have
- * no hover). Clicking a nav item always navigates immediately and un-pins,
- * exactly like the plain rail always has.
+ * `expanded` is plain mouseenter/mouseleave (mouse/trackpad) plus
+ * focus/blur (keyboard tabbing into the rail) — no click-to-pin: nav icons
+ * already navigate immediately on click/tap, so there's no separate
+ * "tap to expand" gesture to layer on top without conflicting with that.
+ * Touch devices, which have no hover, keep the plain always-tap-to-navigate
+ * icon rail (same as before this component existed).
  */
 export function RailHoverPanel({ view, onChange, className }: RailHoverPanelProps) {
-  const [hovering, setHovering] = useState(false)
-  const [pinned, setPinned] = useState(false)
-  const expanded = hovering || pinned
+  const [expanded, setExpanded] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!pinned) return
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPinned(false)
-    }
-    const onPointerDown = (e: PointerEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setPinned(false)
-      }
-    }
-
-    document.addEventListener('keydown', onKeyDown)
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      document.removeEventListener('pointerdown', onPointerDown)
-    }
-  }, [pinned])
-
-  const handleNavigate = (nextView: ViewId) => {
-    onChange(nextView)
-    setPinned(false)
-  }
 
   return (
     <div
       ref={containerRef}
       className={cn('relative', className)}
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
-      onFocus={() => setHovering(true)}
+      onMouseEnter={() => setExpanded(true)}
+      onMouseLeave={() => setExpanded(false)}
+      onFocus={() => setExpanded(true)}
       onBlur={(e) => {
-        if (!containerRef.current?.contains(e.relatedTarget as Node)) setHovering(false)
+        if (!containerRef.current?.contains(e.relatedTarget as Node)) setExpanded(false)
       }}
-      onClick={() => setPinned((v) => !v)}
     >
-      <Sidebar view={view} onChange={handleNavigate} collapsed={!expanded} />
+      <Sidebar view={view} onChange={onChange} collapsed={!expanded} />
     </div>
   )
 }

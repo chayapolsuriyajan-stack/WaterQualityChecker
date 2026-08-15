@@ -105,8 +105,8 @@ export interface RangeBand {
   /** At/above this on the high side -> 'danger'. Between goodMax and this -> 'warn'. */
   dangerMax?: number
   /**
-   * Turbidity only: an implausibly low reading (near-zero NTU) usually indicates a
-   * disconnected/faulty sensor rather than genuinely pristine water. See `isSensorFault`.
+   * An implausibly low reading (at/near zero) usually indicates a disconnected/faulty sensor
+   * rather than a genuine reading -- see `isSensorFault`. Set per-param below.
    */
   sensorFaultBelow?: number
 }
@@ -122,9 +122,14 @@ export interface RangeBand {
  * | Turbidity   | <= 25 NTU   | > 25                   | > 50              |
  */
 export const RANGE_BANDS: Record<RangeParam, RangeBand> = {
-  temperature: { unit: '°C', goodMin: 25, goodMax: 30, dangerMin: 20, dangerMax: 32 },
-  tds: { unit: 'ppm', goodMin: 100, goodMax: 300, dangerMin: 50, dangerMax: 500 },
-  ec: { unit: 'µS/cm', goodMin: 200, goodMax: 600, dangerMin: 100, dangerMax: 1000 },
+  // sensorFaultBelow: 0.01 -- `main.py` forces temperatureC to 0.0 when the DS18B20 reports
+  // DEVICE_DISCONNECTED_C, and a disconnected/unplugged TDS probe reads ~0.0V -> 0.0 ppm (EC
+  // is derived from TDS, so it inherits the same failure mode). A genuine reading from any of
+  // these three sensors in this reservoir deployment is never this close to exactly zero, so
+  // this reuses isSensorFault below with a low false-positive risk.
+  temperature: { unit: '°C', goodMin: 25, goodMax: 30, dangerMin: 20, dangerMax: 32, sensorFaultBelow: 0.01 },
+  tds: { unit: 'ppm', goodMin: 100, goodMax: 300, dangerMin: 50, dangerMax: 500, sensorFaultBelow: 0.01 },
+  ec: { unit: 'µS/cm', goodMin: 200, goodMax: 600, dangerMin: 100, dangerMax: 1000, sensorFaultBelow: 0.01 },
   // Turbidity is upper-only: no low band (a low NTU is good), and a value below
   // `sensorFaultBelow` is flagged as a likely sensor fault rather than a water problem.
   turbidity: { unit: 'NTU', goodMax: 25, dangerMax: 50, sensorFaultBelow: 0.2 },
@@ -168,7 +173,7 @@ export function normalRangeText(param: RangeParam): string {
   return band.unit
 }
 
-/** True only for turbidity readings implausibly below `sensorFaultBelow` (likely a sensor fault). */
+/** True when a param's reading is implausibly below its `sensorFaultBelow` band value (likely a sensor fault, e.g. a disconnected probe reading ~0). */
 export function isSensorFault(param: RangeParam, value: number): boolean {
   const band = RANGE_BANDS[param]
   return band.sensorFaultBelow != null && value < band.sensorFaultBelow

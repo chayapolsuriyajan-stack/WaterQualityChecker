@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import {
   EC_THRESHOLDS,
+  isSensorFault,
   TDS_THRESHOLDS,
   TEMPERATURE_THRESHOLDS,
   TURBIDITY_THRESHOLDS,
@@ -65,6 +66,16 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
   const openMeta = openParam ? PARAM_META[openParam] : null
   const openScorable = openParam === 'turbidity' ? turbidityIsNtu : true
 
+  /** Same priority as RangeWarning: uncalibrated (turbidity only) > sensor fault > no hint.
+   * Uncalibrated turbidity's raw ADC value isn't in NTU, so it's never checked against
+   * sensorFaultBelow (which is an NTU threshold) -- these two states can't collide. */
+  function hintFor(param: ParamKey): string | undefined {
+    if (param === 'turbidity' && !turbidityIsNtu) return t('common.uncalibrated')
+    const value = valueFor(param)
+    if (value !== null && isSensorFault(param, value)) return t('quickview.sensorFault')
+    return undefined
+  }
+
   return (
     <>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
@@ -84,7 +95,7 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
               threshold={threshold}
               thresholdLabel={thresholdLabel}
               showThreshold={isTurbidity ? turbidityIsNtu : true}
-              hint={isTurbidity && !turbidityIsNtu ? t('common.uncalibrated') : undefined}
+              hint={hintFor(param)}
               series={series[param]}
               onOpen={() => setOpenParam(param)}
             />

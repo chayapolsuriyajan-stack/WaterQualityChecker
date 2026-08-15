@@ -70,7 +70,11 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
         className,
       )}
     >
-      <div className="mb-6 flex items-center gap-2.5">
+      {/* gap only when expanded -- a gap between the icon and a 0-width RevealLabel
+          still reserves that space in a flex row, which shoves the icon left of
+          the button/rail's true center and throws off the active-state highlight
+          (an `inset-0` square) that's centered on the button, not the icon. */}
+      <div className={cn('mb-6 flex items-center', !collapsed && 'gap-2.5')}>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
           <Droplets className="h-5 w-5" />
         </div>
@@ -93,9 +97,9 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
               aria-current={active ? 'page' : undefined}
               onClick={() => onChange(item.id)}
               className={cn(
-                'relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all motion-reduce:transition-none',
+                'relative flex items-center rounded-lg px-3 py-2.5 text-sm font-medium transition-all motion-reduce:transition-none',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                collapsed && 'w-11 justify-center px-0',
+                collapsed ? 'w-11 justify-center px-0' : 'gap-3',
                 active
                   ? 'text-primary'
                   : 'text-muted-foreground hover:bg-secondary hover:text-foreground hover:translate-x-0.5',
@@ -108,7 +112,7 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
                   transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}
-              <Icon className="relative h-[18px] w-[18px] shrink-0" />
+              <Icon className="relative h-5 w-5 shrink-0" />
               <RevealLabel collapsed={collapsed} className="relative min-w-0">
                 {label}
               </RevealLabel>

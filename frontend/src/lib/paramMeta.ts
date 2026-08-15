@@ -13,6 +13,13 @@ export type ParamKey = 'temperature' | 'turbidity' | 'tds' | 'ec'
 export interface ParamMeta {
   key: ParamKey
   labelKey: MessageKey
+  /**
+   * Spelled-out name, for params whose `labelKey` is an acronym (TDS, EC) that
+   * isn't self-explanatory to a non-technical viewer. Shown alongside the
+   * label in the detail modal. Omitted for temperature/turbidity, whose
+   * label is already a plain word.
+   */
+  fullNameKey?: MessageKey
   aboutKey: MessageKey
   impactKey: MessageKey
   recommendationKey: MessageKey
@@ -54,6 +61,7 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
   tds: {
     key: 'tds',
     labelKey: 'param.tds.label',
+    fullNameKey: 'param.tds.fullName',
     aboutKey: 'param.tds.about',
     impactKey: 'param.tds.impact',
     recommendationKey: 'param.tds.recommendation',
@@ -65,6 +73,7 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
   ec: {
     key: 'ec',
     labelKey: 'param.ec.label',
+    fullNameKey: 'param.ec.fullName',
     aboutKey: 'param.ec.about',
     impactKey: 'param.ec.impact',
     recommendationKey: 'param.ec.recommendation',

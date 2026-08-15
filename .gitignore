@@ -8,5 +8,6 @@ calibration.json
 skills-lock.json
 graphify-out/
 .playwright-mcp/
+.playwright-cli/
 frontend/node_modules/
 frontend/dist/

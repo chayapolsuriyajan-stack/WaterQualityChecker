@@ -1,8 +1,9 @@
 /**
  * Two-sided out-of-range banner for the parameter detail modal. Shows only
- * when rangeStatusFor(...).direction !== 'ok'. Turbidity readings implausibly
- * near zero get the sensor-fault copy instead of a "too low" water warning
- * (see isSensorFault in lib/thresholds.ts).
+ * when rangeStatusFor(...).direction !== 'ok'. A reading implausibly near
+ * zero (any of the 4 params -- see RANGE_BANDS' sensorFaultBelow) gets the
+ * sensor-fault copy instead of a "too low" water warning (see isSensorFault
+ * in lib/thresholds.ts).
  */
 import { AlertTriangle } from 'lucide-react'
 import { useT } from '@/lib/i18n'
@@ -22,7 +23,7 @@ export function RangeWarning({ param, paramLabel, value, unit, precision, range 
 
   if (range.direction === 'ok') return null
 
-  const sensorFault = param === 'turbidity' && range.direction === 'low' && isSensorFault(param, value)
+  const sensorFault = range.direction === 'low' && isSensorFault(param, value)
 
   const message = sensorFault
     ? t('detail.checkSensor')

@@ -70,6 +70,7 @@ const en = {
     'Check for recent rain or upstream disturbance. If the reading stays high, clean the sensor lens.',
 
   'param.tds.label': 'TDS',
+  'param.tds.fullName': 'Total Dissolved Solids',
   'param.tds.about':
     'Total dissolved solids is the amount of minerals and salts dissolved in the water, measured in parts per million.',
   'param.tds.impact':
@@ -78,6 +79,7 @@ const en = {
     'Compare it against the recent trend. If the reading is unusually high, check for runoff or discharge nearby.',
 
   'param.ec.label': 'EC',
+  'param.ec.fullName': 'Electrical Conductivity',
   'param.ec.about':
     'Electrical conductivity comes from the ions dissolved in the water, so it tracks closely with TDS.',
   'param.ec.impact':
@@ -105,8 +107,18 @@ const en = {
   'wqi.title': 'Water Quality Index (WQI)',
   'wqi.moderate': 'Moderate',
   'wqi.good': 'Good',
+  'wqi.poor': 'Poor',
+  'wqi.unknown': 'Unknown',
   'wqi.empty': 'No history yet for this time range.',
   'wqi.error': "Couldn't load history for this time range.",
+
+  // --- quick view (dashboard right column) ----------------------------------
+  'quickview.title': 'Quick view',
+  'quickview.sensorFault': 'Not connected',
+  'quickview.analysis.noData': 'No live sensor data yet.',
+  'quickview.analysis.good': 'All readings are within the normal range.',
+  'quickview.analysis.watch': '{band} — watch: {params}.',
+  'quickview.analysis.fault': 'Check the sensors: {params} may be disconnected.',
 
   // --- calibration ---------------------------------------------------------
   'calib.title': 'Sensor Calibration',
@@ -246,6 +258,7 @@ export const messages = {
       'ตรวจสอบฝนที่ตกล่าสุดหรือการรบกวนทางต้นน้ำ หากค่ายังสูงอยู่ ให้ทำความสะอาดเลนส์เซนเซอร์',
 
     'param.tds.label': 'สารละลายทั้งหมด',
+    'param.tds.fullName': 'สารละลายทั้งหมด (Total Dissolved Solids)',
     'param.tds.about':
       'สารละลายทั้งหมด (TDS) คือปริมาณแร่ธาตุและเกลือที่ละลายอยู่ในน้ำ วัดเป็นส่วนในล้านส่วน',
     'param.tds.impact':
@@ -254,6 +267,7 @@ export const messages = {
       'เปรียบเทียบกับแนวโน้มล่าสุด หากค่าสูงผิดปกติ ให้ตรวจสอบน้ำไหลบ่าหรือการระบายน้ำในบริเวณใกล้เคียง',
 
     'param.ec.label': 'การนำไฟฟ้า',
+    'param.ec.fullName': 'การนำไฟฟ้า (Electrical Conductivity)',
     'param.ec.about':
       'การนำไฟฟ้า (EC) เกิดจากไอออนที่ละลายอยู่ในน้ำ จึงแปรผันไปตาม TDS อย่างใกล้ชิด',
     'param.ec.impact':
@@ -279,8 +293,17 @@ export const messages = {
     'wqi.title': 'ดัชนีคุณภาพน้ำ (WQI)',
     'wqi.moderate': 'ปานกลาง',
     'wqi.good': 'ดี',
+    'wqi.poor': 'แย่',
+    'wqi.unknown': 'ไม่ทราบ',
     'wqi.empty': 'ยังไม่มีข้อมูลย้อนหลังในช่วงเวลานี้',
     'wqi.error': 'โหลดข้อมูลย้อนหลังของช่วงเวลานี้ไม่สำเร็จ',
+
+    'quickview.title': 'ภาพรวมด่วน',
+    'quickview.sensorFault': 'เซนเซอร์ไม่เชื่อมต่อ',
+    'quickview.analysis.noData': 'ยังไม่มีข้อมูลจากเซนเซอร์แบบสด',
+    'quickview.analysis.good': 'ค่าทุกตัวอยู่ในช่วงปกติ',
+    'quickview.analysis.watch': '{band} — ต้องเฝ้าระวัง: {params}',
+    'quickview.analysis.fault': 'ควรตรวจสอบเซนเซอร์: {params} อาจไม่ได้เชื่อมต่อ',
 
     'calib.title': 'ปรับเทียบเซนเซอร์',
     'calib.subtitle': 'ปรับเทียบได้ขณะเซนเซอร์ทำงานอยู่ โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',

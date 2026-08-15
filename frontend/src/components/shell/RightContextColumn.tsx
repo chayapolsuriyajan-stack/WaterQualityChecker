@@ -3,6 +3,7 @@ import { MapPin, Radio, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { useSensorData } from '@/lib/SensorProvider'
+import { QuickViewSummary } from './QuickViewSummary'
 
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -17,7 +18,7 @@ interface RightContextColumnProps {
   className?: string
 }
 
-/** Institution metadata card for the dashboard: station identity, GPS, live network status + clock. */
+/** Dashboard-only right column: station identity/GPS/connectivity/clock card, plus the Quick View summary card below it. */
 export function RightContextColumn({ className }: RightContextColumnProps) {
   const { connected } = useSensorData()
   const { t } = useT()
@@ -69,6 +70,8 @@ export function RightContextColumn({ className }: RightContextColumnProps) {
           </div>
         </div>
       </div>
+
+      <QuickViewSummary />
     </div>
   )
 }
