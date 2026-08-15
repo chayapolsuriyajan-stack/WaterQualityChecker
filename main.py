@@ -471,6 +471,32 @@ def _with_ntu(rows: list) -> list:
     return out
 
 
+async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> tuple[list, str | None]:
+    # Ask the Apps Script for this window + a downsample cap (it strides rows to fit).
+    # Shared by the long-window path and the short-window buffer-gap fallback below.
+    sep = "&" if "?" in GOOGLE_SHEETS_WEBHOOK_URL else "?"
+    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": max_points})
+
+    def fetch() -> str:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.read().decode("utf-8")
+
+    try:
+        raw = await asyncio.to_thread(fetch)
+        data = json.loads(raw)
+    except Exception as exc:
+        print(f"⚠️ Failed to read history from Google Sheets: {exc}")
+        return [], str(exc)
+
+    rows = [
+        r
+        for r in data.get("rows", [])
+        if isinstance(r.get("timestamp"), (int, float)) and r["timestamp"] >= cutoff_ms
+    ]
+    return rows, None
+
+
 @app.get("/history")
 async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     # Short windows come live from the in-memory buffer; long windows are read back from the
@@ -485,37 +511,37 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
 
     cutoff_ms = (time.time() - seconds) * 1000
 
-    # Live path: the recent short-window graph reads straight from memory.
+    # Live path: the recent short-window graph reads straight from memory. The in-memory
+    # buffer is wiped on every backend restart though, so if it doesn't fully cover the
+    # requested window (empty, or its oldest row is newer than the window's cutoff), fall
+    # back to the Sheets proxy for the gap and merge -- same source long windows already use.
     if window in HISTORY_BUFFER_WINDOWS:
-        rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+        buffer_rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+        coverage_gap = (not buffer_rows) or (buffer_rows[0]["timestamp"] > cutoff_ms)
+
+        if coverage_gap and GOOGLE_SHEETS_WEBHOOK_URL:
+            sheet_rows, _err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
+            # Only keep sheet rows strictly older than what the buffer already covers, so the
+            # merge has no duplicate/overlapping rows at the seam.
+            buffer_floor_ms = buffer_rows[0]["timestamp"] if buffer_rows else float("inf")
+            sheet_rows = [r for r in sheet_rows if r["timestamp"] < buffer_floor_ms]
+            rows = sheet_rows + buffer_rows  # both chronological ascending -> merge stays ordered
+            source = "live+sheet" if sheet_rows else "live"
+        else:
+            # No gap, or no webhook configured -- graceful degrade to today's buffer-only behavior.
+            rows = buffer_rows
+            source = "live"
+
         return JSONResponse(
-            {"rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)), "windowSeconds": seconds, "source": "live"}
+            {"rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)), "windowSeconds": seconds, "source": source}
         )
 
     if not GOOGLE_SHEETS_WEBHOOK_URL:
         return JSONResponse({"rows": [], "windowSeconds": seconds, "source": "sheet"})
 
-    # Ask the Apps Script for this window + a downsample cap (it strides rows to fit).
-    sep = "&" if "?" in GOOGLE_SHEETS_WEBHOOK_URL else "?"
-    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": HISTORY_MAX_POINTS})
-
-    def fetch() -> str:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read().decode("utf-8")
-
-    try:
-        raw = await asyncio.to_thread(fetch)
-        data = json.loads(raw)
-    except Exception as exc:
-        print(f"⚠️ Failed to read history from Google Sheets: {exc}")
-        return JSONResponse({"rows": [], "windowSeconds": seconds, "error": str(exc), "source": "sheet"})
-
-    rows = [
-        r
-        for r in data.get("rows", [])
-        if isinstance(r.get("timestamp"), (int, float)) and r["timestamp"] >= cutoff_ms
-    ]
+    rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
+    if err is not None:
+        return JSONResponse({"rows": [], "windowSeconds": seconds, "error": err, "source": "sheet"})
     return JSONResponse({"rows": _with_ntu(rows), "windowSeconds": seconds, "source": "sheet"})
 
 
