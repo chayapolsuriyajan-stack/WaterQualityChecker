@@ -84,7 +84,7 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
+      <div data-tour="param-grid" className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
         {PARAM_ORDER.map((param, index) => {
           const meta = PARAM_META[param]
           const { value: threshold, label: thresholdLabel } = SPARKLINE_THRESHOLD[param]

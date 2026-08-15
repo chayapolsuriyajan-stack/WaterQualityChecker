@@ -1,4 +1,5 @@
 import { Droplets, Menu } from 'lucide-react'
+import { TourHelpButton } from '@/components/shell/TourHelpButton'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import {
@@ -33,8 +34,13 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
       </div>
 
       <div className="flex items-center gap-1">
-        <ThemeToggle />
-        <LanguageSwitcher collapsed />
+        <div data-tour="theme-toggle">
+          <ThemeToggle />
+        </div>
+        <div data-tour="lang-toggle">
+          <LanguageSwitcher collapsed />
+        </div>
+        <TourHelpButton />
 
         <Sheet>
           <SheetTrigger asChild>
@@ -105,6 +111,7 @@ export function MobileBottomNav({ view, onChange }: MobileNavProps) {
             key={item.id}
             type="button"
             aria-current={active ? 'page' : undefined}
+            data-tour={`nav-${item.id}`}
             onClick={() => onChange(item.id)}
             className={cn(
               'flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors motion-reduce:transition-none',

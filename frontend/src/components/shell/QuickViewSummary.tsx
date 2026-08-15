@@ -162,7 +162,10 @@ export function QuickViewSummary({ className }: QuickViewSummaryProps) {
   const wqi = reading ? wqiFromReading(reading) : { score: null, band: 'unknown' as WqiBand }
 
   return (
-    <div className={cn('rounded-xl border border-border bg-card/70 p-4 shadow-sm backdrop-blur-md', className)}>
+    <div
+      data-tour="quick-view"
+      className={cn('rounded-xl border border-border bg-card/70 p-4 shadow-sm backdrop-blur-md', className)}
+    >
       <div className="mb-1 flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-foreground">{t('quickview.title')}</h3>
         <Badge variant="outline" className={cn('shrink-0 whitespace-nowrap', WQI_BAND_BADGE_CLASS[wqi.band])}>
