@@ -2,6 +2,13 @@
 __pycache__
 calibration.json
 
+# Local sensor history database (storage.py) + its WAL sidecars. Site-specific measurement
+# data, not project code -- back it up separately, don't commit it.
+history.db
+history.db-wal
+history.db-shm
+logs/
+
 # Agent tooling artifacts -- not project code
 .agents/
 .claude/skills/graphify/
