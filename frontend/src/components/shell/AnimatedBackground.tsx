@@ -7,25 +7,36 @@ interface AnimatedBackgroundProps {
 
 const DOT_SPACING = 32
 const DOT_RADIUS = 1.4
+/** Dots shrink toward this fraction of DOT_RADIUS at the low point of their wave, growing
+ * back to full size at the high point — a cheap depth cue (near dots read "bigger"). */
+const DOT_RADIUS_MIN_SCALE = 0.6
 const WAVE_FREQ = 0.012
 const WAVE_SPEED = 0.00035
 const WAVE_AMPLITUDE = 10
 const DOT_ALPHA = 0.14
 const MAX_DPR = 1.5
+/** Vignette fade: fraction of the canvas's half-diagonal where the fade starts / ends. */
+const VIGNETTE_START = 0.35
+const VIGNETTE_END = 1.05
+const VIGNETTE_ALPHA = 0.9
 
-/** Resolved `--primary` / `--accent` HSL triples read from the current theme. */
+/** Resolved `--primary` / `--accent` HSL triples read from the current theme, plus the
+ * plain `--background` triple used to paint the edge vignette. */
 interface ThemeColors {
   primary: string
   accent: string
+  background: string
 }
 
 function readThemeColors(): ThemeColors {
   const style = getComputedStyle(document.documentElement)
   const primary = style.getPropertyValue('--primary').trim()
   const accent = style.getPropertyValue('--accent').trim()
+  const background = style.getPropertyValue('--background').trim()
   return {
     primary: primary ? `hsl(${primary} / ${DOT_ALPHA})` : `hsl(168 76% 42% / ${DOT_ALPHA})`,
     accent: accent ? `hsl(${accent} / ${DOT_ALPHA})` : `hsl(168 76% 96% / ${DOT_ALPHA})`,
+    background: background || '200 32% 8%',
   }
 }
 
@@ -54,6 +65,29 @@ export function AnimatedBackground({ reducedMotion = false }: AnimatedBackground
     let width = 0
     let height = 0
     let colors = readThemeColors()
+    let vignette: CanvasGradient | null = null
+
+    /** Radial fade from transparent (center) to `--background` (edges), so the dot
+     * grid reads as receding into the page instead of tiling flatly edge-to-edge.
+     * Rebuilt whenever size or theme colors change -- cheap, and lets `draw` just
+     * paint the cached gradient instead of recomputing it every frame. */
+    const buildVignette = () => {
+      if (width === 0 || height === 0) return
+      const cx = width / 2
+      const cy = height / 2
+      const maxRadius = Math.sqrt(cx * cx + cy * cy)
+      const grad = ctx.createRadialGradient(
+        cx,
+        cy,
+        maxRadius * VIGNETTE_START,
+        cx,
+        cy,
+        maxRadius * VIGNETTE_END,
+      )
+      grad.addColorStop(0, `hsl(${colors.background} / 0)`)
+      grad.addColorStop(1, `hsl(${colors.background} / ${VIGNETTE_ALPHA})`)
+      vignette = grad
+    }
 
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR)
@@ -64,6 +98,7 @@ export function AnimatedBackground({ reducedMotion = false }: AnimatedBackground
       canvas.style.width = `${width}px`
       canvas.style.height = `${height}px`
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      buildVignette()
     }
 
     const draw = (t: number) => {
@@ -78,11 +113,20 @@ export function AnimatedBackground({ reducedMotion = false }: AnimatedBackground
         for (let col = 0; col < cols; col++) {
           const x = col * DOT_SPACING
           const baseY = row * DOT_SPACING
-          const y = baseY + Math.sin(x * WAVE_FREQ + t * WAVE_SPEED + rowPhase) * WAVE_AMPLITUDE
+          const wave = Math.sin(x * WAVE_FREQ + t * WAVE_SPEED + rowPhase)
+          const y = baseY + wave * WAVE_AMPLITUDE
+          // Dots near the crest of their wave render slightly larger than dots
+          // near the trough -- a cheap parallax-like depth cue with no extra draws.
+          const radius = DOT_RADIUS * (DOT_RADIUS_MIN_SCALE + (1 - DOT_RADIUS_MIN_SCALE) * ((wave + 1) / 2))
           ctx.beginPath()
-          ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2)
+          ctx.arc(x, y, radius, 0, Math.PI * 2)
           ctx.fill()
         }
+      }
+
+      if (vignette) {
+        ctx.fillStyle = vignette
+        ctx.fillRect(0, 0, width, height)
       }
     }
 
@@ -122,6 +166,7 @@ export function AnimatedBackground({ reducedMotion = false }: AnimatedBackground
 
     const recolor = () => {
       colors = readThemeColors()
+      buildVignette()
       if (reducedMotion) draw(0)
     }
 

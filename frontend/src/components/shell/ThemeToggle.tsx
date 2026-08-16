@@ -51,7 +51,7 @@ export function ThemeToggle({ className, showLabel = false }: ThemeToggleProps):
       ) : (
         <Moon aria-hidden="true" />
       )}
-      {showLabel && <span suppressHydrationWarning>{t('theme.toggle')}</span>}
+      {showLabel && <span suppressHydrationWarning>{t('theme.label')}</span>}
     </Button>
   )
 }

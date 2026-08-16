@@ -204,6 +204,7 @@ const en = {
 
   // --- theme ---------------------------------------------------------------
   'theme.toggle': 'Toggle theme',
+  'theme.label': 'Theme',
   'theme.light': 'Light',
   'theme.dark': 'Dark',
 
@@ -417,6 +418,7 @@ export const messages = {
     'common.uncalibrated': 'ยังไม่สอบเทียบ (Raw ADC)',
 
     'theme.toggle': 'สลับธีม',
+    'theme.label': 'ธีม',
     'theme.light': 'สว่าง',
     'theme.dark': 'มืด',
 
