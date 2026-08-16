@@ -32,7 +32,7 @@ function formatTime(ts: number, window: HistoryWindow): string {
   if (LONG_WINDOWS.includes(window)) {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
-  return d.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 interface ChartPoint {

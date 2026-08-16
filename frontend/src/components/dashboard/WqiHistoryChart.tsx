@@ -4,7 +4,7 @@
  * shared logic with live readings), and draws it as a Recharts area/line with
  * two labeled reference lines at WQI 50 ("Moderate") and 70 ("Good").
  */
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Area,
@@ -33,12 +33,17 @@ function formatTime(ts: number, window: HistoryWindow): string {
   if (window === '3h' || window === '24h') {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
-  return d.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-export function WqiHistoryChart() {
+interface WqiHistoryChartProps {
+  /** Shared with every other graph on the dashboard -- see DashboardView. */
+  window: HistoryWindow
+  onWindowChange: (window: HistoryWindow) => void
+}
+
+export function WqiHistoryChart({ window, onWindowChange }: WqiHistoryChartProps) {
   const { t } = useT()
-  const [window, setWindow] = useState<HistoryWindow>('15m')
   const isShort = SHORT_WINDOWS.includes(window)
 
   const { data, isLoading, isError } = useQuery({
@@ -60,7 +65,7 @@ export function WqiHistoryChart() {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
         <CardTitle className="text-base">{t('wqi.title')}</CardTitle>
-        <WindowSelector value={window} onChange={setWindow} />
+        <WindowSelector value={window} onChange={onWindowChange} />
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -95,6 +100,11 @@ export function WqiHistoryChart() {
                     fontSize: 12,
                   }}
                   labelStyle={{ color: 'hsl(var(--foreground))' }}
+                  formatter={(value) => [Number(value).toFixed(0), t('wqi.title')]}
+                  labelFormatter={(_, payload) => {
+                    const ts = payload?.[0]?.payload?.timestamp
+                    return typeof ts === 'number' ? new Date(ts).toLocaleString() : ''
+                  }}
                 />
                 <ReferenceLine
                   y={WQI_THRESHOLDS.moderate}

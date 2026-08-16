@@ -237,6 +237,7 @@ const en = {
   'tour.done': 'Done',
   'tour.stepCounter': '{current} / {total}',
   'tour.helpButtonAria': 'Replay guided tour',
+  'tour.helpLabel': 'Help',
 } as const
 
 export const messages = {
@@ -447,6 +448,7 @@ export const messages = {
     'tour.done': 'เสร็จสิ้น',
     'tour.stepCounter': '{current} / {total}',
     'tour.helpButtonAria': 'เล่นทัวร์แนะนำซ้ำ',
+    'tour.helpLabel': 'ช่วยเหลือ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

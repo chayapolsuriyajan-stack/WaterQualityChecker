@@ -15,9 +15,11 @@ import { useT } from '@/lib/i18n'
 
 interface ThemeToggleProps {
   className?: string
+  /** Show the "Light"/"Dark" text next to the icon -- only where the layout has room (e.g. the expanded sidebar rail). */
+  showLabel?: boolean
 }
 
-export function ThemeToggle({ className }: ThemeToggleProps): JSX.Element {
+export function ThemeToggle({ className, showLabel = false }: ThemeToggleProps): JSX.Element {
   const { resolvedTheme, setTheme } = useTheme()
   const { t } = useT()
   const [mounted, setMounted] = useState(false)
@@ -33,8 +35,12 @@ export function ThemeToggle({ className }: ThemeToggleProps): JSX.Element {
     <Button
       type="button"
       variant="ghost"
-      size="icon"
-      className={cn('h-11 w-11 min-h-11 min-w-11 focus-visible:ring-2 focus-visible:ring-offset-2', className)}
+      size={showLabel ? 'default' : 'icon'}
+      className={cn(
+        'h-11 min-h-11 min-w-11 gap-2 focus-visible:ring-2 focus-visible:ring-offset-2',
+        !showLabel && 'w-11',
+        className,
+      )}
       aria-label={t('theme.toggle')}
       title={nextModeLabel}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
@@ -45,6 +51,7 @@ export function ThemeToggle({ className }: ThemeToggleProps): JSX.Element {
       ) : (
         <Moon aria-hidden="true" />
       )}
+      {showLabel && <span suppressHydrationWarning>{t('theme.toggle')}</span>}
     </Button>
   )
 }

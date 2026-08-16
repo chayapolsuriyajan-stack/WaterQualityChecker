@@ -13,7 +13,7 @@ import {
 } from '@/lib/thresholds'
 import { useT } from '@/lib/i18n'
 import { PARAM_META, PARAM_ORDER, type ParamKey } from '@/lib/paramMeta'
-import type { SensorReading } from '@/lib/types'
+import type { HistoryWindow, SensorReading } from '@/lib/types'
 import type { SensorSeries } from '@/lib/useSensorSocket'
 import { ParamCard } from './ParamCard'
 import { ParamDetailDialog } from './ParamDetailDialog'
@@ -21,6 +21,9 @@ import { ParamDetailDialog } from './ParamDetailDialog'
 interface ParamGridProps {
   reading: SensorReading | null
   series: SensorSeries
+  /** Shared history window -- see DashboardView. */
+  window: HistoryWindow
+  onWindowChange: (window: HistoryWindow) => void
 }
 
 /** Sparkline threshold + label per param, kept out of paramMeta since it's dashboard-card-only. */
@@ -31,7 +34,7 @@ const SPARKLINE_THRESHOLD: Record<ParamKey, { value: number; label: string }> = 
   ec: { value: EC_THRESHOLDS.warn, label: `${EC_THRESHOLDS.warn} ${EC_THRESHOLDS.unit}` },
 }
 
-export function ParamGrid({ reading, series }: ParamGridProps) {
+export function ParamGrid({ reading, series, window, onWindowChange }: ParamGridProps) {
   const { t } = useT()
   const [openParam, setOpenParam] = useState<ParamKey | null>(null)
 
@@ -115,6 +118,8 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
         liveValue={openParam ? valueFor(openParam) : null}
         liveUnit={openMeta ? unitFor(openParam as ParamKey) : undefined}
         scorable={openScorable}
+        window={window}
+        onWindowChange={onWindowChange}
       />
     </>
   )

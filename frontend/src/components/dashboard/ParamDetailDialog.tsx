@@ -7,8 +7,10 @@
  *
  * Data source: TanStack `useQuery(['history', window])` — the SAME key shape
  * WqiHistoryChart uses, so the cache is shared instead of double-fetching.
+ * `window` itself is lifted to DashboardView and passed in as a prop, so
+ * every graph on the dashboard shares one global time-range control.
  */
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Info } from 'lucide-react'
 import {
@@ -49,6 +51,9 @@ interface ParamDetailDialogProps {
   liveUnit?: string
   /** False for uncalibrated turbidity -> no scoring/threshold lines. */
   scorable?: boolean
+  /** Shared history window -- see DashboardView. */
+  window: HistoryWindow
+  onWindowChange: (window: HistoryWindow) => void
 }
 
 export function ParamDetailDialog({
@@ -57,9 +62,10 @@ export function ParamDetailDialog({
   liveValue,
   liveUnit,
   scorable = true,
+  window,
+  onWindowChange,
 }: ParamDetailDialogProps) {
   const { t } = useT()
-  const [window, setWindow] = useState<HistoryWindow>('15m')
 
   const meta = param ? PARAM_META[param] : null
   const unit = liveUnit ?? meta?.unit ?? ''
@@ -154,7 +160,7 @@ export function ParamDetailDialog({
         </div>
 
         {/* Window selector */}
-        <WindowChips value={window} onChange={setWindow} />
+        <WindowChips value={window} onChange={onWindowChange} />
 
         {/* Chart */}
         <DetailChart

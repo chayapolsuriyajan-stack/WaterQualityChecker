@@ -83,7 +83,8 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
               })}
             </nav>
             <div className="flex flex-col gap-1.5">
-              <ThemeToggle className="w-full justify-start px-3" />
+              <ThemeToggle showLabel className="w-full justify-start px-3" />
+              <TourHelpButton showLabel className="w-full justify-start px-3" />
               <LanguageSwitcher className="w-full" />
               <UserBadge />
             </div>

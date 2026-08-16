@@ -125,12 +125,18 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
 
       <div className={cn('flex flex-col gap-1.5', collapsed && 'items-center')}>
         <div data-tour="theme-toggle">
-          <ThemeToggle className={collapsed ? undefined : 'w-full justify-start px-3'} />
+          <ThemeToggle
+            showLabel={!collapsed}
+            className={collapsed ? undefined : 'w-full justify-start px-3'}
+          />
         </div>
         <div data-tour="lang-toggle">
           <LanguageSwitcher collapsed={collapsed} className={collapsed ? undefined : 'w-full'} />
         </div>
-        <TourHelpButton className={collapsed ? undefined : 'w-full justify-start px-3'} />
+        <TourHelpButton
+          showLabel={!collapsed}
+          className={collapsed ? undefined : 'w-full justify-start px-3'}
+        />
         <UserBadge collapsed={collapsed} />
       </div>
     </aside>
