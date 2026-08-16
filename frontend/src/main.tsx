@@ -4,6 +4,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
 import { ThemeProvider } from 'next-themes'
 import { Toaster } from 'sonner'
+// Self-hosted webfonts (works offline on the LAN, no Google Fonts CDN
+// dependency) for the 'Noto Sans Thai', 'Inter' stack declared in
+// index.css's `body { font-family: ... }`. Only the weights actually used
+// by Tailwind utility classes across the app (400 body text, 500
+// font-medium, 600 font-semibold -- no font-bold/700 usage found) are
+// imported, to keep the bundle lean.
+import '@fontsource/noto-sans-thai/400.css'
+import '@fontsource/noto-sans-thai/500.css'
+import '@fontsource/noto-sans-thai/600.css'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
 import './index.css'
 import App from './App'
 import { LanguageProvider, translateStandalone } from '@/lib/i18n'

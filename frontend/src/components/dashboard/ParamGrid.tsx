@@ -58,6 +58,12 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
     return PARAM_META[param].unit
   }
 
+  /** Omitted for uncalibrated turbidity, whose displayed unit is raw "ADC", not "NTU". */
+  function unitFullNameKeyFor(param: ParamKey) {
+    if (param === 'turbidity' && !turbidityIsNtu) return undefined
+    return PARAM_META[param].unitFullNameKey
+  }
+
   function precisionFor(param: ParamKey): number {
     if (param === 'turbidity') return turbidityIsNtu ? PARAM_META.turbidity.precision : 0
     return PARAM_META[param].precision
@@ -78,7 +84,7 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
+      <div data-tour="param-grid" className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
         {PARAM_ORDER.map((param, index) => {
           const meta = PARAM_META[param]
           const { value: threshold, label: thresholdLabel } = SPARKLINE_THRESHOLD[param]
@@ -90,6 +96,7 @@ export function ParamGrid({ reading, series }: ParamGridProps) {
               labelKey={meta.labelKey}
               value={valueFor(param)}
               unit={unitFor(param)}
+              unitFullNameKey={unitFullNameKeyFor(param)}
               precision={precisionFor(param)}
               param={isTurbidity ? (turbidityIsNtu ? 'turbidity' : undefined) : param}
               threshold={threshold}

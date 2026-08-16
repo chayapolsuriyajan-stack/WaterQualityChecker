@@ -35,6 +35,10 @@ interface ParamCardProps {
   labelKey: MessageKey
   value: number | null
   unit: string
+  /** Spelled-out name of `unit` (e.g. "Nephelometric Turbidity Units" for
+   * NTU), shown as a hover title on the unit text. Omitted for units that
+   * are self-explanatory (°C) or not meaningfully nameable (raw ADC). */
+  unitFullNameKey?: MessageKey
   precision?: number
   /** Omit when the value can't be scored against a threshold (e.g. uncalibrated raw ADC). */
   param?: ThresholdParam
@@ -53,6 +57,7 @@ export function ParamCard({
   labelKey,
   value,
   unit,
+  unitFullNameKey,
   precision = 1,
   param,
   threshold,
@@ -95,7 +100,12 @@ export function ParamCard({
               <p className="truncate text-xs font-medium text-muted-foreground">{t(labelKey)}</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color }}>
                 {value === null ? '—' : value.toFixed(precision)}
-                <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span>
+                <span
+                  className="ml-1 text-sm font-normal text-muted-foreground"
+                  title={unitFullNameKey ? t(unitFullNameKey) : undefined}
+                >
+                  {unit}
+                </span>
               </p>
               {hint && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{hint}</p>}
             </div>

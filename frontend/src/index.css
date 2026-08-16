@@ -76,7 +76,7 @@
     --secondary-foreground: 200 30% 16%;
 
     --muted: 165 25% 94%;
-    --muted-foreground: 200 10% 45%;
+    --muted-foreground: 200 10% 33%;
 
     --accent: 168 76% 96%;
     --accent-foreground: 168 76% 28%;
@@ -87,11 +87,11 @@
     --success: 142 70% 35%;
     --success-foreground: 0 0% 100%;
 
-    --warning: 38 92% 50%;
+    --warning: 38 92% 38%;
     --warning-foreground: 30 40% 10%;
 
-    --border: 165 20% 88%;
-    --input: 165 20% 88%;
+    --border: 165 20% 82%;
+    --input: 165 20% 82%;
     --ring: 168 76% 42%;
 
     /* Sidebar/chrome surface: kept apart from --card so the nav rail, mobile

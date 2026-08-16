@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Droplets, Gauge, History, SlidersHorizontal } from 'lucide-react'
 import { motion } from 'motion/react'
+import { TourHelpButton } from '@/components/shell/TourHelpButton'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import type { MessageKey } from '@/lib/strings'
@@ -95,6 +96,7 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
               type="button"
               title={label}
               aria-current={active ? 'page' : undefined}
+              data-tour={`nav-${item.id}`}
               onClick={() => onChange(item.id)}
               className={cn(
                 'relative flex items-center rounded-lg px-3 py-2.5 text-sm font-medium transition-all motion-reduce:transition-none',
@@ -122,8 +124,13 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
       </nav>
 
       <div className={cn('flex flex-col gap-1.5', collapsed && 'items-center')}>
-        <ThemeToggle className={collapsed ? undefined : 'w-full justify-start px-3'} />
-        <LanguageSwitcher collapsed={collapsed} className={collapsed ? undefined : 'w-full'} />
+        <div data-tour="theme-toggle">
+          <ThemeToggle className={collapsed ? undefined : 'w-full justify-start px-3'} />
+        </div>
+        <div data-tour="lang-toggle">
+          <LanguageSwitcher collapsed={collapsed} className={collapsed ? undefined : 'w-full'} />
+        </div>
+        <TourHelpButton className={collapsed ? undefined : 'w-full justify-start px-3'} />
         <UserBadge collapsed={collapsed} />
       </div>
     </aside>

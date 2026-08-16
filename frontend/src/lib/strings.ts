@@ -62,6 +62,7 @@ const en = {
     'Check the shading, the inflow, and whether the probe has shifted. Watch the next few readings before acting.',
 
   'param.turbidity.label': 'Turbidity',
+  'param.turbidity.fullName': 'Turbidity',
   'param.turbidity.about':
     'Turbidity is a measure of the particles suspended in the water, which limit how far light reaches.',
   'param.turbidity.impact':
@@ -86,6 +87,11 @@ const en = {
     'An unusual EC reading means the dissolved salts or minerals have changed, which can point to pollution or mineral runoff.',
   'param.ec.recommendation':
     'Check the TDS reading too, since EC is derived from it. A sudden change in both is worth investigating.',
+
+  // --- units ---------------------------------------------------------------
+  'unit.ntu.fullName': 'Nephelometric Turbidity Units',
+  'unit.ppm.fullName': 'parts per million',
+  'unit.ecUnit.fullName': 'microsiemens per centimeter',
 
   // --- parameter detail modal ------------------------------------------------
   'detail.currentValue': 'Current value',
@@ -205,6 +211,32 @@ const en = {
   'lang.switch': 'Switch language',
   'lang.en': 'English',
   'lang.th': 'ไทย',
+
+  // --- guided tour -----------------------------------------------------------
+  'tour.welcome.title': 'Welcome to Aqua Monitor',
+  'tour.welcome.body': "Let's take a quick look around the dashboard. This will only take a minute.",
+  'tour.navDashboard.title': 'Dashboard tab',
+  'tour.navDashboard.body': 'The live overview: water quality history, current readings, and safety gauges.',
+  'tour.paramGrid.title': 'Live readings',
+  'tour.paramGrid.body': 'Temperature, turbidity, TDS, and EC update in real time. Tap any card for details and trends.',
+  'tour.quickView.title': 'Quick view',
+  'tour.quickView.body': 'A one-glance summary of the overall water quality index and each parameter\'s status.',
+  'tour.navCalibration.title': 'Calibration tab',
+  'tour.navCalibration.body': 'Calibrate the turbidity and TDS sensors against known reference samples, no reflashing needed.',
+  'tour.navHistory.title': 'History tab',
+  'tour.navHistory.body': 'Browse past readings over a chosen time range and export them as CSV.',
+  'tour.themeToggle.title': 'Theme toggle',
+  'tour.themeToggle.body': 'Switch between light and dark mode at any time.',
+  'tour.langToggle.title': 'Language',
+  'tour.langToggle.body': 'Switch the whole interface between English and Thai.',
+  'tour.done.title': "You're all set",
+  'tour.done.body': 'Replay this tour anytime from the help button. Enjoy monitoring your water quality.',
+  'tour.next': 'Next',
+  'tour.back': 'Back',
+  'tour.skip': 'Skip',
+  'tour.done': 'Done',
+  'tour.stepCounter': '{current} / {total}',
+  'tour.helpButtonAria': 'Replay guided tour',
 } as const
 
 export const messages = {
@@ -250,6 +282,7 @@ export const messages = {
       'ตรวจสอบร่มเงา ทางน้ำเข้า และตำแหน่งของหัววัดว่าขยับหรือไม่ แล้วเฝ้าดูค่าอีกสองสามรอบก่อนดำเนินการ',
 
     'param.turbidity.label': 'ความขุ่น',
+    'param.turbidity.fullName': 'ความขุ่น (Turbidity)',
     'param.turbidity.about':
       'ความขุ่นคือปริมาณอนุภาคที่แขวนลอยอยู่ในน้ำ ซึ่งจำกัดระยะที่แสงส่องลงไปได้',
     'param.turbidity.impact':
@@ -274,6 +307,10 @@ export const messages = {
       'ค่า EC ที่ผิดปกติหมายถึงเกลือหรือแร่ธาตุที่ละลายอยู่เปลี่ยนไป ซึ่งอาจบ่งชี้มลพิษหรือแร่ธาตุที่ไหลมากับน้ำ',
     'param.ec.recommendation':
       'ตรวจสอบค่า TDS ประกอบด้วย เพราะ EC คำนวณมาจากค่านั้น หากทั้งสองค่าเปลี่ยนกะทันหันควรตรวจสอบเพิ่มเติม',
+
+    'unit.ntu.fullName': 'หน่วยวัดความขุ่นแบบเนฟีโลเมตริก (Nephelometric Turbidity Units)',
+    'unit.ppm.fullName': 'ส่วนในล้านส่วน (parts per million)',
+    'unit.ecUnit.fullName': 'ไมโครซีเมนส์ต่อเซนติเมตร (microsiemens per centimeter)',
 
     'detail.currentValue': 'ค่าปัจจุบัน',
     'detail.noRecord': 'ยังไม่มีข้อมูล',
@@ -385,6 +422,31 @@ export const messages = {
     'lang.switch': 'เปลี่ยนภาษา',
     'lang.en': 'English',
     'lang.th': 'ไทย',
+
+    'tour.welcome.title': 'ยินดีต้อนรับสู่ Aqua Monitor',
+    'tour.welcome.body': 'มาดูภาพรวมของแดชบอร์ดกันสักครู่ ใช้เวลาไม่นาน',
+    'tour.navDashboard.title': 'แท็บแดชบอร์ด',
+    'tour.navDashboard.body': 'ภาพรวมแบบสด ทั้งประวัติคุณภาพน้ำ ค่าปัจจุบัน และมาตรวัดความปลอดภัย',
+    'tour.paramGrid.title': 'ค่าที่วัดได้แบบสด',
+    'tour.paramGrid.body': 'อุณหภูมิ ความขุ่น TDS และ EC อัปเดตแบบเรียลไทม์ แตะที่การ์ดใดก็ได้เพื่อดูรายละเอียดและแนวโน้ม',
+    'tour.quickView.title': 'ภาพรวมด่วน',
+    'tour.quickView.body': 'สรุปดัชนีคุณภาพน้ำโดยรวมและสถานะของแต่ละพารามิเตอร์ในมุมมองเดียว',
+    'tour.navCalibration.title': 'แท็บปรับเทียบ',
+    'tour.navCalibration.body': 'ปรับเทียบเซนเซอร์ความขุ่นและ TDS กับตัวอย่างอ้างอิงที่ทราบค่า โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',
+    'tour.navHistory.title': 'แท็บประวัติ',
+    'tour.navHistory.body': 'ดูข้อมูลย้อนหลังตามช่วงเวลาที่เลือก และส่งออกเป็นไฟล์ CSV',
+    'tour.themeToggle.title': 'สลับธีม',
+    'tour.themeToggle.body': 'สลับระหว่างโหมดสว่างและมืดได้ตลอดเวลา',
+    'tour.langToggle.title': 'ภาษา',
+    'tour.langToggle.body': 'สลับภาษาของทั้งอินเทอร์เฟซระหว่างอังกฤษและไทย',
+    'tour.done.title': 'พร้อมใช้งานแล้ว',
+    'tour.done.body': 'เล่นทัวร์นี้ซ้ำได้ทุกเมื่อจากปุ่มช่วยเหลือ ขอให้เพลิดเพลินกับการติดตามคุณภาพน้ำ',
+    'tour.next': 'ถัดไป',
+    'tour.back': 'ย้อนกลับ',
+    'tour.skip': 'ข้าม',
+    'tour.done': 'เสร็จสิ้น',
+    'tour.stepCounter': '{current} / {total}',
+    'tour.helpButtonAria': 'เล่นทัวร์แนะนำซ้ำ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

@@ -13,6 +13,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import storage
+
 # Windows consoles default to cp1252, where the emoji in the startup prints below raise
 # UnicodeEncodeError and crash the server on launch. Force UTF-8 so `python main.py` just works.
 try:
@@ -34,6 +36,10 @@ except FileNotFoundError:
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
 CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
+# Local SQLite history (see storage.py). Set "historyDbFile" to "" to disable it and fall
+# back to the previous in-memory-buffer + Google Sheets behavior.
+HISTORY_DB_PATH = webconfig.get("historyDbFile", "history.db")
+HISTORY_RETENTION_DAYS = int(webconfig.get("historyRetentionDays", 365))
 
 class BrotliStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
@@ -49,26 +55,6 @@ class BrotliStaticFiles(StaticFiles):
                 original_type = mimetypes.guess_type(path[:-3])[0] if path.endswith('.gz') else None
                 response.headers.setdefault("Content-Type", original_type or "application/octet-stream")
         return response
-
-class NoStoreStaticFiles(StaticFiles):
-    """StaticFiles that forbids browser caching entirely.
-
-    WHY (do not "optimise" this back to a long max-age): this project has no build
-    step. The React SPA's content-hashed files under web-react/assets/ are hand-edited
-    *in place* -- the hash in the filename never changes when the content does. Starlette
-    sets ETag/Last-Modified but no Cache-Control, so browsers apply heuristic freshness
-    and keep executing a stale copy without ever revalidating (observed for real with
-    routes-*.js). `no-store` (not `no-cache`) because `no-cache` still allows a 304, and
-    Starlette's ETag is derived from mtime+size -- an edit preserving both would 304
-    incorrectly. `no-store` guarantees a re-fetch.
-    """
-
-    async def get_response(self, path, scope):
-        response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        return response
-
 
 if os.path.isdir(BUILD_DIR):
     app.mount(f"/{BUILD_DIR}", BrotliStaticFiles(directory=BUILD_DIR), name="build")
@@ -103,6 +89,16 @@ if GOOGLE_SHEETS_WEBHOOK_URL:
     print("✅ Google Sheets relay enabled for /update readings.")
 else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
+
+if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
+    removed = storage.prune(HISTORY_RETENTION_DAYS)
+    print(
+        f"✅ Local history database at {HISTORY_DB_PATH} ({storage.count():,} readings"
+        + (f", pruned {removed:,} older than {HISTORY_RETENTION_DAYS}d" if removed else "")
+        + ")."
+    )
+else:
+    print("⚠️ Local history database disabled; /history falls back to memory + Google Sheets.")
 
 print("Starting FastAPI Backend Server...")
 
@@ -407,13 +403,20 @@ async def update_sensor(request: Request):
         if "temperature" in payload:
             # Record into the in-memory rolling history for the live short-window graph
             # (same raw ADC turbidity the sheet logs; timestamp in epoch ms to match it).
-            history_buffer.append({
+            history_row = {
                 "timestamp": payload["timestamp"] * 1000,
                 "temperature": payload["temperature"],
                 "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
                 "tds": payload.get("tds"),
                 "ec": payload.get("ec"),
-            })
+            }
+            history_buffer.append(history_row)
+
+            # Persist the same row locally (see storage.py). Off the event loop, and
+            # fire-and-forget like the Sheets relay, so disk latency never delays the
+            # ESP32's /update response.
+            if storage.enabled():
+                asyncio.create_task(asyncio.to_thread(storage.insert, history_row))
 
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
@@ -442,9 +445,11 @@ HISTORY_WINDOWS = {
 }
 HISTORY_DEFAULT_WINDOW = "15m"
 HISTORY_MAX_POINTS = 400  # downsample target so long windows stay small/fast
-# Short windows are served LIVE from the in-memory buffer (no Google Sheet); longer windows
-# read from the sheet, which persists across restarts.
-HISTORY_BUFFER_WINDOWS = {"5m", "15m", "1h"}
+# How far after a window's cutoff the oldest local row may sit while still counting as full
+# coverage. Readings arrive every 2s, so the first row at/after a cutoff is essentially
+# always a second or two late; without this tolerance every single request would look like a
+# coverage gap and trigger a pointless multi-second Google Sheets round-trip.
+HISTORY_GAP_TOLERANCE_MS = 15_000
 
 
 def _downsample(rows: list, max_points: int) -> list:
@@ -455,9 +460,9 @@ def _downsample(rows: list, max_points: int) -> list:
 
 
 def _with_ntu(rows: list) -> list:
-    # Each row's `turbidity` is raw ADC (matching the sheet). Add `turbidityNtu` = calibrated
-    # NTU (or None if uncalibrated) so NTU-based consumers (the React dashboard) stay consistent
-    # with the live WS value, while ADC-based consumers (the /classic graph) keep using `turbidity`.
+    # Each row's `turbidity` is raw ADC (matching the sheet and the local DB). Add
+    # `turbidityNtu` = calibrated NTU (or None if uncalibrated) so the dashboard stays
+    # consistent with the live WS value, while `turbidity` keeps carrying the raw ADC.
     out = []
     for r in rows:
         adc = r.get("turbidity")
@@ -471,33 +476,11 @@ def _with_ntu(rows: list) -> list:
     return out
 
 
-@app.get("/history")
-async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
-    # Short windows come live from the in-memory buffer; long windows are read back from the
-    # Google Sheet (via the Apps Script doGet), proxied here so the dashboard fetch stays
-    # same-origin -- no browser CORS/redirect issues with Google.
-    seconds = HISTORY_WINDOWS.get(window)
-    if seconds is None:
-        return JSONResponse(
-            {"error": f"invalid window '{window}'; allowed: {', '.join(HISTORY_WINDOWS)}"},
-            status_code=400,
-        )
-
-    cutoff_ms = (time.time() - seconds) * 1000
-
-    # Live path: the recent short-window graph reads straight from memory.
-    if window in HISTORY_BUFFER_WINDOWS:
-        rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
-        return JSONResponse(
-            {"rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)), "windowSeconds": seconds, "source": "live"}
-        )
-
-    if not GOOGLE_SHEETS_WEBHOOK_URL:
-        return JSONResponse({"rows": [], "windowSeconds": seconds, "source": "sheet"})
-
+async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> tuple[list, str | None]:
     # Ask the Apps Script for this window + a downsample cap (it strides rows to fit).
+    # Shared by the long-window path and the short-window buffer-gap fallback below.
     sep = "&" if "?" in GOOGLE_SHEETS_WEBHOOK_URL else "?"
-    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": HISTORY_MAX_POINTS})
+    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": max_points})
 
     def fetch() -> str:
         req = urllib.request.Request(url, method="GET")
@@ -509,14 +492,84 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
         data = json.loads(raw)
     except Exception as exc:
         print(f"⚠️ Failed to read history from Google Sheets: {exc}")
-        return JSONResponse({"rows": [], "windowSeconds": seconds, "error": str(exc), "source": "sheet"})
+        return [], str(exc)
 
     rows = [
         r
         for r in data.get("rows", [])
         if isinstance(r.get("timestamp"), (int, float)) and r["timestamp"] >= cutoff_ms
     ]
-    return JSONResponse({"rows": _with_ntu(rows), "windowSeconds": seconds, "source": "sheet"})
+    return rows, None
+
+
+@app.get("/history")
+async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
+    """Readings for the requested window, newest-last, from the cheapest source that covers it.
+
+    Three tiers, in order:
+      1. the local SQLite database (storage.py) -- answers ANY window straight off disk and
+         survives restarts, so it is preferred whenever it is enabled;
+      2. the in-memory buffer -- only adds anything when the database is disabled or a write
+         failed, since /update writes both;
+      3. Google Sheets -- consulted only for the part of the window the local sources don't
+         reach (a fresh database, a restored machine, or readings collected before this
+         database existed). Proxied here so the dashboard's fetch stays same-origin.
+    """
+    seconds = HISTORY_WINDOWS.get(window)
+    if seconds is None:
+        return JSONResponse(
+            {"error": f"invalid window '{window}'; allowed: {', '.join(HISTORY_WINDOWS)}"},
+            status_code=400,
+        )
+
+    cutoff_ms = (time.time() - seconds) * 1000
+    sources: list[str] = []
+
+    # Tier 1 -- local database. Blocking sqlite read, kept off the event loop.
+    db_rows: list = []
+    if storage.enabled():
+        db_rows = await asyncio.to_thread(storage.query, cutoff_ms)
+        if db_rows:
+            sources.append("db")
+
+    # Tier 2 -- in-memory buffer. When the database is on, this only contributes rows newer
+    # than its newest (i.e. an insert that failed); when it is off, this is the whole live path.
+    buffer_rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+    if db_rows:
+        newest_db_ms = db_rows[-1]["timestamp"]
+        tail = [r for r in buffer_rows if r["timestamp"] > newest_db_ms]
+        rows = db_rows + tail
+        if tail:
+            sources.append("live")
+    else:
+        rows = buffer_rows
+        if buffer_rows:
+            sources.append("live")
+
+    # Tier 3 -- Sheets fills the older end when the local sources start too late. The
+    # tolerance keeps a normal steady-state request (oldest row a second or two after the
+    # cutoff) from counting as a gap; see HISTORY_GAP_TOLERANCE_MS.
+    local_floor_ms = rows[0]["timestamp"] if rows else float("inf")
+    coverage_gap = (not rows) or (local_floor_ms > cutoff_ms + HISTORY_GAP_TOLERANCE_MS)
+
+    if coverage_gap and GOOGLE_SHEETS_WEBHOOK_URL:
+        sheet_rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
+        # Keep only rows strictly older than what the local sources already cover, so the
+        # merge has no duplicate/overlapping rows at the seam.
+        sheet_rows = [r for r in sheet_rows if r["timestamp"] < local_floor_ms]
+        if sheet_rows:
+            rows = sheet_rows + rows  # both chronological ascending -> merge stays ordered
+            sources.append("sheet")
+        if err is not None and not rows:
+            return JSONResponse(
+                {"rows": [], "windowSeconds": seconds, "error": err, "source": "sheet"}
+            )
+
+    return JSONResponse({
+        "rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)),
+        "windowSeconds": seconds,
+        "source": "+".join(sources) if sources else "none",
+    })
 
 
 # --- Calibration API ---------------------------------------------------------
@@ -730,10 +783,19 @@ else:
 if __name__ == "__main__":
     import uvicorn
 
+    # The autoreloader is DEV-ONLY, opt-in via HYDRO_DEV=1. It must stay off in a real
+    # deployment: it watches the working directory, so every calibration save (which writes
+    # calibration.json here) and every history.db write would restart the server -- dropping
+    # all dashboard WebSockets and wiping history_buffer/sensor_stats each time. It also runs
+    # a supervisor + child process, which double-binds the UDP discovery port on restart.
+    dev_mode = os.getenv("HYDRO_DEV") == "1"
+    if dev_mode:
+        print("🔧 HYDRO_DEV=1 -- autoreload ON (development only).")
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8080,
-        reload=True,
+        reload=dev_mode,
     )
 
