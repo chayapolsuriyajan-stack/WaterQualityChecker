@@ -40,8 +40,12 @@ The dashboard has a left sidebar with three tabs:
   Temperature / Turbidity / TDS / EC cards, each with a 30-second sparkline. **Click any
   card** to open a detail view: a bigger chart with numeric point labels and two-sided
   (too‑high / too‑low) threshold lines, min/avg/max for the selected window, a plain-language
-  explanation of the parameter, and — only when the reading is actually out of range — its
-  likely impact and a recommendation.
+  explanation of the parameter (including what the unit abbreviations actually mean), and —
+  only when the reading is actually out of range — its likely impact and a recommendation.
+  A **Quick View** card summarises everything at a glance: the overall WQI badge, one row
+  per parameter, and a single sentence saying what the water is doing right now. A reading
+  that sits implausibly at ~0 is flagged as **"sensor not connected"** rather than shown as
+  a real measurement.
 - **Calibration** — turbidity (2‑point) and TDS (single-point k-factor) calibration wired to
   the sensors themselves: dip the probe in a known reference, capture the reading, save. No
   firmware reflash needed. Includes an observed min/max range with one-click "use min" /
@@ -50,7 +54,9 @@ The dashboard has a left sidebar with three tabs:
 
 A theme toggle (light/dark) and a language switcher (English ⇄ ไทย) live in the sidebar too.
 The layout is fully responsive — phone, tablet, and desktop all get a layout suited to the
-screen.
+screen. On a first visit a short **guided tour** walks through the sidebar, the parameter
+grid, the Quick View card, and the calibration tab; it can be replayed any time from the
+help button in the sidebar.
 
 A separate lightweight page at **`/calibrate`** offers the same sensor calibration in a
 single self-contained HTML file, useful for calibrating from a phone or a machine that
@@ -79,8 +85,51 @@ ESP32 station ──raw readings──▶  FastAPI server (main.py)  ──live�
 - **Dashboard** ([`frontend/`](frontend/) — Vite + React + TypeScript + Tailwind) subscribes
   to the live stream and renders everything above.
 
+**If the server is unreachable**, readings are not simply lost:
+
+- The station falls back to posting to an **IFTTT Maker Webhooks** applet (once a minute, to
+  stay inside the free tier), which parks the reading in an `IFTTT_Buffer` tab of the same
+  spreadsheet. A scheduled Apps Script job (`migrateIftttBuffer`) folds those rows back into
+  the main sheet in the normal order. This needs a one-time manual setup in the IFTTT and
+  Apps Script UIs — see the comments at the top of
+  [`google_apps_script.gs`](google_apps_script.gs).
+- On the server side, if the in-memory live buffer has a gap (the server restarted mid-window),
+  `/history` falls back to Google Sheets for that window rather than showing a hole.
+
 More detail — wiring, the calibration math, the Google Sheets contract, the frontend's
 architecture — is in [`CLAUDE.md`](CLAUDE.md) and [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md).
+
+### Known gaps / where to improve it next
+
+Honest status, roughly in priority order:
+
+1. **The Google Apps Script webhook URL is committed** in [`webconfig.json`](webconfig.json),
+   and `POST /update` has no authentication. Anyone who can reach the server (or that URL)
+   can write readings. Move the URL to an environment variable and add a shared-secret
+   header on `/update`.
+2. ~~**Nothing restarts the server.**~~ **Fixed** — `scripts/install-service.ps1` installs the
+   backend as a Windows service via NSSM (restart-on-failure, rotated logs in `logs/`). Run it
+   from an elevated prompt. Autoreload is now off unless you set `HYDRO_DEV=1`, so a
+   calibration save no longer bounces the server and drops every dashboard.
+3. **No tests, no linting on the backend.** `main.py` holds the calibration math, the WQI
+   inputs, and the history windowing with no test coverage; the ESP32 ⇄ backend JSON contract
+   is only checked by hand. Unit tests around `apply_turbidity` / `apply_tds` / `get_history`
+   would be the highest-value first ones.
+4. **Calibration provenance is unverified.** `calibration.json` is git-ignored and its
+   coefficients were not captured against certified reference solutions, so NTU and ppm are
+   currently indicative rather than trustworthy. Recalibrate against known standards and
+   record when/with what.
+5. ~~**Long history depends entirely on Google Sheets.**~~ **Fixed** — every reading is now
+   also written to a local SQLite database (`history.db`, see `storage.py`), so any time range
+   is answered straight off disk with no network. Google Sheets stays as the shareable copy
+   and still fills in any period the local database doesn't cover.
+6. **Wi-Fi credentials and the IFTTT key are hardcoded** in
+   [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino), so sharing the sketch means
+   sharing secrets, and moving networks means a reflash. A WiFiManager-style captive portal
+   would fix both.
+7. ~~**Docs drift.**~~ **Fixed** — `CLAUDE.md` no longer describes the deleted `server.js`
+   relay or the `/classic` dashboard, and the dead `NoStoreStaticFiles` class documenting the
+   removed `web-react/` bundle is gone from `main.py`.
 
 ---
 
@@ -113,7 +162,10 @@ python main.py
   และเส้นอ้างอิงระบุช่วงค่าที่ปลอดภัย, ตารางการ์ดแบบเรียลไทม์ 2×2 สำหรับ อุณหภูมิ / ความขุ่น / TDS / EC
   แต่ละใบมีกราฟเส้นย่อยของ 30 วินาทีล่าสุด **คลิกที่การ์ดใดก็ได้** เพื่อเปิดมุมมองรายละเอียด: กราฟขนาดใหญ่พร้อมตัวเลข
   กำกับแต่ละจุดและเส้นเกณฑ์แบบสองด้าน (สูงเกินไป / ต่ำเกินไป), ค่าต่ำสุด/เฉลี่ย/สูงสุดของช่วงเวลาที่เลือก,
-  คำอธิบายค่าพารามิเตอร์แบบเข้าใจง่าย และ — เฉพาะเมื่อค่านั้นอยู่นอกช่วงปกติจริง — ผลกระทบที่อาจเกิดขึ้นพร้อมคำแนะนำ
+  คำอธิบายค่าพารามิเตอร์แบบเข้าใจง่าย (รวมถึงความหมายเต็มของหน่วยที่ใช้) และ — เฉพาะเมื่อค่านั้นอยู่นอกช่วงปกติจริง —
+  ผลกระทบที่อาจเกิดขึ้นพร้อมคำแนะนำ นอกจากนี้ยังมีการ์ด **Quick View** สรุปภาพรวมในที่เดียว: ป้าย WQI โดยรวม,
+  หนึ่งแถวต่อหนึ่งพารามิเตอร์ และประโยคสรุปสั้น ๆ ว่าน้ำตอนนี้เป็นอย่างไร หากค่าที่อ่านได้ต่ำผิดปกติจนเกือบเป็นศูนย์
+  ระบบจะแจ้งว่า **"เซนเซอร์ไม่ได้เชื่อมต่อ"** แทนที่จะแสดงเป็นค่าที่วัดได้จริง
 - **ปรับเทียบเซนเซอร์** — ปรับเทียบความขุ่น (2 จุด) และ TDS (ค่า k-factor จุดเดียว) เชื่อมกับเซนเซอร์จริง:
   จุ่มหัววัดในสารละลายอ้างอิงที่ทราบค่า บันทึกค่าที่อ่านได้ แล้วบันทึกผล ไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่
   มีการติดตามค่าต่ำสุด/สูงสุดที่พบระหว่างการปรับเทียบ พร้อมปุ่ม "ใช้ค่าต่ำสุด" / "ใช้ค่าสูงสุด" กดครั้งเดียวใช้ได้เลย
@@ -121,6 +173,8 @@ python main.py
 
 ปุ่มสลับธีม (สว่าง/มืด) และปุ่มเปลี่ยนภาษา (English ⇄ ไทย) อยู่ในแถบเมนูด้านซ้ายเช่นกัน
 หน้าจอปรับตามขนาดอุปกรณ์ได้เต็มรูปแบบ ไม่ว่าจะเป็นมือถือ แท็บเล็ต หรือคอมพิวเตอร์
+เมื่อเข้าใช้งานครั้งแรกจะมี **ทัวร์แนะนำการใช้งาน** พาดูแถบเมนู, ตารางพารามิเตอร์, การ์ด Quick View
+และแท็บปรับเทียบเซนเซอร์ และสามารถเปิดดูซ้ำได้จากปุ่มช่วยเหลือในแถบเมนู
 
 นอกจากนี้ยังมีหน้าเบา ๆ แยกต่างหากที่ **`/calibrate`** สำหรับปรับเทียบเซนเซอร์ในไฟล์ HTML เดียวจบ
 เหมาะสำหรับปรับเทียบจากมือถือหรือเครื่องที่ไม่จำเป็นต้องเปิดแดชบอร์ดเต็มรูปแบบ
@@ -146,6 +200,39 @@ python main.py
   ไม่มีการสร้างข้อมูลปลอมในทุกจุดของระบบ — เมื่อเกิดปัญหาจริงจะแสดงผลตรงตามความเป็นจริง
 - **แดชบอร์ด** ([`frontend/`](frontend/) — Vite + React + TypeScript + Tailwind)
   รับข้อมูลแบบเรียลไทม์และแสดงผลทั้งหมดข้างต้น
+
+**หากติดต่อเซิร์ฟเวอร์ไม่ได้** ข้อมูลจะไม่สูญหายไปเฉย ๆ:
+
+- สถานีจะเปลี่ยนไปส่งค่าไปยัง **IFTTT Maker Webhooks** แทน (นาทีละครั้ง เพื่อให้อยู่ในโควตาของแพ็กเกจฟรี)
+  ซึ่งจะพักข้อมูลไว้ในแท็บ `IFTTT_Buffer` ของสเปรดชีตเดียวกัน แล้วสคริปต์ตามเวลา (`migrateIftttBuffer`)
+  จะย้ายแถวเหล่านั้นกลับเข้าชีตหลักตามลำดับปกติ ทั้งหมดนี้ต้องตั้งค่าด้วยมือครั้งเดียวในหน้าเว็บของ IFTTT
+  และ Apps Script — ดูคำอธิบายด้านบนของไฟล์ [`google_apps_script.gs`](google_apps_script.gs)
+- ฝั่งเซิร์ฟเวอร์ หากบัฟเฟอร์ข้อมูลสดในหน่วยความจำมีช่วงที่ขาดหาย (เช่น เซิร์ฟเวอร์รีสตาร์ทกลางคัน)
+  `/history` จะดึงข้อมูลช่วงนั้นจาก Google Sheets แทน แทนที่จะแสดงกราฟที่มีช่องว่าง
+
+### ข้อจำกัดที่ยังมีอยู่ / สิ่งที่ควรปรับปรุงต่อไป
+
+สถานะตามความเป็นจริง เรียงตามความสำคัญคร่าว ๆ:
+
+1. **URL ของ Google Apps Script ถูกคอมมิตไว้ในโค้ด** ([`webconfig.json`](webconfig.json)) และ
+   `POST /update` ไม่มีการยืนยันตัวตน ใครที่เข้าถึงเซิร์ฟเวอร์หรือ URL นั้นได้ก็เขียนข้อมูลได้
+   ควรย้าย URL ไปไว้ใน environment variable และเพิ่ม shared secret ที่ `/update`
+2. ~~**ไม่มีตัวคอยรีสตาร์ทเซิร์ฟเวอร์**~~ **แก้ไขแล้ว** — สคริปต์ `scripts/install-service.ps1` ติดตั้งเซิร์ฟเวอร์
+   เป็น Windows service ผ่าน NSSM (รีสตาร์ทอัตโนมัติเมื่อล่ม พร้อมไฟล์ log ใน `logs/`) ให้รันจาก PowerShell
+   แบบ Administrator นอกจากนี้ระบบ autoreload ถูกปิดไว้แล้ว (เปิดด้วย `HYDRO_DEV=1` เมื่อพัฒนา)
+   การบันทึกค่าปรับเทียบจึงไม่ทำให้เซิร์ฟเวอร์รีสตาร์ทและตัดการเชื่อมต่อแดชบอร์ดอีกต่อไป
+3. **ยังไม่มีชุดทดสอบ** ทั้งสูตรปรับเทียบ, ค่าที่ป้อนเข้า WQI และการแบ่งช่วงเวลาของ `/history` ใน `main.py`
+   ยังไม่มีเทสต์ครอบคลุม และสัญญาข้อมูล JSON ระหว่าง ESP32 กับเซิร์ฟเวอร์ตรวจสอบด้วยมือล้วน ๆ
+4. **ยังยืนยันที่มาของค่าปรับเทียบไม่ได้** ไฟล์ `calibration.json` ไม่ถูกเก็บใน git และค่าที่ใช้อยู่ไม่ได้เทียบกับ
+   สารละลายมาตรฐานที่รับรองแล้ว ค่า NTU และ ppm จึงยังเป็นค่าบ่งชี้ ไม่ใช่ค่าที่เชื่อถือได้เต็มที่
+5. ~~**ประวัติย้อนหลังพึ่ง Google Sheets ทั้งหมด**~~ **แก้ไขแล้ว** — ทุกค่าที่อ่านได้จะถูกบันทึกลงฐานข้อมูล SQLite
+   ในเครื่องด้วย (`history.db` ดู `storage.py`) ทุกช่วงเวลาจึงอ่านจากดิสก์ได้ทันทีโดยไม่ต้องใช้เครือข่าย
+   ส่วน Google Sheets ยังคงเป็นสำเนาสำหรับแชร์ และใช้เติมช่วงข้อมูลที่ฐานข้อมูลในเครื่องยังไม่มี
+6. **รหัส Wi-Fi และคีย์ IFTTT ฝังอยู่ในเฟิร์มแวร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino))
+   การแชร์โค้ดจึงเท่ากับแชร์รหัส และการย้ายเครือข่ายต้องอัปโหลดเฟิร์มแวร์ใหม่ ควรใช้ WiFiManager แบบ captive portal
+7. ~~**เอกสารบางส่วนล้าสมัย**~~ **แก้ไขแล้ว** — `CLAUDE.md` ไม่กล่าวถึง `server.js` และหน้า `/classic`
+   ที่ถูกลบไปแล้วอีกต่อไป และคลาส `NoStoreStaticFiles` ที่ไม่ได้ใช้งาน (อธิบายถึง `web-react/` ที่ถูกลบไปแล้ว)
+   ก็ถูกนำออกจาก `main.py` ด้วย
 
 รายละเอียดเพิ่มเติม — การเดินสาย, สูตรการปรับเทียบ, รูปแบบข้อมูลของ Google Sheets, สถาปัตยกรรมของฝั่งหน้าเว็บ —
 อยู่ใน [`CLAUDE.md`](CLAUDE.md) และ [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md)
