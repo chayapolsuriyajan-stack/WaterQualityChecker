@@ -13,7 +13,7 @@ const DOT_RADIUS_MIN_SCALE = 0.6
 const WAVE_FREQ = 0.012
 const WAVE_SPEED = 0.00035
 const WAVE_AMPLITUDE = 10
-const DOT_ALPHA = 0.14
+const DOT_ALPHA = 0.32
 const MAX_DPR = 1.5
 /** Vignette fade: fraction of the canvas's half-diagonal where the fade starts / ends. */
 const VIGNETTE_START = 0.35
