@@ -12,8 +12,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pywebpush import webpush, WebPushException
 
 import storage
+import thresholds
 
 # Windows consoles default to cp1252, where the emoji in the startup prints below raise
 # UnicodeEncodeError and crash the server on launch. Force UTF-8 so `python main.py` just works.
@@ -40,6 +42,21 @@ CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
 # back to the previous in-memory-buffer + Google Sheets behavior.
 HISTORY_DB_PATH = webconfig.get("historyDbFile", "history.db")
 HISTORY_RETENTION_DAYS = int(webconfig.get("historyRetentionDays", 365))
+# Web Push (see push notification section below). Missing VAPID key file -> push endpoints
+# degrade to 503 rather than crashing startup, matching the existing degrade-not-crash
+# pattern used by storage.init/the Sheets webhook.
+VAPID_PRIVATE_KEY_FILE = webconfig.get("vapidPrivateKeyFile", "vapid_private_key.pem")
+VAPID_PUBLIC_KEY = webconfig.get("vapidPublicKey", "")
+VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
+# HTTPS listener (Web Push requires a secure context; http://localhost is only exempt on
+# the same machine). Empty cert/key -> HTTPS stays off, HTTP:8080 behavior is unchanged.
+HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
+HTTPS_KEY_FILE = webconfig.get("httpsKeyFile", "")
+HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
+
+
+def vapid_available() -> bool:
+    return os.path.exists(VAPID_PRIVATE_KEY_FILE) and bool(VAPID_PUBLIC_KEY)
 
 class BrotliStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
@@ -132,6 +149,10 @@ ui_clients_lock = asyncio.Lock()
 # update_sensor, so no lock is needed.
 STAT_KEYS = ("temperature", "turbidity", "tds")
 sensor_stats: dict = {}
+
+# Edge-detection state for push notifications: last known severity per param, so a push
+# fires only on the good->warn/danger transition (see _check_breaches_and_dispatch below).
+last_severity: dict = {}
 
 # In-memory rolling history of recent readings so the dashboard's short-window graph works
 # live off the sensor stream -- no Google Sheets round-trip. Holds the same fields the sheet
@@ -324,6 +345,70 @@ def ppm_to_ec(ppm) -> float | None:
     return round(ppm / TDS_TO_EC_FACTOR, 1)
 
 
+# --- Push notifications -------------------------------------------------------
+# Breach detection runs synchronously/inline on every reading (edge-triggered good->warn/
+# danger transition tracked in last_severity, so out-of-order dispatch can't corrupt it);
+# the actual network sends are deferred via asyncio.create_task, the same fire-and-forget
+# pattern already used for the Sheets relay and local DB insert in update_sensor.
+
+PUSH_PARAMS = ("temperature", "turbidity", "tds", "ec")
+
+
+def _check_breaches_and_dispatch(payload: dict) -> list:
+    breaches = []
+    for param in PUSH_PARAMS:
+        value = payload.get(param)
+        if not isinstance(value, (int, float)):
+            continue
+        if thresholds.is_sensor_fault(param, value):
+            continue
+        status = thresholds.range_status_for(param, value)
+        prev = last_severity.get(param, "good")
+        if status in ("warn", "danger") and prev == "good":
+            breaches.append((param, status))
+        last_severity[param] = status
+    return breaches
+
+
+def _format_push_text(param: str, severity: str, value) -> tuple:
+    title = "HydroMonitor Alert"
+    body = f"{param.capitalize()} is in the {severity} zone ({value})"
+    return title, body
+
+
+def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) -> None:
+    subscription_info = {
+        "endpoint": sub["endpoint"],
+        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+    }
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps({"title": title, "body": body, "tag": f"{param}-{severity}"}),
+            vapid_private_key=VAPID_PRIVATE_KEY_FILE,
+            vapid_claims={"sub": VAPID_CLAIM_SUB},
+        )
+    except WebPushException as e:
+        if e.response is not None and e.response.status_code in (404, 410):
+            storage.delete_push_subscription(sub["endpoint"])
+        else:
+            print(f"⚠️ Push send failed for {sub['endpoint']}: {e}")
+    except Exception as exc:
+        print(f"⚠️ Push send failed for {sub['endpoint']}: {exc}")
+
+
+async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
+    if not breaches or not vapid_available():
+        return
+    subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
+    for param, severity in breaches:
+        value = payload.get(param)
+        title, body = _format_push_text(param, severity, value)
+        for sub in subs:
+            if sub["prefs"].get(param, {}).get(severity, False):
+                await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
+
+
 @app.post("/update")
 async def update_sensor(request: Request):
     try:
@@ -429,6 +514,13 @@ async def update_sensor(request: Request):
             if "tds" in payload:
                 sheet_payload["tds"] = payload["tds"]
             asyncio.create_task(relay_to_google_sheets(sheet_payload))
+
+            # Threshold-breach push notifications: detection is synchronous/inline (must
+            # observe every reading in order to edge-detect correctly), the actual sends
+            # are deferred like the two tasks above.
+            breaches = _check_breaches_and_dispatch(payload)
+            if breaches:
+                asyncio.create_task(dispatch_push_breaches(breaches, payload))
         return JSONResponse({"ok": True, "payload": payload})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -703,6 +795,72 @@ async def reset_calibration(request: Request):
     return JSONResponse({sensor: calibration[sensor]})
 
 
+# --- Push notification API ---------------------------------------------------
+# Subscriptions are persisted to push_subscriptions (storage.py) so they survive restarts;
+# without local storage enabled there is nowhere to durably keep them, so these all 503.
+
+
+@app.get("/push/vapid-public-key")
+async def get_vapid_public_key():
+    if not vapid_available():
+        return JSONResponse({"error": "VAPID not configured"}, status_code=503)
+    return JSONResponse({"publicKey": VAPID_PUBLIC_KEY})
+
+
+@app.post("/push/subscribe")
+async def push_subscribe(request: Request):
+    if not storage.enabled():
+        return JSONResponse({"error": "push subscriptions require local storage to be enabled"}, status_code=503)
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    keys = body.get("keys") or {}
+    p256dh = keys.get("p256dh")
+    auth = keys.get("auth")
+    if not endpoint or not p256dh or not auth:
+        return JSONResponse({"error": "endpoint and keys.p256dh/keys.auth are required"}, status_code=400)
+    prefs = body.get("prefs") or {p: {"warn": False, "danger": True} for p in PUSH_PARAMS}
+    await asyncio.to_thread(storage.upsert_push_subscription, endpoint, p256dh, auth, prefs)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    if not storage.enabled():
+        return JSONResponse({"error": "push subscriptions require local storage to be enabled"}, status_code=503)
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    if not endpoint:
+        return JSONResponse({"error": "endpoint is required"}, status_code=400)
+    await asyncio.to_thread(storage.delete_push_subscription, endpoint)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/push/preferences")
+async def get_push_preferences(endpoint: str):
+    if not storage.enabled():
+        return JSONResponse({"error": "push subscriptions require local storage to be enabled"}, status_code=503)
+    subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
+    for sub in subs:
+        if sub["endpoint"] == endpoint:
+            return JSONResponse({"prefs": sub["prefs"]})
+    return JSONResponse({"error": "subscription not found"}, status_code=404)
+
+
+@app.put("/push/preferences")
+async def put_push_preferences(request: Request):
+    if not storage.enabled():
+        return JSONResponse({"error": "push subscriptions require local storage to be enabled"}, status_code=503)
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    prefs = body.get("prefs")
+    if not endpoint or prefs is None:
+        return JSONResponse({"error": "endpoint and prefs are required"}, status_code=400)
+    ok = await asyncio.to_thread(storage.update_push_prefs, endpoint, prefs)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
 @app.websocket("/ws/app")
 async def websocket_app(websocket: WebSocket):
     await websocket.accept()
@@ -792,10 +950,27 @@ if __name__ == "__main__":
     if dev_mode:
         print("🔧 HYDRO_DEV=1 -- autoreload ON (development only).")
 
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8080,
-        reload=dev_mode,
-    )
+    async def _run_servers():
+        # HTTP:8080 always runs (unchanged -- ESP32 firmware keeps POSTing here). HTTPS is
+        # additive: only started when both a cert and key are configured, since Web Push
+        # requires a secure context and http://localhost is only exempt on the same machine.
+        configs = [uvicorn.Config("main:app", host="0.0.0.0", port=8080, reload=dev_mode)]
+        if HTTPS_CERT_FILE and HTTPS_KEY_FILE:
+            configs.append(
+                uvicorn.Config(
+                    "main:app",
+                    host="0.0.0.0",
+                    port=HTTPS_PORT,
+                    ssl_certfile=HTTPS_CERT_FILE,
+                    ssl_keyfile=HTTPS_KEY_FILE,
+                )
+            )
+            print(f"🔒 HTTPS listener enabled on port {HTTPS_PORT} (push notifications available over LAN).")
+        else:
+            print("⚠️ httpsCertFile/httpsKeyFile not set; HTTPS disabled -- push notifications only work over localhost.")
+
+        servers = [uvicorn.Server(c) for c in configs]
+        await asyncio.gather(*(s.serve() for s in servers))
+
+    asyncio.run(_run_servers())
 

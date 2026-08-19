@@ -3,5 +3,11 @@
   "googleSheetsWebhookUrl": "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec",
   "calibrationFile": "calibration.json",
   "historyDbFile": "history.db",
-  "historyRetentionDays": 365
+  "historyRetentionDays": 365,
+  "vapidPrivateKeyFile": "vapid_private_key.pem",
+  "vapidPublicKey": "",
+  "vapidSubject": "mailto:you@example.com",
+  "httpsCertFile": "",
+  "httpsKeyFile": "",
+  "httpsPort": 8443
 }

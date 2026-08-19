@@ -21,6 +21,7 @@ Design notes:
   all three sources merge without translation.
 """
 
+import json
 import os
 import sqlite3
 import threading
@@ -38,6 +39,15 @@ CREATE TABLE IF NOT EXISTS readings (
     ec           REAL    -- derived from tds; stored so reads don't re-derive it
 );
 CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings (timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint    TEXT PRIMARY KEY,
+    p256dh      TEXT NOT NULL,
+    auth        TEXT NOT NULL,
+    prefs_json  TEXT NOT NULL,  -- e.g. {"temperature": {"warn": bool, "danger": bool}, ...}
+    created_ms  INTEGER NOT NULL,
+    updated_ms  INTEGER NOT NULL
+);
 """
 
 
@@ -180,3 +190,74 @@ def prune(retention_days: int) -> int:
     except Exception as exc:
         print(f"⚠️ History database prune failed: {exc}")
         return 0
+
+
+def upsert_push_subscription(endpoint: str, p256dh: str, auth: str, prefs: dict) -> None:
+    """Insert or update one push subscription. `prefs` is stored as one JSON blob per
+    subscription since it's always read/written whole, never queried by field."""
+    if _conn is None:
+        return
+    try:
+        now_ms = int(time.time() * 1000)
+        with _lock:
+            _conn.execute(
+                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, prefs_json, created_ms, updated_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(endpoint) DO UPDATE SET"
+                " p256dh=excluded.p256dh, auth=excluded.auth,"
+                " prefs_json=excluded.prefs_json, updated_ms=excluded.updated_ms",
+                (endpoint, p256dh, auth, json.dumps(prefs), now_ms, now_ms),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Push subscription upsert failed: {exc}")
+
+
+def delete_push_subscription(endpoint: str) -> None:
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Push subscription delete failed: {exc}")
+
+
+def get_all_push_subscriptions() -> list[dict]:
+    if _conn is None:
+        return []
+    try:
+        with _lock:
+            cur = _conn.execute("SELECT endpoint, p256dh, auth, prefs_json FROM push_subscriptions")
+            rows = cur.fetchall()
+    except Exception as exc:
+        print(f"⚠️ Push subscription read failed: {exc}")
+        return []
+
+    out = []
+    for r in rows:
+        try:
+            prefs = json.loads(r["prefs_json"])
+        except (TypeError, ValueError):
+            prefs = {}
+        out.append({"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"], "prefs": prefs})
+    return out
+
+
+def update_push_prefs(endpoint: str, prefs: dict) -> bool:
+    """Updates a subscription's prefs. Returns False if the endpoint isn't found."""
+    if _conn is None:
+        return False
+    try:
+        now_ms = int(time.time() * 1000)
+        with _lock:
+            cur = _conn.execute(
+                "UPDATE push_subscriptions SET prefs_json = ?, updated_ms = ? WHERE endpoint = ?",
+                (json.dumps(prefs), now_ms, endpoint),
+            )
+            _conn.commit()
+            return cur.rowcount > 0
+    except Exception as exc:
+        print(f"⚠️ Push preference update failed: {exc}")
+        return False
