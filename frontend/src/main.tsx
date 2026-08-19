@@ -19,6 +19,14 @@ import '@fontsource/inter/600.css'
 import './index.css'
 import App from './App'
 import { LanguageProvider, translateStandalone } from '@/lib/i18n'
+import { isPushSupported, registerServiceWorker } from '@/lib/push'
+
+// Registering the service worker doesn't itself prompt for permission or
+// subscribe to push -- that only happens when the user opts in via
+// NotificationSettings -- so it's safe to do unconditionally at startup.
+if (isPushSupported()) {
+  void registerServiceWorker()
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {

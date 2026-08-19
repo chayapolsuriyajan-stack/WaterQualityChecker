@@ -239,6 +239,25 @@ const en = {
   'tour.stepCounter': '{current} / {total}',
   'tour.helpButtonAria': 'Replay guided tour',
   'tour.helpLabel': 'Help',
+
+  // --- notifications ---------------------------------------------------------
+  'notif.bellAria': 'Notification settings',
+  'notif.title': 'Notifications',
+  'notif.description': 'Get notified when a reading enters a warning or danger range, even when this tab is closed.',
+  'notif.unsupported': 'Push notifications are not supported in this browser.',
+  'notif.insecureContext': 'Push notifications need a secure connection (HTTPS or localhost).',
+  'notif.enable': 'Enable notifications',
+  'notif.enabling': 'Enabling...',
+  'notif.unsubscribe': 'Unsubscribe',
+  'notif.unsubscribing': 'Unsubscribing...',
+  'notif.prefsTitle': 'Alert me on',
+  'notif.subscribeSuccess': 'Notifications enabled',
+  'notif.subscribeFailedPermission': 'Notification permission was denied',
+  'notif.subscribeFailedUnavailable': 'Push notifications are not configured on the server',
+  'notif.subscribeFailed': "Couldn't enable notifications",
+  'notif.unsubscribeSuccess': 'Notifications turned off',
+  'notif.unsubscribeFailed': "Couldn't turn off notifications",
+  'notif.prefsSaveFailed': "Couldn't save notification preferences",
 } as const
 
 export const messages = {
@@ -451,6 +470,24 @@ export const messages = {
     'tour.stepCounter': '{current} / {total}',
     'tour.helpButtonAria': 'เล่นทัวร์แนะนำซ้ำ',
     'tour.helpLabel': 'ช่วยเหลือ',
+
+    'notif.bellAria': 'ตั้งค่าการแจ้งเตือน',
+    'notif.title': 'การแจ้งเตือน',
+    'notif.description': 'รับการแจ้งเตือนเมื่อค่าที่วัดได้เข้าสู่ช่วงเฝ้าระวังหรืออันตราย แม้ปิดแท็บนี้อยู่',
+    'notif.unsupported': 'เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือนแบบพุช',
+    'notif.insecureContext': 'การแจ้งเตือนแบบพุชต้องใช้การเชื่อมต่อที่ปลอดภัย (HTTPS หรือ localhost)',
+    'notif.enable': 'เปิดใช้การแจ้งเตือน',
+    'notif.enabling': 'กำลังเปิดใช้งาน...',
+    'notif.unsubscribe': 'ยกเลิกการแจ้งเตือน',
+    'notif.unsubscribing': 'กำลังยกเลิก...',
+    'notif.prefsTitle': 'แจ้งเตือนเมื่อ',
+    'notif.subscribeSuccess': 'เปิดใช้การแจ้งเตือนแล้ว',
+    'notif.subscribeFailedPermission': 'สิทธิ์การแจ้งเตือนถูกปฏิเสธ',
+    'notif.subscribeFailedUnavailable': 'เซิร์ฟเวอร์ยังไม่ได้ตั้งค่าการแจ้งเตือนแบบพุช',
+    'notif.subscribeFailed': 'เปิดใช้การแจ้งเตือนไม่สำเร็จ',
+    'notif.unsubscribeSuccess': 'ปิดการแจ้งเตือนแล้ว',
+    'notif.unsubscribeFailed': 'ยกเลิกการแจ้งเตือนไม่สำเร็จ',
+    'notif.prefsSaveFailed': 'บันทึกการตั้งค่าการแจ้งเตือนไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 
