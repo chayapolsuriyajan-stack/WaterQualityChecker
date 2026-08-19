@@ -2,6 +2,10 @@
 __pycache__
 calibration.json
 
+# VAPID keypair for Web Push notifications (main.py/thresholds.py) -- a secret signing key,
+# not project code. Generate your own with `vapid --gen` (py-vapid, pulled in by pywebpush).
+vapid_private_key.pem
+
 # Local sensor history database (storage.py) + its WAL sidecars. Site-specific measurement
 # data, not project code -- back it up separately, don't commit it.
 history.db
