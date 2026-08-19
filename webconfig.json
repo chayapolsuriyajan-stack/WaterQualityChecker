@@ -3,5 +3,11 @@
   "googleSheetsWebhookUrl": "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec",
   "calibrationFile": "calibration.json",
   "historyDbFile": "history.db",
-  "historyRetentionDays": 365
+  "historyRetentionDays": 365,
+  "vapidPrivateKeyFile": "vapid_private_key.pem",
+  "vapidPublicKey": "BHw5tF8AfFY8qK8UfUdEwKcc2zOBlIh4i-P7WsHXss7zTHwFmANuQZl9FZrW6VYwI972aa_4Onf8vItlVSzrecM",
+  "vapidSubject": "mailto:chawapong@gmail.com",
+  "httpsCertFile": "",
+  "httpsKeyFile": "",
+  "httpsPort": 8443
 }
