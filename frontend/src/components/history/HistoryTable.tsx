@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
-import { statusFor, type Status } from '@/lib/thresholds'
+import { statusFor, isSensorFault, type Status, type RangeParam } from '@/lib/thresholds'
 import { useT } from '@/lib/i18n'
 import type { MessageKey } from '@/lib/strings'
 import type { HistoryRow } from '@/lib/types'
@@ -35,16 +35,26 @@ function fmt(value: number | null | undefined, digits: number): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—'
 }
 
-/** statusFor requires a real number; returns null (unscorable) when the value is missing. */
-function statusForMaybe(
-  param: Parameters<typeof statusFor>[0],
-  value: number | null | undefined
-): Status | null {
-  return typeof value === 'number' && Number.isFinite(value) ? statusFor(param, value) : null
+/** A reading this close to zero is almost always a disconnected/faulty sensor, not real water data. */
+type CellStatus = Status | 'fault'
+
+/** statusFor requires a real number; returns null (unscorable) when the value is missing, or
+ * 'fault' when the value looks like a disconnected sensor rather than a genuine reading. */
+function statusForMaybe(param: RangeParam, value: number | null | undefined): CellStatus | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  if (isSensorFault(param, value)) return 'fault'
+  return statusFor(param, value)
 }
 
-function statusBadge(status: Status | null, t: (key: MessageKey) => string) {
+function statusBadge(status: CellStatus | null, t: (key: MessageKey) => string) {
   if (status == null) return null
+  if (status === 'fault') {
+    return (
+      <Badge variant="secondary" className="ml-2 align-middle text-muted-foreground">
+        {t('status.notConnected')}
+      </Badge>
+    )
+  }
   const variant =
     status === 'good' ? 'secondary' : status === 'warn' ? 'default' : 'destructive'
   const label = status === 'good' ? t('status.good') : status === 'warn' ? t('status.caution') : t('status.danger')
@@ -73,9 +83,10 @@ function formatTime(ms: number): string {
   })
 }
 
-function turbidityDisplay(row: HistoryRow): { value: string; status: Status | null } {
+function turbidityDisplay(row: HistoryRow): { value: string; status: CellStatus | null } {
   if (row.turbidityNtu != null) {
-    return { value: `${fmt(row.turbidityNtu, 1)} NTU`, status: statusFor('turbidity', row.turbidityNtu) }
+    const status = statusForMaybe('turbidity', row.turbidityNtu)
+    return { value: `${fmt(row.turbidityNtu, 1)} NTU`, status }
   }
   if (row.turbidity != null) {
     return { value: `${fmt(row.turbidity, 0)} ADC`, status: 'good' }

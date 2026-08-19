@@ -21,7 +21,7 @@ export type Status = 'good' | 'warn' | 'danger'
 
 export const STATUS_COLOR: Record<Status, string> = {
   good: '#22c55e', // green-500
-  warn: '#f59e0b', // amber-500
+  warn: '#facc15', // yellow-400 -- brighter/more saturated than the old amber-500 for visibility
   danger: '#ef4444', // red-500
 }
 

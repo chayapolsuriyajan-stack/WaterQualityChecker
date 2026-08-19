@@ -42,6 +42,7 @@ const en = {
   'status.online': 'Online',
   'status.offline': 'Offline',
   'status.noData': 'No data',
+  'status.notConnected': 'Not connected',
 
   // --- history/chart time range --------------------------------------------
   'window.5m': '5 min',
@@ -285,6 +286,7 @@ export const messages = {
     'status.online': 'ออนไลน์',
     'status.offline': 'ออฟไลน์',
     'status.noData': 'ไม่มีข้อมูล',
+    'status.notConnected': 'ไม่ได้เชื่อมต่อ',
 
     'window.5m': '5 นาที',
     'window.15m': '15 นาที',
