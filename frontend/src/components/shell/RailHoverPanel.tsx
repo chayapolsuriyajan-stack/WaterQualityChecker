@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { Sidebar, type ViewId } from './Sidebar'
 
@@ -31,6 +31,24 @@ interface RailHoverPanelProps {
 export function RailHoverPanel({ view, onChange, className }: RailHoverPanelProps) {
   const [expanded, setExpanded] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTypingTarget =
+        !!target &&
+        (target.closest('input, textarea, select, button, [role="button"], [role="textbox"], [contenteditable="true"]') ||
+          target.isContentEditable)
+
+      if (event.code !== 'Space' || event.repeat || isTypingTarget) return
+
+      event.preventDefault()
+      setExpanded((current) => !current)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   return (
     <div
