@@ -35,7 +35,7 @@ import type { TdsCoefficients, TurbidityCoefficients } from './CoefficientPrevie
 
 const QUERY_KEY = ['calibration'] as const
 
-type CalibratableSensor = 'turbidity' | 'tds'
+type CalibratableSensor = 'turbidity' | 'tds' | 'flow'
 
 interface ApplyVariables {
   sensor: CalibratableSensor
@@ -79,6 +79,16 @@ function applyOptimisticPatch(
       },
     }
   }
+  if (sensor === 'flow') {
+    return {
+      ...state,
+      mode: true,
+      flow: {
+        ...state.flow,
+        coefficients: predicted ? (predicted as TdsCoefficients) : state.flow.coefficients,
+      },
+    }
+  }
   return {
     ...state,
     mode: true,
@@ -98,8 +108,14 @@ export function CalibrationView() {
 
   const applyMutation = useMutation({
     mutationFn: async ({ sensor, rows }: ApplyVariables) => {
+      // Turbidity and flow send the typed `raw` value (turbidity: ADC; flow: the manually
+      // counted pulses -- there's no meaningful live average to fall back to for a "pour a
+      // known volume and count total pulses" calibration). TDS deliberately never sends its
+      // raw field -- it's preview-only there, always using the server's live averaged
+      // voltage instead (see TwoPointForm's file header comment).
+      const sendsRaw = sensor === 'turbidity' || sensor === 'flow'
       for (const row of rows) {
-        if (sensor === 'turbidity') {
+        if (sendsRaw) {
           await capturePoint({ sensor, reference: row.reference, raw: row.raw })
         } else {
           await capturePoint({ sensor, reference: row.reference })
@@ -113,17 +129,34 @@ export function CalibrationView() {
       const previous = queryClient.getQueryData<CalibrationState>(QUERY_KEY)
       setPendingSensor(sensor)
       if (previous) {
-        const latestRaw = sensor === 'turbidity' ? previous.latestRaw.turbidity : previous.latestRaw.tdsVoltage
+        const latestRaw =
+          sensor === 'turbidity'
+            ? previous.latestRaw.turbidity
+            : sensor === 'flow'
+              ? previous.latestRaw.flowRaw
+              : previous.latestRaw.tdsVoltage
         const predicted =
           sensor === 'turbidity' ? predictTurbidity(rows, latestRaw) : predictTds(rows)
         queryClient.setQueryData<CalibrationState>(QUERY_KEY, applyOptimisticPatch(previous, sensor, predicted))
       }
-      toast.success(sensor === 'turbidity' ? t('calib.applyingTurbidity') : t('calib.applyingTds'))
+      toast.success(
+        sensor === 'turbidity'
+          ? t('calib.applyingTurbidity')
+          : sensor === 'flow'
+            ? t('calib.applyingFlow')
+            : t('calib.applyingTds'),
+      )
       return { previous }
     },
     onError: (_err, { sensor }, context) => {
       if (context?.previous) queryClient.setQueryData(QUERY_KEY, context.previous)
-      toast.error(sensor === 'turbidity' ? t('calib.failedTurbidity') : t('calib.failedTds'))
+      toast.error(
+        sensor === 'turbidity'
+          ? t('calib.failedTurbidity')
+          : sensor === 'flow'
+            ? t('calib.failedFlow')
+            : t('calib.failedTds'),
+      )
     },
     onSettled: () => {
       setPendingSensor(null)
@@ -311,7 +344,43 @@ export function CalibrationView() {
               </>
             )}
 
-            {(activeSensor === 'turbidity' || activeSensor === 'tds') && !data && isLoading && (
+            {activeSensor === 'flow' && data && (
+              <>
+                <TwoPointForm
+                  sensor="flow"
+                  pointCount={1}
+                  existingPoints={data.flow.points.map((p) => ({
+                    reference: p.reference,
+                    raw: p.rawPulses,
+                    label: p.label,
+                  }))}
+                  latestRaw={data.latestRaw.flowRaw}
+                  applying={applyMutation.isPending && applyMutation.variables?.sensor === 'flow'}
+                  onApply={(rows) => applyMutation.mutate({ sensor: 'flow', rows })}
+                  onDeletePoint={(index) => deleteMutation.mutate({ sensor: 'flow', index })}
+                />
+                <CoefficientPreview
+                  sensor="flow"
+                  coefficients={data.flow.coefficients}
+                  latestRaw={data.latestRaw.flowRaw}
+                  pending={pendingSensor === 'flow'}
+                  updated={data.flow.updated}
+                />
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={resetMutation.isPending}
+                    onClick={() => resetMutation.mutate('flow')}
+                  >
+                    {t('calib.resetFlow')}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {(activeSensor === 'turbidity' || activeSensor === 'tds' || activeSensor === 'flow') && !data && isLoading && (
               <Card>
                 <CardContent className="p-6 text-sm text-muted-foreground">{t('calib.loading')}</CardContent>
               </Card>

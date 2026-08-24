@@ -89,6 +89,9 @@ const en = {
   'param.ec.recommendation':
     'Check the TDS reading too, since EC is derived from it. A sudden change in both is worth investigating.',
 
+  'param.flow.label': 'Flow',
+  'param.flow.about': 'Instantaneous flow rate through the sensor, in liters per minute.',
+
   // --- units ---------------------------------------------------------------
   'unit.ntu.fullName': 'Nephelometric Turbidity Units',
   'unit.ppm.fullName': 'parts per million',
@@ -119,6 +122,17 @@ const en = {
   'wqi.empty': 'No history yet for this time range.',
   'wqi.error': "Couldn't load history for this time range.",
 
+  // --- flow/usage dashboard charts --------------------------------------------
+  'chart.flow.title': 'Water Flow',
+  'chart.flow.unit': 'L/min',
+  'chart.usage.title': 'Water Usage',
+  'chart.usage.unit': 'L',
+  'chart.usage.today': 'Today: {value} L',
+  'chart.usage.empty': 'No usage data yet.',
+  'chart.usage.resetToday': 'Reset today',
+  'chart.usage.resetSuccess': "Today's usage reset",
+  'chart.usage.resetFailed': "Couldn't reset today's usage",
+
   // --- quick view (dashboard right column) ----------------------------------
   'quickview.title': 'Quick view',
   'quickview.sensorFault': 'Not connected',
@@ -126,6 +140,8 @@ const en = {
   'quickview.analysis.good': 'All readings are within the normal range.',
   'quickview.analysis.watch': '{band} — watch: {params}.',
   'quickview.analysis.fault': 'Check the sensors: {params} may be disconnected.',
+  'quickview.flow.label': 'Current flow',
+  'quickview.usage.label': "Today's usage",
 
   // --- calibration ---------------------------------------------------------
   'calib.title': 'Sensor Calibration',
@@ -135,8 +151,10 @@ const en = {
   'calib.modeOff': 'OFF',
   'calib.applyingTurbidity': 'Applying turbidity calibration...',
   'calib.applyingTds': 'Applying TDS calibration...',
+  'calib.applyingFlow': 'Applying flow calibration...',
   'calib.failedTurbidity': "Couldn't apply the turbidity calibration",
   'calib.failedTds': "Couldn't apply the TDS calibration",
+  'calib.failedFlow': "Couldn't apply the flow calibration",
   'calib.resetSuccess': 'Calibration reset',
   'calib.resetFailed': "Couldn't reset",
   'calib.modeChangeFailed': "Couldn't change the mode",
@@ -148,6 +166,13 @@ const en = {
   'calib.derivedFromTds': 'Derived from TDS (×0.5). Calibrate it through TDS.',
   'calib.resetTurbidity': 'Reset turbidity',
   'calib.resetTds': 'Reset TDS',
+  'calib.resetFlow': 'Reset flow',
+  'calib.flowFormTitle': 'Flow calibration (k-factor)',
+  'calib.flowReferenceLabel': 'Known volume (liters)',
+  'calib.flowRawLabel': 'Measured (pulse count)',
+  'calib.flowRawHint': 'Run the known volume through the sensor, then enter the total pulses counted.',
+  'calib.needFlowPoints': '1 point',
+  'calib.flowKFactorFormula': 'Liters = pulses ÷ k (k = pulses per liter)',
   'calib.observedRange': 'Observed while calibrating: {min} min, {max} max',
   'calib.useMin': 'Use min',
   'calib.useMax': 'Use max',
@@ -263,6 +288,14 @@ const en = {
   'notif.sendingTest': 'Sending...',
   'notif.testSuccess': 'Test notification sent',
   'notif.testFailed': "Couldn't send test notification",
+
+  // --- settings dialog ---------------------------------------------------------
+  'settings.bellAria': 'Settings',
+  'settings.title': 'Settings',
+  'settings.notificationsSection': 'Notifications',
+  'settings.displaySection': 'Dashboard display',
+  'settings.displayDescription': 'Choose which series show on the main Dashboard.',
+  'settings.showWaterUsage': 'Water usage chart',
 } as const
 
 export const messages = {
@@ -335,6 +368,9 @@ export const messages = {
     'param.ec.recommendation':
       'ตรวจสอบค่า TDS ประกอบด้วย เพราะ EC คำนวณมาจากค่านั้น หากทั้งสองค่าเปลี่ยนกะทันหันควรตรวจสอบเพิ่มเติม',
 
+    'param.flow.label': 'อัตราการไหล',
+    'param.flow.about': 'อัตราการไหลของน้ำผ่านเซนเซอร์ ณ ขณะนั้น หน่วยเป็นลิตรต่อนาที',
+
     'unit.ntu.fullName': 'หน่วยวัดความขุ่นแบบเนฟีโลเมตริก (Nephelometric Turbidity Units)',
     'unit.ppm.fullName': 'ส่วนในล้านส่วน (parts per million)',
     'unit.ecUnit.fullName': 'ไมโครซีเมนส์ต่อเซนติเมตร (microsiemens per centimeter)',
@@ -368,6 +404,18 @@ export const messages = {
     'quickview.analysis.good': 'ค่าทุกตัวอยู่ในช่วงปกติ',
     'quickview.analysis.watch': '{band} — ต้องเฝ้าระวัง: {params}',
     'quickview.analysis.fault': 'ควรตรวจสอบเซนเซอร์: {params} อาจไม่ได้เชื่อมต่อ',
+    'quickview.flow.label': 'อัตราการไหลปัจจุบัน',
+    'quickview.usage.label': 'ปริมาณการใช้น้ำวันนี้',
+
+    'chart.flow.title': 'อัตราการไหลของน้ำ',
+    'chart.flow.unit': 'ลิตร/นาที',
+    'chart.usage.title': 'ปริมาณการใช้น้ำ',
+    'chart.usage.unit': 'ลิตร',
+    'chart.usage.today': 'วันนี้: {value} ลิตร',
+    'chart.usage.empty': 'ยังไม่มีข้อมูลการใช้น้ำ',
+    'chart.usage.resetToday': 'รีเซ็ตของวันนี้',
+    'chart.usage.resetSuccess': 'รีเซ็ตปริมาณการใช้น้ำวันนี้แล้ว',
+    'chart.usage.resetFailed': 'รีเซ็ตปริมาณการใช้น้ำวันนี้ไม่สำเร็จ',
 
     'calib.title': 'ปรับเทียบเซนเซอร์',
     'calib.subtitle': 'ปรับเทียบได้ขณะเซนเซอร์ทำงานอยู่ โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',
@@ -376,8 +424,10 @@ export const messages = {
     'calib.modeOff': 'ปิด',
     'calib.applyingTurbidity': 'กำลังใช้ค่าสอบเทียบความขุ่น...',
     'calib.applyingTds': 'กำลังใช้ค่าสอบเทียบ TDS...',
+    'calib.applyingFlow': 'กำลังใช้ค่าสอบเทียบอัตราการไหล...',
     'calib.failedTurbidity': 'ใช้ค่าสอบเทียบความขุ่นไม่สำเร็จ',
     'calib.failedTds': 'ใช้ค่าสอบเทียบ TDS ไม่สำเร็จ',
+    'calib.failedFlow': 'ใช้ค่าสอบเทียบอัตราการไหลไม่สำเร็จ',
     'calib.resetSuccess': 'รีเซ็ตค่าสอบเทียบแล้ว',
     'calib.resetFailed': 'รีเซ็ตไม่สำเร็จ',
     'calib.modeChangeFailed': 'เปลี่ยนโหมดไม่สำเร็จ',
@@ -389,6 +439,13 @@ export const messages = {
     'calib.derivedFromTds': 'คำนวณจาก TDS (×0.5) สอบเทียบผ่าน TDS',
     'calib.resetTurbidity': 'รีเซ็ตความขุ่น',
     'calib.resetTds': 'รีเซ็ต TDS',
+    'calib.resetFlow': 'รีเซ็ตอัตราการไหล',
+    'calib.flowFormTitle': 'สอบเทียบอัตราการไหล (ค่า k)',
+    'calib.flowReferenceLabel': 'ปริมาตรที่ทราบค่า (ลิตร)',
+    'calib.flowRawLabel': 'ค่าที่วัดได้ (จำนวนพัลส์)',
+    'calib.flowRawHint': 'ปล่อยน้ำตามปริมาตรที่ทราบผ่านเซนเซอร์ แล้วกรอกจำนวนพัลส์ทั้งหมดที่นับได้',
+    'calib.needFlowPoints': '1 จุด',
+    'calib.flowKFactorFormula': 'ลิตร = พัลส์ ÷ k (k = พัลส์ต่อลิตร)',
     'calib.observedRange': 'ค่าที่พบระหว่างสอบเทียบ: ต่ำสุด {min}, สูงสุด {max}',
     'calib.useMin': 'ใช้ค่าต่ำสุด',
     'calib.useMax': 'ใช้ค่าสูงสุด',
@@ -498,6 +555,13 @@ export const messages = {
     'notif.sendingTest': 'กำลังส่ง...',
     'notif.testSuccess': 'ส่งการแจ้งเตือนทดสอบแล้ว',
     'notif.testFailed': 'ส่งการแจ้งเตือนทดสอบไม่สำเร็จ',
+
+    'settings.bellAria': 'ตั้งค่า',
+    'settings.title': 'ตั้งค่า',
+    'settings.notificationsSection': 'การแจ้งเตือน',
+    'settings.displaySection': 'การแสดงผลแดชบอร์ด',
+    'settings.displayDescription': 'เลือกข้อมูลที่จะแสดงในแดชบอร์ดหลัก',
+    'settings.showWaterUsage': 'กราฟการใช้น้ำ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

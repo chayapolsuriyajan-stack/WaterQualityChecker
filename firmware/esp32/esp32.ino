@@ -12,6 +12,9 @@
 #define TURBIDITY_PIN 34 // ADC1_CH6, input-only -- keep sensors off ADC2 pins (Wi-Fi disables ADC2)
 #define TDS_PIN 35 // ADC1_CH7, input-only. TDS Meter V1.0 outputs 0-2.3V max, so it wires
                    // directly into this pin -- no divider needed, unlike the turbidity sensor.
+#define FLOW_PIN 27 // Digital pulse input (hall-effect flow sensor, e.g. YF-S201) -- not an
+                    // ADC pin, so the ADC1-only-with-WiFi constraint above doesn't apply here.
+                    // Free of the other sensors' pins (13/34/35) and not a boot-strapping pin.
 
 // Sensor's analog OUT is scaled down by a 10k/20k divider (ratio 2/3) before reaching
 // GPIO34, since the sensor outputs up to ~4.5V but ESP32 ADC pins are only 3.3V safe.
@@ -53,6 +56,21 @@ const unsigned long broadcastInterval = 2000;
 unsigned long lastIftttPostTime = 0;
 const unsigned long iftttPostInterval = 60000; // 60s, independent of broadcastInterval -- respects IFTTT free-tier rate limits
 
+// Flow sensor: pulse-counted via interrupt (unlike the other sensors' synchronous
+// analogRead) since pulses can arrive at any time between broadcastInterval ticks, not just
+// when polled. volatile + a critical section (not just noInterrupts/interrupts, which only
+// guard against other ISRs on classic AVR, not ESP32's dual-core setup) because the ISR runs
+// asynchronously to loop(). Pulses-to-liters conversion (the k-factor) is backend-owned, same
+// reasoning as turbidity/TDS -- this board only ever reports a raw count.
+volatile unsigned long flowPulseCount = 0;
+portMUX_TYPE flowMux = portMUX_INITIALIZER_UNLOCKED;
+
+void IRAM_ATTR onFlowPulse() {
+  portENTER_CRITICAL_ISR(&flowMux);
+  flowPulseCount++;
+  portEXIT_CRITICAL_ISR(&flowMux);
+}
+
 // Broadcasts a discovery request and waits for the backend to reply. On success,
 // sets backendUrl from the reply's source IP. Returns false (and leaves backendUrl
 // untouched) if nothing answers within timeoutMs.
@@ -89,6 +107,8 @@ void setup() {
   Serial.begin(115200);
   sensors.begin();
   analogSetAttenuation(ADC_11db);
+  pinMode(FLOW_PIN, INPUT_PULLUP); // YF-S201's open-collector output needs a pull-up
+  attachInterrupt(digitalPinToInterrupt(FLOW_PIN), onFlowPulse, RISING);
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
   WiFi.begin(ssid, password); // <-- This automatically gets a DYNAMIC IP via DHCP
@@ -153,10 +173,20 @@ void loop() {
     float tdsVoltage = rawTdsValue * (adcVref / 4095.0);
     Serial.printf("TDS raw=%d tdsV=%.3f\n", rawTdsValue, tdsVoltage);
 
-    StaticJsonDocument<192> jsonDoc;
+    // Snapshot-and-reset the pulse count accumulated since the last tick (~broadcastInterval
+    // worth of pulses). The critical section is brief (a single read+assignment), so it
+    // doesn't meaningfully delay the ISR or the other sensor reads above.
+    portENTER_CRITICAL(&flowMux);
+    unsigned long flowPulses = flowPulseCount;
+    flowPulseCount = 0;
+    portEXIT_CRITICAL(&flowMux);
+    Serial.printf("Flow pulses=%lu\n", flowPulses);
+
+    StaticJsonDocument<256> jsonDoc;
     jsonDoc["temperature"] = temperatureC;
     jsonDoc["turbidity"] = turbidityADC;
     jsonDoc["tdsVoltage"] = tdsVoltage;
+    jsonDoc["flowPulses"] = flowPulses;
 
     String outputPayload;
     serializeJson(jsonDoc, outputPayload);

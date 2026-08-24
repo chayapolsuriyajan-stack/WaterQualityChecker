@@ -3,7 +3,7 @@
  * relative so the app works same-origin whether served at / in prod or
  * proxied in dev (see vite.config.ts). Never hardcode a host here.
  */
-import type { CalibrationState, HistoryRow, HistoryWindow } from './types'
+import type { CalibrationState, FlowUsageResponse, HistoryRow, HistoryWindow } from './types'
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
@@ -36,7 +36,7 @@ export function getCalibration(): Promise<CalibrationState> {
   return request<CalibrationState>('/calibration')
 }
 
-export type CalibrationSensor = 'turbidity' | 'tds'
+export type CalibrationSensor = 'turbidity' | 'tds' | 'flow'
 
 export interface CapturePointArgs {
   sensor: CalibrationSensor
@@ -80,4 +80,12 @@ export function setCalibrationMode(enabled: boolean): Promise<CalibrationState> 
     method: 'POST',
     body: JSON.stringify({ enabled }),
   })
+}
+
+export function getFlowUsage(days = 14): Promise<FlowUsageResponse> {
+  return request<FlowUsageResponse>(`/flow/usage?days=${encodeURIComponent(String(days))}`)
+}
+
+export function resetFlowUsageToday(): Promise<{ ok: boolean; today: number }> {
+  return request('/flow/reset-today', { method: 'POST' })
 }

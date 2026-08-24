@@ -19,6 +19,10 @@ export interface SensorReading {
   tdsVoltage: number
   /** Electrical conductivity in µS/cm, derived from tds. Null when tds is unavailable. */
   ec: number | null
+  /** Instantaneous flow rate in L/min. Null if the backend hasn't received a flow reading yet. */
+  flowRate: number | null
+  /** Cumulative liters used since local midnight (resets daily, see GET /flow/usage). */
+  waterUsageToday: number | null
   timestamp?: number
 }
 
@@ -32,6 +36,20 @@ export interface HistoryRow {
   turbidityNtu: number | null
   tds: number | null
   ec: number | null
+  flowRate: number | null
+}
+
+/** One day's total from `GET /flow/usage`. */
+export interface DailyUsageRow {
+  /** Local YYYY-MM-DD date string. */
+  date: string
+  totalLiters: number
+}
+
+/** Full response from `GET /flow/usage`. */
+export interface FlowUsageResponse {
+  today: number
+  days: DailyUsageRow[]
 }
 
 export type HistoryWindow = '5m' | '15m' | '1h' | '3h' | '12h' | '24h'
@@ -50,6 +68,10 @@ export interface TdsCalibrationPoint extends CalibrationPointBase {
   temperature?: number
 }
 
+export interface FlowCalibrationPoint extends CalibrationPointBase {
+  rawPulses: number
+}
+
 /** Full state returned by `GET /calibration`. */
 export interface CalibrationState {
   mode: boolean
@@ -65,9 +87,16 @@ export interface CalibrationState {
     coefficients: { k: number } | null
     updated: string | null
   }
+  flow: {
+    model: 'kfactor'
+    points: FlowCalibrationPoint[]
+    coefficients: { k: number } | null
+    updated: string | null
+  }
   latestRaw: {
     turbidity: number | null
     tdsVoltage: number | null
     temperature: number | null
+    flowRaw: number | null
   }
 }

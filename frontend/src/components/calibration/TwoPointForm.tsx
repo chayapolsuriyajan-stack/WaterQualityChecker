@@ -33,14 +33,22 @@ export interface TwoPointFormSubmitRow {
 }
 
 interface TwoPointFormProps {
-  sensor: 'turbidity' | 'tds'
+  sensor: 'turbidity' | 'tds' | 'flow'
   pointCount: 1 | 2
   existingPoints: TwoPointFormPoint[]
-  /** Live raw reading (ADC for turbidity, voltage for tds) shown as a hint. */
+  /** Live raw reading (ADC for turbidity, voltage for tds, pulse count for flow) shown as a hint. */
   latestRaw: number | null
   applying: boolean
   onApply: (rows: TwoPointFormSubmitRow[]) => void
   onDeletePoint: (index: number) => void
+}
+
+/** The calibration reference's unit -- a volume (liters) for flow, distinct from
+ * PARAM_META.flow.unit ('L/min', a rate, used for the live reading elsewhere). */
+const REFERENCE_UNIT: Record<'turbidity' | 'tds' | 'flow', string> = {
+  turbidity: PARAM_META.turbidity.unit,
+  tds: PARAM_META.tds.unit,
+  flow: 'L',
 }
 
 export function TwoPointForm({
@@ -53,7 +61,7 @@ export function TwoPointForm({
   onDeletePoint,
 }: TwoPointFormProps) {
   const { t } = useT()
-  const unit = PARAM_META[sensor].unit
+  const unit = REFERENCE_UNIT[sensor]
   const copy =
     sensor === 'turbidity'
       ? {
@@ -62,12 +70,19 @@ export function TwoPointForm({
           rawLabel: t('calib.turbidityRawLabel'),
           rawHint: t('calib.turbidityRawHint'),
         }
-      : {
-          title: t('calib.tdsFormTitle'),
-          referenceLabel: t('calib.tdsReferenceLabel'),
-          rawLabel: t('calib.tdsRawLabel'),
-          rawHint: t('calib.tdsRawHint'),
-        }
+      : sensor === 'flow'
+        ? {
+            title: t('calib.flowFormTitle'),
+            referenceLabel: t('calib.flowReferenceLabel'),
+            rawLabel: t('calib.flowRawLabel'),
+            rawHint: t('calib.flowRawHint'),
+          }
+        : {
+            title: t('calib.tdsFormTitle'),
+            referenceLabel: t('calib.tdsReferenceLabel'),
+            rawLabel: t('calib.tdsRawLabel'),
+            rawHint: t('calib.tdsRawHint'),
+          }
   const [rows, setRows] = useState<{ reference: string; raw: string }[]>(
     Array.from({ length: pointCount }, () => ({ reference: '', raw: '' })),
   )

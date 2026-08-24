@@ -7,7 +7,7 @@ import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import type { MessageKey } from '@/lib/strings'
 import { LanguageSwitcher } from './LanguageSwitcher'
-import { NotificationSettings } from './NotificationSettings'
+import { SettingsDialog } from './SettingsDialog'
 import { ThemeToggle } from './ThemeToggle'
 import { UserBadge } from './UserBadge'
 
@@ -135,7 +135,7 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
           <LanguageSwitcher collapsed={collapsed} className={collapsed ? undefined : 'w-full'} />
         </div>
         <div data-tour="notification-settings">
-          <NotificationSettings
+          <SettingsDialog
             showLabel={!collapsed}
             className={collapsed ? undefined : 'w-full justify-start px-3'}
           />

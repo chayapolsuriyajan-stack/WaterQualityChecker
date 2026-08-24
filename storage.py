@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS readings (
     temperature  REAL,
     turbidity    REAL,   -- raw averaged ADC, matching the sheet's "Turbidity (raw ADC)" column
     tds          REAL,   -- calibrated ppm
-    ec           REAL    -- derived from tds; stored so reads don't re-derive it
+    ec           REAL,   -- derived from tds; stored so reads don't re-derive it
+    flow_rate    REAL    -- calibrated L/min, instantaneous (see daily_usage for cumulative)
 );
 CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings (timestamp_ms);
 
@@ -48,7 +49,23 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     created_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL
 );
+
+-- One row per local calendar day (YYYY-MM-DD), total_liters accumulated as readings arrive.
+-- A day rollover just starts a new row -- that alone gives the flow sensor's "daily usage"
+-- an automatic reset with no scheduler needed. Kept indefinitely (not subject to
+-- historyRetentionDays -- one tiny row/day, unlike the 2s-cadence readings table).
+CREATE TABLE IF NOT EXISTS daily_usage (
+    date         TEXT PRIMARY KEY,
+    total_liters REAL NOT NULL DEFAULT 0
+);
 """
+
+# readings.flow_rate was added after the initial release -- CREATE TABLE IF NOT EXISTS won't
+# retrofit it onto an existing history.db, so add it explicitly and swallow the "duplicate
+# column" error on every subsequent startup once it's already there.
+_MIGRATIONS = [
+    "ALTER TABLE readings ADD COLUMN flow_rate REAL",
+]
 
 
 def init(path: str) -> bool:
@@ -70,6 +87,12 @@ def init(path: str) -> bool:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SCHEMA)
         conn.commit()
+        for migration in _MIGRATIONS:
+            try:
+                conn.execute(migration)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists -- already-migrated DB, nothing to do
         _conn = conn
         return True
     except Exception as exc:  # sqlite3.Error, OSError, permissions...
@@ -97,14 +120,15 @@ def insert(row: dict) -> None:
     try:
         with _lock:
             _conn.execute(
-                "INSERT INTO readings (timestamp_ms, temperature, turbidity, tds, ec)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO readings (timestamp_ms, temperature, turbidity, tds, ec, flow_rate)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     int(row["timestamp"]),
                     row.get("temperature"),
                     row.get("turbidity"),
                     row.get("tds"),
                     row.get("ec"),
+                    row.get("flowRate"),
                 ),
             )
             _conn.commit()
@@ -123,7 +147,7 @@ def query(cutoff_ms: float) -> list[dict]:
     try:
         with _lock:
             cur = _conn.execute(
-                "SELECT timestamp_ms, temperature, turbidity, tds, ec FROM readings"
+                "SELECT timestamp_ms, temperature, turbidity, tds, ec, flow_rate FROM readings"
                 " WHERE timestamp_ms >= ? ORDER BY timestamp_ms ASC",
                 (int(cutoff_ms),),
             )
@@ -139,6 +163,7 @@ def query(cutoff_ms: float) -> list[dict]:
             "turbidity": r["turbidity"],
             "tds": r["tds"],
             "ec": r["ec"],
+            "flowRate": r["flow_rate"],
         }
         for r in rows
     ]
@@ -243,6 +268,74 @@ def get_all_push_subscriptions() -> list[dict]:
             prefs = {}
         out.append({"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"], "prefs": prefs})
     return out
+
+
+def add_daily_usage(date: str, liters: float) -> None:
+    """Adds `liters` to `date`'s running total (creating the row if this is its first reading
+    of the day). `date` is a local YYYY-MM-DD string, caller-supplied so this module doesn't
+    need to know about timezones."""
+    if _conn is None or liters is None:
+        return
+    try:
+        with _lock:
+            _conn.execute(
+                "INSERT INTO daily_usage (date, total_liters) VALUES (?, ?)"
+                " ON CONFLICT(date) DO UPDATE SET total_liters = total_liters + excluded.total_liters",
+                (date, liters),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Daily usage write failed: {exc}")
+
+
+def get_daily_usage(date: str) -> float:
+    """Today's (or any given date's) total, 0 if no reading has landed yet."""
+    if _conn is None:
+        return 0.0
+    try:
+        with _lock:
+            row = _conn.execute(
+                "SELECT total_liters FROM daily_usage WHERE date = ?", (date,)
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Daily usage read failed: {exc}")
+        return 0.0
+    return row["total_liters"] if row else 0.0
+
+
+def get_recent_daily_usage(days: int) -> list[dict]:
+    """Last `days` calendar days with a recorded row, chronological ascending -- for the
+    Water Usage bar chart. Days with no readings simply have no row (no zero-filling here;
+    the frontend can decide how to render gaps)."""
+    if _conn is None:
+        return []
+    try:
+        with _lock:
+            rows = _conn.execute(
+                "SELECT date, total_liters FROM daily_usage ORDER BY date DESC LIMIT ?",
+                (days,),
+            ).fetchall()
+    except Exception as exc:
+        print(f"⚠️ Daily usage read failed: {exc}")
+        return []
+    return [{"date": r["date"], "totalLiters": r["total_liters"]} for r in reversed(rows)]
+
+
+def reset_daily_usage(date: str) -> None:
+    """Zeroes `date`'s total (manual reset) -- upserts rather than deletes so a reset before
+    any reading has landed today still leaves a 0 row instead of erroring on a missing one."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute(
+                "INSERT INTO daily_usage (date, total_liters) VALUES (?, 0)"
+                " ON CONFLICT(date) DO UPDATE SET total_liters = 0",
+                (date,),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Daily usage reset failed: {exc}")
 
 
 def update_push_prefs(endpoint: str, prefs: dict) -> bool:

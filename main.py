@@ -157,7 +157,7 @@ ui_clients_lock = asyncio.Lock()
 # Living on the backend (not per-browser) so every connected dashboard shows the
 # same range and it survives page refreshes. Mutated only from the event loop in
 # update_sensor, so no lock is needed.
-STAT_KEYS = ("temperature", "turbidity", "tds")
+STAT_KEYS = ("temperature", "turbidity", "tds", "flowRate")
 sensor_stats: dict = {}
 
 # Edge-detection state for push notifications: last known severity per param, so a push
@@ -169,6 +169,32 @@ last_severity: dict = {}
 # logs (raw ADC turbidity). Resets on restart; long windows still read from the sheet.
 HISTORY_BUFFER_MAX = 2000  # ~66 min at a 2s cadence; covers the 5m/15m/1h live windows
 history_buffer = deque(maxlen=HISTORY_BUFFER_MAX)
+
+# Today's cumulative water usage. Kept in-memory as the hot-path value (so the quick-view
+# doesn't need a DB round-trip on every 2s reading) and persisted to storage.daily_usage
+# fire-and-forget for durability + the Water Usage chart. Reseeded from storage at startup
+# so a restart mid-day doesn't visibly reset usage to 0. A date rollover just starts a fresh
+# in-memory total at 0 -- same "new day, new row" reasoning as the storage.py table itself.
+def _local_date() -> str:
+    return datetime.date.today().isoformat()
+
+_daily_usage_date = _local_date()
+_daily_usage_total = storage.get_daily_usage(_daily_usage_date) if storage.enabled() else 0.0
+
+
+def _add_daily_usage(liters: float) -> float:
+    """Adds `liters` to today's running total (rolling the in-memory total over to a fresh
+    day first if the date has changed since the last reading), persists async, and returns
+    the new total."""
+    global _daily_usage_date, _daily_usage_total
+    today = _local_date()
+    if today != _daily_usage_date:
+        _daily_usage_date = today
+        _daily_usage_total = 0.0
+    _daily_usage_total += liters
+    if storage.enabled():
+        asyncio.create_task(asyncio.to_thread(storage.add_daily_usage, today, liters))
+    return _daily_usage_total
 
 
 def _update_stats(payload: dict) -> None:
@@ -243,10 +269,17 @@ async def relay_to_google_sheets(payload: dict) -> None:
 # calibration endpoints), so no lock is needed.
 
 
+CALIBRATED_SENSORS = ("turbidity", "tds", "flow")
+
+
 def _default_calibration() -> dict:
     return {
         "turbidity": {"model": "linear2", "points": [], "coefficients": None, "updated": None},
         "tds": {"model": "kfactor", "points": [], "coefficients": {"k": 1.0}, "updated": None},
+        # k = pulses per liter. YF-S201 nominal is ~450 (7.5 pulses/sec per L/min * 60s);
+        # refined the same way TDS's k is -- pour a known volume through, capture the pulse
+        # count, k = counted_pulses / measured_liters.
+        "flow": {"model": "kfactor", "points": [], "coefficients": {"k": 450.0}, "updated": None},
     }
 
 
@@ -257,7 +290,7 @@ def _load_calibration() -> dict:
             stored = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return calib
-    for sensor in ("turbidity", "tds"):
+    for sensor in CALIBRATED_SENSORS:
         if isinstance(stored.get(sensor), dict):
             calib[sensor].update(stored[sensor])
     return calib
@@ -273,12 +306,13 @@ calibration = _load_calibration()
 calibration_mode = bool(
     calibration["turbidity"]["coefficients"]
     or (calibration["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
+    or (calibration["flow"]["coefficients"] or {}).get("k", 450.0) != 450.0
 )
 
 # Latest raw reading per sensor plus a short rolling buffer, so a calibration "capture"
 # can average out electrical noise instead of grabbing a single instant.
-latest_raw: dict = {"turbidity": None, "tdsVoltage": None, "temperature": None}
-_raw_buffers = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5)}
+latest_raw: dict = {"turbidity": None, "tdsVoltage": None, "temperature": None, "flowRaw": None}
+_raw_buffers = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
 
 
 def _save_calibration() -> None:
@@ -353,6 +387,37 @@ def ppm_to_ec(ppm) -> float | None:
     if not isinstance(ppm, (int, float)):
         return None
     return round(ppm / TDS_TO_EC_FACTOR, 1)
+
+
+def _recompute_flow() -> None:
+    # Single-point k-factor, same shape as _recompute_tds: k = counted_pulses / measured
+    # liters (pulses per liter), from a "pour a known volume through, capture the pulse
+    # count" calibration point.
+    points = calibration["flow"]["points"]
+    if not points:
+        calibration["flow"]["coefficients"] = {"k": 450.0}
+        return
+    p = points[-1]
+    liters = p.get("reference", 0)
+    k = (p["rawPulses"] / liters) if liters > 0 else 450.0
+    calibration["flow"]["coefficients"] = {"k": k}
+
+
+# Matches the firmware's 2s broadcastInterval -- flowPulses arrives as a raw count over that
+# fixed window, same "no elapsed-time bookkeeping" simplicity turbidity/TDS already use.
+FLOW_INTERVAL_SECONDS = 2.0
+
+
+def apply_flow(pulses: float) -> tuple[float, float]:
+    """Returns (litersThisInterval, flowRateLpm) from a raw pulse count. Only applies the
+    saved k-factor when calibration mode is ON (mirrors apply_tds); OFF uses the nominal
+    YF-S201 default so an unconfigured/miscalibrated k can't silently skew the live reading."""
+    k = (calibration["flow"]["coefficients"] or {}).get("k", 450.0) if calibration_mode else 450.0
+    if not k:
+        return 0.0, 0.0
+    liters = pulses / k
+    rate_lpm = liters * (60.0 / FLOW_INTERVAL_SECONDS)
+    return round(liters, 4), round(rate_lpm, 2)
 
 
 # --- Push notifications -------------------------------------------------------
@@ -509,6 +574,18 @@ async def update_sensor(request: Request):
             ec = ppm_to_ec(payload.get("tds"))
             if ec is not None:
                 payload["ec"] = ec
+
+            # Flow sensor: firmware sends the raw pulse count accumulated over the last
+            # FLOW_INTERVAL_SECONDS (a hall-effect pulse counter, unlike the other analog
+            # sensors). No thresholds/calibration-mode-off fallback beyond apply_flow's own
+            # gating -- flow rate/usage are plain quantities, not water-quality judgments.
+            if "flowPulses" in data:
+                flow_pulses = float(data["flowPulses"])
+                liters, flow_rate = apply_flow(flow_pulses)
+                payload["flowRate"] = flow_rate
+                payload["waterUsageToday"] = round(_add_daily_usage(liters), 4)
+                latest_raw["flowRaw"] = flow_pulses
+                _raw_buffers["flowRaw"].append(flow_pulses)
         else:
             text = await request.body()
             if not text:
@@ -535,6 +612,7 @@ async def update_sensor(request: Request):
                 "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
                 "tds": payload.get("tds"),
                 "ec": payload.get("ec"),
+                "flowRate": payload.get("flowRate"),
             }
             history_buffer.append(history_row)
 
@@ -605,7 +683,10 @@ def _with_ntu(rows: list) -> list:
         ec = r.get("ec")
         if ec is None:
             ec = ppm_to_ec(r.get("tds"))
-        out.append({**r, "turbidityNtu": ntu, "ec": ec})
+        # Sheet-backed rows have no flow column at all (flow postdates the Sheets schema and
+        # isn't logged there, see CLAUDE.md) -- backfill None so every row has the key.
+        flow_rate = r.get("flowRate")
+        out.append({**r, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
     return out
 
 
@@ -733,10 +814,12 @@ async def get_calibration():
             "mode": calibration_mode,
             "turbidity": calibration["turbidity"],
             "tds": calibration["tds"],
+            "flow": calibration["flow"],
             "latestRaw": {
                 "turbidity": latest_raw["turbidity"],
                 "tdsVoltage": latest_raw["tdsVoltage"],
                 "temperature": latest_raw["temperature"],
+                "flowRaw": latest_raw["flowRaw"],
             },
         }
     )
@@ -750,20 +833,31 @@ async def set_calibration_mode(request: Request):
     return JSONResponse({"mode": calibration_mode})
 
 
+_RECOMPUTE_FNS = {
+    "turbidity": _recompute_turbidity,
+    "tds": _recompute_tds,
+    "flow": _recompute_flow,
+}
+
+
 @app.post("/calibration/capture")
 async def capture_calibration_point(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     try:
         reference = float(body["reference"])
     except (KeyError, TypeError, ValueError):
         return JSONResponse({"error": "reference (numeric) is required"}, status_code=400)
     label = str(body.get("label", ""))
 
-    # Raw value: use the user-typed `raw` when provided (manual entry -- type the ADC/voltage
-    # and the reference it maps to), otherwise fall back to the averaged live reading.
+    # Raw value: use the user-typed `raw` when provided (manual entry -- type the ADC/voltage/
+    # pulse-count and the reference it maps to), otherwise fall back to the averaged live
+    # reading. For flow this fallback is a weaker signal than turbidity/tds's -- it averages
+    # recent per-interval pulse counts rather than a true total-pulses-over-the-test-pour, so
+    # manual entry is the primary path for flow calibration in practice.
+    raw_key = {"turbidity": "turbidity", "tds": "tdsVoltage", "flow": "flowRaw"}[sensor]
     manual_raw = body.get("raw")
     if manual_raw is not None and manual_raw != "":
         try:
@@ -771,9 +865,9 @@ async def capture_calibration_point(request: Request):
         except (TypeError, ValueError):
             return JSONResponse({"error": "raw must be numeric"}, status_code=400)
     else:
-        raw = _avg_raw("turbidity" if sensor == "turbidity" else "tdsVoltage")
+        raw = _avg_raw(raw_key)
         if raw is None:
-            unit = "Raw ADC" if sensor == "turbidity" else "Raw V"
+            unit = {"turbidity": "Raw ADC", "tds": "Raw V", "flow": "pulse count"}[sensor]
             return JSONResponse(
                 {"error": f"no live {sensor} reading yet — type a {unit} value instead"},
                 status_code=409,
@@ -783,8 +877,7 @@ async def capture_calibration_point(request: Request):
         calibration["turbidity"]["points"].append(
             {"raw": round(raw, 1), "reference": reference, "label": label}
         )
-        _recompute_turbidity()
-    else:
+    elif sensor == "tds":
         calibration["tds"]["points"].append(
             {
                 "rawVoltage": round(raw, 4),
@@ -793,7 +886,11 @@ async def capture_calibration_point(request: Request):
                 "temperature": latest_raw["temperature"] if latest_raw["temperature"] is not None else 25.0,
             }
         )
-        _recompute_tds()
+    else:
+        calibration["flow"]["points"].append(
+            {"rawPulses": round(raw, 1), "reference": reference, "label": label}
+        )
+    _RECOMPUTE_FNS[sensor]()
 
     return JSONResponse({sensor: calibration[sensor]})
 
@@ -802,38 +899,62 @@ async def capture_calibration_point(request: Request):
 async def delete_calibration_point(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     try:
         index = int(body["index"])
         calibration[sensor]["points"].pop(index)
     except (KeyError, TypeError, ValueError, IndexError):
         return JSONResponse({"error": "valid point index required"}, status_code=400)
-    (_recompute_turbidity if sensor == "turbidity" else _recompute_tds)()
+    _RECOMPUTE_FNS[sensor]()
     return JSONResponse({sensor: calibration[sensor]})
 
 
 @app.post("/calibration/save")
 async def save_calibration():
     now = _now_iso()
-    for sensor in ("turbidity", "tds"):
+    for sensor in CALIBRATED_SENSORS:
         calibration[sensor]["updated"] = now
     try:
         _save_calibration()
     except OSError as exc:
         return JSONResponse({"error": f"failed to write {CALIBRATION_PATH}: {exc}"}, status_code=500)
     print(f"💾 Calibration saved to {CALIBRATION_PATH}")
-    return JSONResponse({"ok": True, "turbidity": calibration["turbidity"], "tds": calibration["tds"]})
+    return JSONResponse({"ok": True, **{s: calibration[s] for s in CALIBRATED_SENSORS}})
 
 
 @app.post("/calibration/reset")
 async def reset_calibration(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     calibration[sensor] = _default_calibration()[sensor]
     return JSONResponse({sensor: calibration[sensor]})
+
+
+# --- Flow sensor API ----------------------------------------------------------
+# Separate from /history: daily usage is one row per calendar day (storage.daily_usage),
+# not the per-2s readings table, so it needs its own small endpoints rather than riding the
+# three-tier /history merge (see storage.py's daily_usage table docstring).
+
+
+@app.get("/flow/usage")
+async def get_flow_usage(days: int = 14):
+    if not storage.enabled():
+        return JSONResponse({"today": round(_daily_usage_total, 4), "days": []})
+    days = max(1, min(days, 365))
+    rows = await asyncio.to_thread(storage.get_recent_daily_usage, days)
+    return JSONResponse({"today": round(_daily_usage_total, 4), "days": rows})
+
+
+@app.post("/flow/reset-today")
+async def reset_flow_usage_today():
+    global _daily_usage_total
+    _daily_usage_total = 0.0
+    if storage.enabled():
+        await asyncio.to_thread(storage.reset_daily_usage, _local_date())
+    return JSONResponse({"ok": True, "today": 0.0})
 
 
 # --- Push notification API ---------------------------------------------------
