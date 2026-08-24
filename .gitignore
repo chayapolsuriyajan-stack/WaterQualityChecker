@@ -6,6 +6,14 @@ calibration.json
 # not project code. Generate your own with `vapid --gen` (py-vapid, pulled in by pywebpush).
 vapid_private_key.pem
 
+# Self-signed HTTPS cert/key (webconfig.json's httpsCertFile/httpsKeyFile) for LAN access --
+# machine-specific (bound to a particular LAN IP) and not meant to be shared/trusted beyond
+# this deployment. Regenerate per machine, e.g. via openssl req -x509 -nodes -newkey rsa:2048
+# -keyout https_key.pem -out https_cert.pem -days 825 -subj "/CN=<LAN-IP>"
+# -addext "subjectAltName=IP:<LAN-IP>,IP:127.0.0.1,DNS:localhost"
+https_cert.pem
+https_key.pem
+
 # Local sensor history database (storage.py) + its WAL sidecars. Site-specific measurement
 # data, not project code -- back it up separately, don't commit it.
 history.db

@@ -259,6 +259,10 @@ const en = {
   'notif.unsubscribeSuccess': 'Notifications turned off',
   'notif.unsubscribeFailed': "Couldn't turn off notifications",
   'notif.prefsSaveFailed': "Couldn't save notification preferences",
+  'notif.sendTest': 'Send test notification',
+  'notif.sendingTest': 'Sending...',
+  'notif.testSuccess': 'Test notification sent',
+  'notif.testFailed': "Couldn't send test notification",
 } as const
 
 export const messages = {
@@ -490,6 +494,10 @@ export const messages = {
     'notif.unsubscribeSuccess': 'ปิดการแจ้งเตือนแล้ว',
     'notif.unsubscribeFailed': 'ยกเลิกการแจ้งเตือนไม่สำเร็จ',
     'notif.prefsSaveFailed': 'บันทึกการตั้งค่าการแจ้งเตือนไม่สำเร็จ',
+    'notif.sendTest': 'ส่งการแจ้งเตือนทดสอบ',
+    'notif.sendingTest': 'กำลังส่ง...',
+    'notif.testSuccess': 'ส่งการแจ้งเตือนทดสอบแล้ว',
+    'notif.testFailed': 'ส่งการแจ้งเตือนทดสอบไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

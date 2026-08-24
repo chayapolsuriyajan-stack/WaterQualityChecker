@@ -23,6 +23,7 @@ export default defineConfig({
       '/history': 'http://localhost:8080',
       '/calibration': 'http://localhost:8080',
       '/update': 'http://localhost:8080',
+      '/push': 'http://localhost:8080',
     },
   },
 })
