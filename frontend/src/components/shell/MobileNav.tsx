@@ -11,6 +11,7 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { LanguageSwitcher } from './LanguageSwitcher'
+import { NotificationSettings } from './NotificationSettings'
 import { NAV_ITEMS, type ViewId } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
 import { UserBadge } from './UserBadge'
@@ -84,6 +85,7 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
             </nav>
             <div className="flex flex-col gap-1.5">
               <ThemeToggle showLabel className="w-full justify-start px-3" />
+              <NotificationSettings showLabel className="w-full justify-start px-3" />
               <TourHelpButton showLabel className="w-full justify-start px-3" />
               <LanguageSwitcher className="w-full" />
               <UserBadge />

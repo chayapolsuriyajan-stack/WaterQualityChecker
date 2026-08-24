@@ -25,6 +25,7 @@ import {
   isPushSupported,
   registerServiceWorker,
   savePushPreferences,
+  sendTestPush,
   subscribeToPush,
   unsubscribeFromPush,
   type PushPrefs,
@@ -51,6 +52,7 @@ export function NotificationSettings({ className, showLabel = false }: Notificat
   const [prefs, setPrefs] = useState<PushPrefs>(DEFAULT_PREFS)
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [testing, setTesting] = useState(false)
 
   const refreshSubscriptionState = async () => {
     if (!supported) return
@@ -89,7 +91,12 @@ export function NotificationSettings({ className, showLabel = false }: Notificat
             : result.error === 'vapid-unavailable'
               ? t('notif.subscribeFailedUnavailable')
               : t('notif.subscribeFailed')
-        toast.error(message)
+        // For the generic/unrecognized-error case, show the raw reason (e.g. a DOMException
+        // name, or an HTTP status suffix like "subscribe-failed-503") as the toast description
+        // so the cause is visible without opening devtools -- console.error in push.ts still
+        // has the full detail for anything this doesn't fit on one line.
+        const isKnownReason = result.error === 'permission-denied' || result.error === 'vapid-unavailable'
+        toast.error(message, isKnownReason ? undefined : { description: result.error })
       }
     } finally {
       setBusy(false)
@@ -109,6 +116,17 @@ export function NotificationSettings({ className, showLabel = false }: Notificat
       setPrefs(DEFAULT_PREFS)
     } finally {
       setBusy(false)
+    }
+  }
+
+  const handleSendTest = async () => {
+    if (!endpoint) return
+    setTesting(true)
+    try {
+      const res = await sendTestPush(endpoint)
+      toast[res.ok ? 'success' : 'error'](res.ok ? t('notif.testSuccess') : t('notif.testFailed'))
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -185,14 +203,24 @@ export function NotificationSettings({ className, showLabel = false }: Notificat
                 ))}
               </div>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void handleUnsubscribe()}
-            >
-              {busy ? t('notif.unsubscribing') : t('notif.unsubscribe')}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={testing}
+                onClick={() => void handleSendTest()}
+              >
+                {testing ? t('notif.sendingTest') : t('notif.sendTest')}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void handleUnsubscribe()}
+              >
+                {busy ? t('notif.unsubscribing') : t('notif.unsubscribe')}
+              </Button>
+            </div>
           </div>
         )}
       </DialogContent>

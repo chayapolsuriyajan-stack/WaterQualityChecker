@@ -8,8 +8,10 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title || 'HydroMonitor Alert', {
       body: data.body || '',
-      icon: '/favicon.svg',
+      icon: data.icon || '/favicon.svg',
+      badge: data.badge || '/favicon.svg',
       tag: data.tag,
+      actions: data.actions || [],
       data: { url: '/' },
     }),
   )
@@ -17,5 +19,9 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
+  if (event.action === 'dismiss') {
+    return
+  }
+  // 'view' action, or a click on the notification body itself (no action id).
   event.waitUntil(clients.openWindow(event.notification.data?.url || '/'))
 })

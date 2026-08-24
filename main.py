@@ -131,8 +131,18 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         if data == DISCOVERY_REQUEST:
             self.transport.sendto(DISCOVERY_REPLY, addr)
 
+_discovery_listener_started = False
+
 @app.on_event("startup")
 async def start_discovery_listener():
+    # Running HTTP:8080 and HTTPS:8443 as two separate uvicorn Server instances against the
+    # same app (see __main__ below) means this startup event fires once per server -- guard
+    # so the UDP socket, a single process-wide resource, is only bound once. Without this the
+    # second server's bind attempt raises OSError (WinError 10048) and startup fails entirely.
+    global _discovery_listener_started
+    if _discovery_listener_started:
+        return
+    _discovery_listener_started = True
     loop = asyncio.get_event_loop()
     await loop.create_datagram_endpoint(
         DiscoveryProtocol,
@@ -353,6 +363,16 @@ def ppm_to_ec(ppm) -> float | None:
 
 PUSH_PARAMS = ("temperature", "turbidity", "tds", "ec")
 
+# Display metadata (emoji, label, unit) for push notification text. Hand-mirrored from
+# frontend/src/lib/paramMeta.ts's labels/units, same as thresholds.py mirrors RANGE_BANDS --
+# nothing enforces the two staying in sync.
+PARAM_DISPLAY = {
+    "temperature": ("🌡️", "Temperature", "°C"),
+    "turbidity": ("💧", "Turbidity", "NTU"),
+    "tds": ("🧪", "TDS", "ppm"),
+    "ec": ("⚡", "EC", "µS/cm"),
+}
+
 
 def _check_breaches_and_dispatch(payload: dict) -> list:
     breaches = []
@@ -371,9 +391,30 @@ def _check_breaches_and_dispatch(payload: dict) -> list:
 
 
 def _format_push_text(param: str, severity: str, value) -> tuple:
-    title = "HydroMonitor Alert"
-    body = f"{param.capitalize()} is in the {severity} zone ({value})"
+    emoji, label, unit = PARAM_DISPLAY.get(param, ("⚠️", param.capitalize(), ""))
+    title = f"{emoji} {label} — {severity.title()}"
+    try:
+        formatted_value = f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        formatted_value = str(value)
+    body = f"{formatted_value} {unit} is in the {severity} range".strip()
     return title, body
+
+
+def _push_payload(title: str, body: str, tag: str) -> str:
+    return json.dumps(
+        {
+            "title": title,
+            "body": body,
+            "tag": tag,
+            "icon": "/favicon.svg",
+            "badge": "/favicon.svg",
+            "actions": [
+                {"action": "view", "title": "View Dashboard"},
+                {"action": "dismiss", "title": "Dismiss"},
+            ],
+        }
+    )
 
 
 def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) -> None:
@@ -384,7 +425,7 @@ def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) 
     try:
         webpush(
             subscription_info=subscription_info,
-            data=json.dumps({"title": title, "body": body, "tag": f"{param}-{severity}"}),
+            data=_push_payload(title, body, f"{param}-{severity}"),
             vapid_private_key=VAPID_PRIVATE_KEY_FILE,
             vapid_claims={"sub": VAPID_CLAIM_SUB},
         )
@@ -844,6 +885,56 @@ async def get_push_preferences(endpoint: str):
         if sub["endpoint"] == endpoint:
             return JSONResponse({"prefs": sub["prefs"]})
     return JSONResponse({"error": "subscription not found"}, status_code=404)
+
+
+@app.post("/push/test")
+async def push_test(request: Request):
+    """Sends one real push to a single subscription immediately, bypassing prefs/thresholds
+    entirely -- lets the notification-settings UI offer a "send test" button so a user can see
+    what the popup looks like on their device without waiting for a real sensor breach."""
+    if not vapid_available():
+        return JSONResponse({"error": "VAPID not configured"}, status_code=503)
+    if not storage.enabled():
+        return JSONResponse({"error": "push subscriptions require local storage to be enabled"}, status_code=503)
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    if not endpoint:
+        return JSONResponse({"error": "endpoint is required"}, status_code=400)
+    subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
+    sub = next((s for s in subs if s["endpoint"] == endpoint), None)
+    if sub is None:
+        return JSONResponse({"error": "subscription not found"}, status_code=404)
+
+    subscription_info = {
+        "endpoint": sub["endpoint"],
+        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+    }
+
+    def _send() -> tuple:
+        try:
+            webpush(
+                subscription_info=subscription_info,
+                data=_push_payload(
+                    "🔔 HydroMonitor — Test",
+                    "This is a test notification. If you can see this, alerts are working.",
+                    "test",
+                ),
+                vapid_private_key=VAPID_PRIVATE_KEY_FILE,
+                vapid_claims={"sub": VAPID_CLAIM_SUB},
+            )
+            return True, None
+        except WebPushException as e:
+            if e.response is not None and e.response.status_code in (404, 410):
+                storage.delete_push_subscription(sub["endpoint"])
+                return False, "subscription is no longer valid and has been removed"
+            return False, str(e)
+        except Exception as exc:
+            return False, str(exc)
+
+    ok, error = await asyncio.to_thread(_send)
+    if not ok:
+        return JSONResponse({"error": error}, status_code=502)
+    return JSONResponse({"ok": True})
 
 
 @app.put("/push/preferences")

@@ -76,6 +76,10 @@ export async function subscribeToPush(): Promise<SubscribeResult> {
 
     return { ok: true }
   } catch (err) {
+    // Logged (not just returned) so the actual DOMException/name -- e.g. NotAllowedError,
+    // AbortError from the OS push service -- is visible in devtools instead of only the
+    // generic toast the UI shows for any non-specific error string.
+    console.error('subscribeToPush failed:', err)
     return { ok: false, error: String(err) }
   }
 }
@@ -128,5 +132,24 @@ export async function savePushPreferences(endpoint: string, prefs: PushPrefs): P
     return res.ok
   } catch {
     return false
+  }
+}
+
+/** Sends one real push to `endpoint` immediately, bypassing prefs/thresholds, so a user can
+ * see what the popup looks like on their device without waiting for a real sensor breach. */
+export async function sendTestPush(endpoint: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch('/push/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null
+      return { ok: false, error: data?.error ?? `test-failed-${res.status}` }
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: String(err) }
   }
 }
