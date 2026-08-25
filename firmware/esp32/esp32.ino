@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <OneWire.h>
@@ -79,20 +80,35 @@ WiFiUDP discoveryUdp;
 // see the "USB WiFi provisioning" section below for why USB is the provisioning channel.
 // Empty string (the default) means "keep using same-LAN auto-discovery"; any other value is
 // used verbatim as the backend's hostname/IP, skipping discoverBackend() entirely.
+//
+// apiKey/useHttps travel with it because they only matter together: a fixed host usually means
+// the backend is reachable from beyond the LAN (see BACKEND_SET below), at which point sending
+// the shared secret main.py checks (UPDATE_API_KEY in main.py) in cleartext over plain HTTP
+// would defeat the point of having one -- so useHttps switches the POST to main.py's HTTPS
+// listener (httpsPort in webconfig.json, default 8443) instead of the plain :8080 one.
 Preferences backendPrefs;
 String currentBackendHost;
+String currentApiKey;
+bool currentUseHttps = false;
+const int httpsBackendPort = 8443; // must match webconfig.json's httpsPort on the backend
 
 void loadBackendHost() {
   backendPrefs.begin("backend", true); // read-only
   currentBackendHost = backendPrefs.getString("host", "");
+  currentApiKey = backendPrefs.getString("apikey", "");
+  currentUseHttps = backendPrefs.getBool("https", false);
   backendPrefs.end();
 }
 
-void saveBackendHost(const String& host) {
+void saveBackendHost(const String& host, const String& apiKey, bool useHttps) {
   backendPrefs.begin("backend", false); // read-write
   backendPrefs.putString("host", host);
+  backendPrefs.putString("apikey", apiKey);
+  backendPrefs.putBool("https", useHttps);
   backendPrefs.end();
   currentBackendHost = host;
+  currentApiKey = apiKey;
+  currentUseHttps = useHttps;
 }
 
 OneWire oneWire(ONE_WIRE_BUS);
@@ -181,12 +197,17 @@ void handleWifiStatus() {
   );
 }
 
-// Applies currentBackendHost immediately: fixed host -> build backendUrl from it and mark
-// known (no discovery needed); cleared back to "" -> force rediscovery on the LAN, since the
-// previously-fixed host is no longer authoritative and the real one might be different.
+// Applies currentBackendHost/currentUseHttps immediately: fixed host -> build backendUrl from
+// it (https:// + httpsBackendPort, or http:// + backendPort) and mark known (no discovery
+// needed); cleared back to "" -> force rediscovery on the LAN, since the previously-fixed host
+// is no longer authoritative and the real one might be different.
 void applyBackendHost() {
   if (currentBackendHost.length() > 0) {
-    backendUrl = String("http://") + currentBackendHost + ":" + backendPort + "/update";
+    if (currentUseHttps) {
+      backendUrl = String("https://") + currentBackendHost + ":" + httpsBackendPort + "/update";
+    } else {
+      backendUrl = String("http://") + currentBackendHost + ":" + backendPort + "/update";
+    }
     backendKnown = true;
     Serial.print("Using configured backend: ");
     Serial.println(backendUrl);
@@ -195,14 +216,30 @@ void applyBackendHost() {
   }
 }
 
-void handleBackendSet(const String& host) {
-  saveBackendHost(host);
+// line looks like "BACKEND_SET|<host>|<apiKey>|<https:0|1>". apiKey/https default to
+// empty/off if the caller only sends the older 2-field host-only form, so a stale UI build
+// doesn't break -- but every current WifiPanel.tsx submission includes all three.
+void handleBackendSet(const String& args) {
+  int sep1 = args.indexOf('|');
+  String host = sep1 == -1 ? args : args.substring(0, sep1);
+  String apiKey = "";
+  bool useHttps = false;
+  if (sep1 != -1) {
+    int sep2 = args.indexOf('|', sep1 + 1);
+    if (sep2 == -1) {
+      apiKey = args.substring(sep1 + 1);
+    } else {
+      apiKey = args.substring(sep1 + 1, sep2);
+      useHttps = args.substring(sep2 + 1) == "1";
+    }
+  }
+  saveBackendHost(host, apiKey, useHttps);
   applyBackendHost();
   Serial.printf("BACKEND_SET_OK|%s\n", host.c_str());
 }
 
 void handleBackendClear() {
-  saveBackendHost("");
+  saveBackendHost("", "", false);
   applyBackendHost();
   Serial.println("BACKEND_SET_OK|");
 }
@@ -210,11 +247,15 @@ void handleBackendClear() {
 void handleBackendStatus() {
   // fixed=1 when a host override is active (currentBackendHost non-empty); backendUrl is
   // whatever's currently in effect either way (fixed host, or the last-discovered LAN one).
+  // The API key itself is never echoed back over serial, same as WIFI_STATUS never echoing
+  // the WiFi password -- only whether one is set (hasKey).
   Serial.printf(
-    "BACKEND_STATUS|%d|%s|%s\n",
+    "BACKEND_STATUS|%d|%s|%s|%d|%d\n",
     currentBackendHost.length() > 0 ? 1 : 0,
     currentBackendHost.c_str(),
-    backendUrl.c_str()
+    backendUrl.c_str(),
+    currentApiKey.length() > 0 ? 1 : 0,
+    currentUseHttps ? 1 : 0
   );
 }
 
@@ -420,10 +461,26 @@ void loop() {
 
     if (backendKnown) {
       if (WiFi.status() == WL_CONNECTED) {
-        WiFiClient client;
         HTTPClient http;
-        http.begin(client, backendUrl);
+        WiFiClientSecure secureClient;
+        WiFiClient plainClient;
+        bool https = backendUrl.startsWith("https://");
+        if (https) {
+          // No cert store on this board -- setInsecure() skips server certificate validation,
+          // same trust model as an ESP32 talking to a self-signed cert with no easy way to
+          // pin/rotate a CA. This still encrypts the API key and payload in transit (the actual
+          // reason for HTTPS here -- see BACKEND_SET's header comment), it just doesn't
+          // authenticate the server; that's an acceptable tradeoff for a hobby monitoring
+          // board, not for anything security-critical.
+          secureClient.setInsecure();
+          http.begin(secureClient, backendUrl);
+        } else {
+          http.begin(plainClient, backendUrl);
+        }
         http.addHeader("Content-Type", "application/json");
+        if (currentApiKey.length() > 0) {
+          http.addHeader("X-API-Key", currentApiKey);
+        }
         int httpCode = http.POST(outputPayload);
 
         if (httpCode > 0) {

@@ -187,22 +187,27 @@ def set_wifi(ssid: str, password: str, timeout: float = 20.0) -> dict:
     return {"ok": False, "error": "timed out waiting for the ESP32's response"}
 
 
-def set_backend_host(host: str, timeout: float = 5.0) -> dict:
+def set_backend_host(host: str, api_key: str = "", use_https: bool = False, timeout: float = 5.0) -> dict:
     """Sets (host non-empty) or clears (host == "") the fixed-backend override -- see
     esp32.ino's BACKEND_SET/BACKEND_CLEAR. A fixed host skips the ESP32's same-LAN UDP
     discovery entirely, which is what lets the board reach a backend on a *different*
     network than the one it's connected to (the backend must itself be reachable from
     there, e.g. via port-forward + DDNS or a VPN/tunnel -- this only points the board at it).
+
+    `api_key` should match main.py's webconfig.json `updateApiKey` (the board sends it back
+    as the X-API-Key header on every /update POST) and `use_https` switches the POST to
+    main.py's HTTPS listener -- set both together whenever the backend might be reached over
+    the open internet, since api_key sent over plain HTTP there is sent in cleartext.
     Returns {"ok": True, "host": "..."} or {"ok": False, "error": "..."}."""
-    if "|" in host or "\n" in host:
-        return {"ok": False, "error": "host cannot contain '|' or a newline"}
+    if any("|" in v or "\n" in v for v in (host, api_key)):
+        return {"ok": False, "error": "host/api_key cannot contain '|' or a newline"}
     with _lock:
         conn = _get_connection()
         if conn is None:
             return {"ok": False, "error": "ESP32 not detected on USB"}
         try:
             conn.reset_input_buffer()
-            _send_line(conn, f"BACKEND_SET|{host}")
+            _send_line(conn, f"BACKEND_SET|{host}|{api_key}|{1 if use_https else 0}")
             lines = _read_lines_until(conn, ("BACKEND_SET_OK|",), timeout)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -214,10 +219,11 @@ def set_backend_host(host: str, timeout: float = 5.0) -> dict:
 
 
 def get_backend_status(timeout: float = 5.0) -> dict:
-    """Returns {"ok": True, "fixed": bool, "host": str, "url": str} or
-    {"ok": False, "error": "..."}. `fixed` mirrors whether a BACKEND_SET override is active;
-    `url` is whatever backendUrl the firmware is currently using either way (the fixed host,
-    or its last same-LAN discovery result)."""
+    """Returns {"ok": True, "fixed": bool, "host": str, "url": str, "hasApiKey": bool,
+    "https": bool} or {"ok": False, "error": "..."}. `fixed` mirrors whether a BACKEND_SET
+    override is active; `url` is whatever backendUrl the firmware is currently using either
+    way (the fixed host, or its last same-LAN discovery result). The API key itself is never
+    echoed back over serial (same as the WiFi password never is) -- only whether one is set."""
     with _lock:
         conn = _get_connection()
         if conn is None:
@@ -232,11 +238,18 @@ def get_backend_status(timeout: float = 5.0) -> dict:
     for line in lines:
         if not line.startswith("BACKEND_STATUS|"):
             continue
-        parts = line.split("|", 3)
-        if len(parts) != 4:
+        parts = line.split("|")
+        if len(parts) != 6:
             continue
-        _, fixed, host, url = parts
-        return {"ok": True, "fixed": fixed == "1", "host": host, "url": url}
+        _, fixed, host, url, has_api_key, https = parts
+        return {
+            "ok": True,
+            "fixed": fixed == "1",
+            "host": host,
+            "url": url,
+            "hasApiKey": has_api_key == "1",
+            "https": https == "1",
+        }
     return {"ok": False, "error": "timed out waiting for the ESP32's response"}
 
 

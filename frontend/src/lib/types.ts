@@ -126,4 +126,6 @@ export interface WifiBackendStatus {
   fixed: boolean
   host: string
   url: string
+  hasApiKey: boolean
+  https: boolean
 }

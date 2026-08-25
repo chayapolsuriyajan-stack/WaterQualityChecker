@@ -143,10 +143,14 @@ export function getWifiBackend(): Promise<WifiResult<WifiBackendStatus>> {
   return requestWifi<WifiBackendStatus>('/wifi/backend')
 }
 
-/** Pass '' to clear the override and go back to same-LAN auto-discovery. */
-export function setWifiBackend(host: string): Promise<WifiResult<{ host: string }>> {
+/** Pass host: '' to clear the override and go back to same-LAN auto-discovery. */
+export function setWifiBackend(
+  host: string,
+  apiKey: string,
+  useHttps: boolean,
+): Promise<WifiResult<{ host: string }>> {
   return requestWifi<{ host: string }>('/wifi/backend', {
     method: 'POST',
-    body: JSON.stringify({ host }),
+    body: JSON.stringify({ host, apiKey, useHttps }),
   })
 }

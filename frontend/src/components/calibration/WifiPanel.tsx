@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { connectWifi, getWifiBackend, getWifiStatus, scanWifiNetworks, setWifiBackend } from '@/lib/api'
 import { useT } from '@/lib/i18n'
 import type { WifiNetwork } from '@/lib/types'
@@ -33,6 +34,8 @@ export function WifiPanel() {
   const [selected, setSelected] = useState<WifiNetwork | null>(null)
   const [password, setPassword] = useState('')
   const [backendHost, setBackendHost] = useState('')
+  const [backendApiKey, setBackendApiKey] = useState('')
+  const [backendUseHttps, setBackendUseHttps] = useState(true)
 
   const { data: status, isLoading: statusLoading } = useQuery({
     queryKey: STATUS_QUERY_KEY,
@@ -67,11 +70,13 @@ export function WifiPanel() {
   })
 
   const backendMutation = useMutation({
-    mutationFn: (host: string) => setWifiBackend(host),
+    mutationFn: ({ host, apiKey, useHttps }: { host: string; apiKey: string; useHttps: boolean }) =>
+      setWifiBackend(host, apiKey, useHttps),
     onSuccess: (result) => {
       if (result.ok) {
         toast.success(t('wifi.backendSaveSuccess'))
         setBackendHost('')
+        setBackendApiKey('')
         void queryClient.invalidateQueries({ queryKey: BACKEND_QUERY_KEY })
       } else {
         toast.error(t('wifi.backendSaveFailed'), { description: result.error })
@@ -200,6 +205,8 @@ export function WifiPanel() {
               {backendStatus.fixed ? (
                 <span className="text-foreground">
                   {t('wifi.backendCurrentFixed', { host: backendStatus.host })}
+                  {backendStatus.https ? ` (${t('wifi.backendHttpsOn')})` : ''}
+                  {backendStatus.hasApiKey ? ` · ${t('wifi.backendKeySet')}` : ''}
                 </span>
               ) : (
                 <span className="text-muted-foreground">{t('wifi.backendCurrentAuto')}</span>
@@ -207,35 +214,61 @@ export function WifiPanel() {
             </div>
           )}
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <div className="flex-1 space-y-1.5">
-              <Label htmlFor="wifi-backend-host">{t('wifi.backendHostLabel')}</Label>
-              <Input
-                id="wifi-backend-host"
-                value={backendHost}
-                onChange={(e) => setBackendHost(e.target.value)}
-                placeholder={t('wifi.backendHostPlaceholder')}
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="wifi-backend-host">{t('wifi.backendHostLabel')}</Label>
+            <Input
+              id="wifi-backend-host"
+              value={backendHost}
+              onChange={(e) => setBackendHost(e.target.value)}
+              placeholder={t('wifi.backendHostPlaceholder')}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="wifi-backend-key">{t('wifi.backendApiKeyLabel')}</Label>
+            <Input
+              id="wifi-backend-key"
+              type="password"
+              value={backendApiKey}
+              onChange={(e) => setBackendApiKey(e.target.value)}
+              placeholder={t('wifi.backendApiKeyPlaceholder')}
+            />
+            <p className="text-xs text-muted-foreground">{t('wifi.backendApiKeyHint')}</p>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <Switch id="wifi-backend-https" checked={backendUseHttps} onCheckedChange={setBackendUseHttps} />
+            <Label htmlFor="wifi-backend-https" className="font-normal">
+              {t('wifi.backendHttpsLabel')}
+            </Label>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               disabled={backendMutation.isPending || backendHost.trim().length === 0}
-              onClick={() => backendMutation.mutate(backendHost.trim())}
+              onClick={() =>
+                backendMutation.mutate({
+                  host: backendHost.trim(),
+                  apiKey: backendApiKey,
+                  useHttps: backendUseHttps,
+                })
+              }
             >
               {backendMutation.isPending ? t('wifi.backendSaving') : t('wifi.backendSave')}
             </Button>
-          </div>
 
-          {backendStatus?.ok && backendStatus.fixed && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={backendMutation.isPending}
-              onClick={() => backendMutation.mutate('')}
-            >
-              {t('wifi.backendClear')}
-            </Button>
-          )}
+            {backendStatus?.ok && backendStatus.fixed && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={backendMutation.isPending}
+                onClick={() => backendMutation.mutate({ host: '', apiKey: '', useHttps: false })}
+              >
+                {t('wifi.backendClear')}
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>

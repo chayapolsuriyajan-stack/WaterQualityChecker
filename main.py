@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import sys
 import json
@@ -57,6 +58,14 @@ HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
 # USB WiFi provisioning (see wifi_serial.py). Empty/missing -> auto-detect the ESP32's port by
 # its USB-to-serial chip; set this only if auto-detect picks the wrong device.
 wifi_serial.configure(webconfig.get("esp32SerialPort", "") or None)
+# Shared secret for POST /update (see the update_sensor auth check below). Empty/missing ->
+# auth stays OFF and /update accepts any request, matching every prior version of this app
+# (same-LAN-only, no exposure). Set this to a random string once the ESP32 might reach this
+# backend from outside the LAN (see the fixed-backend-host override in WiFi provisioning) --
+# an internet-reachable /update with no auth lets anyone inject fake sensor readings or spam
+# the Google Sheets relay/push notifications. The ESP32 sends it back via the X-API-Key header
+# (set through the same USB provisioning channel as WIFI_SET/BACKEND_SET, see esp32.ino).
+UPDATE_API_KEY = webconfig.get("updateApiKey", "")
 
 
 def vapid_available() -> bool:
@@ -521,6 +530,11 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
 
 @app.post("/update")
 async def update_sensor(request: Request):
+    # Checked only when UPDATE_API_KEY is configured (see its definition above) -- keeps every
+    # same-LAN-only setup working unauthenticated exactly as before. constant_time comparison
+    # since this is a secret comparison over a network-reachable endpoint.
+    if UPDATE_API_KEY and not hmac.compare_digest(request.headers.get("x-api-key", ""), UPDATE_API_KEY):
+        return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
     try:
         data = await request.json()
         payload = {
@@ -1018,7 +1032,9 @@ async def get_wifi_backend():
 async def set_wifi_backend(request: Request):
     body = await request.json()
     host = body.get("host", "")
-    result = await asyncio.to_thread(wifi_serial.set_backend_host, host)
+    api_key = body.get("apiKey", "")
+    use_https = bool(body.get("useHttps", False))
+    result = await asyncio.to_thread(wifi_serial.set_backend_host, host, api_key, use_https)
     if not result["ok"]:
         return JSONResponse({"error": result["error"]}, status_code=503)
     return JSONResponse(result)
