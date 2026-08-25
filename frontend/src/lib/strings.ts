@@ -296,6 +296,24 @@ const en = {
   'settings.displaySection': 'Dashboard display',
   'settings.displayDescription': 'Choose which series show on the main Dashboard.',
   'settings.showWaterUsage': 'Water usage chart',
+
+  // --- wifi provisioning (Calibration tab) ------------------------------------
+  'wifi.label': 'WiFi',
+  'wifi.title': 'WiFi setup',
+  'wifi.description': 'Connect the ESP32 to a network over USB -- no reflashing needed.',
+  'wifi.notDetected': "ESP32 not detected. Plug it in over USB, then try again.",
+  'wifi.notConnected': 'Not connected to any network yet.',
+  'wifi.currentlyConnected': 'Connected to {ssid} ({ip})',
+  'wifi.scan': 'Scan for networks',
+  'wifi.scanning': 'Scanning...',
+  'wifi.scanFailed': "Couldn't scan for networks",
+  'wifi.noNetworks': 'No networks found. Try scanning again.',
+  'wifi.passwordLabel': 'Password',
+  'wifi.passwordPlaceholder': 'Enter network password',
+  'wifi.connect': 'Connect',
+  'wifi.connecting': 'Connecting...',
+  'wifi.connectSuccess': 'Connected! New IP: {ip}',
+  'wifi.connectFailed': "Couldn't connect",
 } as const
 
 export const messages = {
@@ -562,6 +580,23 @@ export const messages = {
     'settings.displaySection': 'การแสดงผลแดชบอร์ด',
     'settings.displayDescription': 'เลือกข้อมูลที่จะแสดงในแดชบอร์ดหลัก',
     'settings.showWaterUsage': 'กราฟการใช้น้ำ',
+
+    'wifi.label': 'WiFi',
+    'wifi.title': 'ตั้งค่า WiFi',
+    'wifi.description': 'เชื่อมต่อ ESP32 กับเครือข่ายผ่าน USB โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',
+    'wifi.notDetected': 'ไม่พบ ESP32 กรุณาเสียบสาย USB แล้วลองใหม่อีกครั้ง',
+    'wifi.notConnected': 'ยังไม่ได้เชื่อมต่อกับเครือข่ายใด',
+    'wifi.currentlyConnected': 'เชื่อมต่อกับ {ssid} แล้ว ({ip})',
+    'wifi.scan': 'ค้นหาเครือข่าย',
+    'wifi.scanning': 'กำลังค้นหา...',
+    'wifi.scanFailed': 'ค้นหาเครือข่ายไม่สำเร็จ',
+    'wifi.noNetworks': 'ไม่พบเครือข่าย ลองค้นหาอีกครั้ง',
+    'wifi.passwordLabel': 'รหัสผ่าน',
+    'wifi.passwordPlaceholder': 'กรอกรหัสผ่านเครือข่าย',
+    'wifi.connect': 'เชื่อมต่อ',
+    'wifi.connecting': 'กำลังเชื่อมต่อ...',
+    'wifi.connectSuccess': 'เชื่อมต่อสำเร็จ! IP ใหม่: {ip}',
+    'wifi.connectFailed': 'เชื่อมต่อไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

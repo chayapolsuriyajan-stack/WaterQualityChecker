@@ -1,17 +1,18 @@
 /**
- * Vertical (horizontal-scroll on phone) picker for the 5 calibratable "sensors"
- * shown on the Calibration view. turbidity/tds/flow actually have coefficients;
- * temperature/ec are informational read-only entries (see CalibrationView).
+ * Vertical (horizontal-scroll on phone) picker for the entries shown on the Calibration view.
+ * turbidity/tds/flow actually have coefficients; temperature/ec are informational read-only
+ * entries; wifi is neither -- it's the USB WiFi-provisioning panel (see WifiPanel.tsx), listed
+ * here because that's where the user asked for it, not because it's a calibratable sensor.
  */
 import type { LucideIcon } from 'lucide-react'
-import { Droplet, GaugeCircle, Thermometer, Waves, Zap } from 'lucide-react'
+import { Droplet, GaugeCircle, Thermometer, Waves, Wifi, Zap } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import type { MessageKey } from '@/lib/strings'
 import { Badge } from '@/components/ui/badge'
 import type { CalibrationState } from '@/lib/types'
 
-export type CalibrationSensorId = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow'
+export type CalibrationSensorId = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow' | 'wifi'
 
 interface SensorDef {
   id: CalibrationSensorId
@@ -25,6 +26,7 @@ const SENSORS: SensorDef[] = [
   { id: 'tds', labelKey: 'param.tds.label', icon: Droplet },
   { id: 'ec', labelKey: 'param.ec.label', icon: Zap },
   { id: 'flow', labelKey: 'param.flow.label', icon: GaugeCircle },
+  { id: 'wifi', labelKey: 'wifi.label', icon: Wifi },
 ]
 
 interface SensorListProps {

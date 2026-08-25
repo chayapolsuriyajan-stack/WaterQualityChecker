@@ -32,6 +32,7 @@ import { TwoPointForm } from './TwoPointForm'
 import type { TwoPointFormSubmitRow } from './TwoPointForm'
 import { CoefficientPreview } from './CoefficientPreview'
 import type { TdsCoefficients, TurbidityCoefficients } from './CoefficientPreview'
+import { WifiPanel } from './WifiPanel'
 
 const QUERY_KEY = ['calibration'] as const
 
@@ -385,6 +386,10 @@ export function CalibrationView() {
                 <CardContent className="p-6 text-sm text-muted-foreground">{t('calib.loading')}</CardContent>
               </Card>
             )}
+
+            {/* WiFi isn't a calibratable sensor (no /calibration coefficients) -- it's the USB
+                provisioning panel, entirely independent of the `data`/`isLoading` state above. */}
+            {activeSensor === 'wifi' && <WifiPanel />}
           </motion.div>
         </div>
       </div>

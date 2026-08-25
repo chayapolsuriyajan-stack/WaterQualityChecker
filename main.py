@@ -16,6 +16,7 @@ from pywebpush import webpush, WebPushException
 
 import storage
 import thresholds
+import wifi_serial
 
 # Windows consoles default to cp1252, where the emoji in the startup prints below raise
 # UnicodeEncodeError and crash the server on launch. Force UTF-8 so `python main.py` just works.
@@ -53,6 +54,9 @@ VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
 HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
 HTTPS_KEY_FILE = webconfig.get("httpsKeyFile", "")
 HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
+# USB WiFi provisioning (see wifi_serial.py). Empty/missing -> auto-detect the ESP32's port by
+# its USB-to-serial chip; set this only if auto-detect picks the wrong device.
+wifi_serial.configure(webconfig.get("esp32SerialPort", "") or None)
 
 
 def vapid_available() -> bool:
@@ -955,6 +959,45 @@ async def reset_flow_usage_today():
     if storage.enabled():
         await asyncio.to_thread(storage.reset_daily_usage, _local_date())
     return JSONResponse({"ok": True, "today": 0.0})
+
+
+# --- WiFi provisioning API -----------------------------------------------------
+# A SEPARATE channel from every other endpoint in this file: these talk to the ESP32 over its
+# USB-serial port (wifi_serial.py), not HTTP-over-WiFi, because the whole point is
+# reconfiguring WiFi credentials at a moment the ESP32 may not have working WiFi yet. See the
+# "Push notifications"-style degrade-gracefully posture -- a missing/unplugged board 503s with
+# a clear reason rather than crashing or hanging. No authentication, same as every other
+# endpoint in this app (there is no login system anywhere in this codebase) -- worth naming
+# explicitly since this one accepts a WiFi password, but not a new gap this feature introduces.
+
+
+@app.get("/wifi/status")
+async def get_wifi_status():
+    result = await asyncio.to_thread(wifi_serial.get_status)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/scan")
+async def scan_wifi():
+    result = await asyncio.to_thread(wifi_serial.scan_networks)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/connect")
+async def connect_wifi(request: Request):
+    body = await request.json()
+    ssid = body.get("ssid")
+    password = body.get("password")
+    if not ssid or password is None:
+        return JSONResponse({"error": "ssid and password are required"}, status_code=400)
+    result = await asyncio.to_thread(wifi_serial.set_wifi, ssid, password)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
 
 
 # --- Push notification API ---------------------------------------------------

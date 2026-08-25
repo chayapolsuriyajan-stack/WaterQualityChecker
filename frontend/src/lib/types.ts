@@ -100,3 +100,18 @@ export interface CalibrationState {
     flowRaw: number | null
   }
 }
+
+/** One network from `POST /wifi/scan`, deduped by SSID and sorted strongest-first. */
+export interface WifiNetwork {
+  ssid: string
+  rssi: number
+  secured: boolean
+}
+
+/** `GET /wifi/status`'s success shape. */
+export interface WifiStatus {
+  connected: boolean
+  ssid: string
+  ip: string
+  rssi: number
+}

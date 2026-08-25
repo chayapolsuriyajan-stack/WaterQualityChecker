@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <Preferences.h>
 
 #define ONE_WIRE_BUS 13 // NOT GPIO12 -- that's a boot-strapping pin (controls flash voltage) and
                         // the DS18B20's required pull-up resistor would hold it HIGH at reset,
@@ -22,9 +23,36 @@
 const float dividerRecoveryFactor = 1.5; // (R1 + R2) / R2 = 30k / 20k
 const float adcVref = 5.0;
 
-const char* ssid = "W7";
-const char* password = "Asdfghjkl";
+// Factory-default WiFi -- only ever used on a completely fresh board, before it has been
+// provisioned once via USB (see the WIFI_SCAN/WIFI_SET serial protocol below). Once a
+// WIFI_SET succeeds, the real credentials live in NVS flash (Preferences, namespace "wifi")
+// and these consts are never consulted again.
+const char* defaultSsid = "W7";
+const char* defaultPassword = "Asdfghjkl";
 const int backendPort = 8080;
+
+// Currently-active WiFi credentials, loaded from NVS at boot (falling back to the defaults
+// above) and updated in-memory whenever a WIFI_SET succeeds -- kept separately from NVS so a
+// failed WIFI_SET can immediately retry these without a flash read.
+Preferences wifiPrefs;
+String currentSsid;
+String currentPassword;
+
+void loadWifiCredentials() {
+  wifiPrefs.begin("wifi", true); // read-only
+  currentSsid = wifiPrefs.getString("ssid", defaultSsid);
+  currentPassword = wifiPrefs.getString("pass", defaultPassword);
+  wifiPrefs.end();
+}
+
+void saveWifiCredentials(const String& newSsid, const String& newPassword) {
+  wifiPrefs.begin("wifi", false); // read-write
+  wifiPrefs.putString("ssid", newSsid);
+  wifiPrefs.putString("pass", newPassword);
+  wifiPrefs.end();
+  currentSsid = newSsid;
+  currentPassword = newPassword;
+}
 
 // IFTTT Maker Webhooks fallback: used only when the backend PC (main.py) can't be reached but
 // Wi-Fi/internet still work, so a reading isn't silently dropped during a backend outage.
@@ -71,6 +99,98 @@ void IRAM_ATTR onFlowPulse() {
   portEXIT_CRITICAL_ISR(&flowMux);
 }
 
+// --- USB WiFi provisioning -----------------------------------------------------
+// Lets the dashboard's Calibration > WiFi tab (backed by main.py's wifi_serial.py module,
+// talking to whichever COM/USB-serial port this board enumerates as) scan for networks and
+// set new credentials over the USB cable -- the only channel available before the board has
+// working WiFi. Every machine-readable line is prefixed "WIFI_" so it can't be confused with
+// the free-form Serial.println debug output used throughout the rest of this sketch. Line
+// bytes are accumulated non-blockingly in loop() (see readSerialCommands below), not here --
+// WiFi.scanNetworks()/WiFi.begin() themselves DO block for a few seconds once a full command
+// line is seen, which is fine since these are explicit user-triggered actions, not part of
+// the normal 2s sensor cadence.
+
+String serialLineBuffer;
+
+void handleWifiScan() {
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n; i++) {
+    bool secured = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    Serial.printf("WIFI_NET|%s|%d|%d\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), secured ? 1 : 0);
+  }
+  WiFi.scanDelete();
+  Serial.println("WIFI_SCAN_DONE");
+}
+
+void handleWifiSet(const String& newSsid, const String& newPassword) {
+  WiFi.disconnect();
+  WiFi.begin(newSsid.c_str(), newPassword.c_str());
+
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+    delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    // Only persist on confirmed success -- a bad password never overwrites a working
+    // previously-saved network (see saveWifiCredentials's header comment).
+    saveWifiCredentials(newSsid, newPassword);
+    backendKnown = false; // force UDP rediscovery -- the backend's IP may differ on this network
+    Serial.printf("WIFI_CONNECTED|%s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.println("WIFI_FAILED|timeout");
+    // Fall back to whatever was working before, so a typo'd password doesn't leave the
+    // board stranded offline until the next USB session.
+    WiFi.disconnect();
+    WiFi.begin(currentSsid.c_str(), currentPassword.c_str());
+  }
+}
+
+void handleWifiStatus() {
+  bool connected = WiFi.status() == WL_CONNECTED;
+  Serial.printf(
+    "WIFI_STATUS|%d|%s|%s|%d\n",
+    connected ? 1 : 0,
+    connected ? WiFi.SSID().c_str() : currentSsid.c_str(),
+    connected ? WiFi.localIP().toString().c_str() : "",
+    connected ? WiFi.RSSI() : 0
+  );
+}
+
+void handleSerialLine(String line) {
+  line.trim();
+  if (line == "WIFI_SCAN") {
+    handleWifiScan();
+  } else if (line == "WIFI_STATUS") {
+    handleWifiStatus();
+  } else if (line.startsWith("WIFI_SET|")) {
+    int firstSep = line.indexOf('|', 9);
+    if (firstSep == -1) {
+      Serial.println("WIFI_FAILED|malformed_command");
+      return;
+    }
+    String newSsid = line.substring(9, firstSep);
+    String newPassword = line.substring(firstSep + 1);
+    handleWifiSet(newSsid, newPassword);
+  }
+  // Unrecognized lines are silently ignored -- could be stray input from a human typing in
+  // the Serial Monitor rather than the backend's parser.
+}
+
+// Non-blocking: called every loop() iteration (not gated by broadcastInterval) so typing a
+// command feels responsive even while the sensor-read/POST cycle is mid-flight.
+void readSerialCommands() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n') {
+      handleSerialLine(serialLineBuffer);
+      serialLineBuffer = "";
+    } else if (c != '\r') {
+      serialLineBuffer += c;
+    }
+  }
+}
+
 // Broadcasts a discovery request and waits for the backend to reply. On success,
 // sets backendUrl from the reply's source IP. Returns false (and leaves backendUrl
 // untouched) if nothing answers within timeoutMs.
@@ -109,18 +229,31 @@ void setup() {
   analogSetAttenuation(ADC_11db);
   pinMode(FLOW_PIN, INPUT_PULLUP); // YF-S201's open-collector output needs a pull-up
   attachInterrupt(digitalPinToInterrupt(FLOW_PIN), onFlowPulse, RISING);
+  loadWifiCredentials(); // NVS if previously provisioned via USB, else the hardcoded defaults
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
-  WiFi.begin(ssid, password); // <-- This automatically gets a DYNAMIC IP via DHCP
+  WiFi.begin(currentSsid.c_str(), currentPassword.c_str()); // <-- This automatically gets a DYNAMIC IP via DHCP
 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  // Bounded, not infinite: stored credentials could be wrong (a mistyped WIFI_SET password,
+  // or a network that's since gone away), and an unconditional infinite wait here would brick
+  // the board's ability to be reconfigured over USB -- readSerialCommands() below keeps
+  // WIFI_SCAN/WIFI_SET usable the whole time, so a bad password is recoverable immediately
+  // rather than requiring a re-flash. Falls through to loop() on timeout either way; loop()
+  // keeps retrying discovery/WiFi status independently.
+  unsigned long wifiWaitStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiWaitStart < 20000) {
+    readSerialCommands();
+    delay(200);
     Serial.print(".");
   }
 
-  Serial.println("\nConnected!");
-  Serial.print("Dynamic IP Assigned: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected!");
+    Serial.print("Dynamic IP Assigned: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nStill not connected after 20s -- continuing anyway. Use WIFI_SCAN/WIFI_SET over serial to reconfigure, or wait for a retry.");
+  }
 
   if (MDNS.begin("hydromonitor")) {
     Serial.println("mDNS responder started! You can use: hydromonitor.local");
@@ -129,13 +262,26 @@ void setup() {
   }
 
   Serial.println("Searching for backend server...");
-  while (!discoverBackend()) {
-    Serial.println("Backend not found, retrying...");
+  // Only attempts discovery while actually connected -- if the 20s WiFi wait above timed
+  // out, this loop is skipped entirely and setup() falls through to loop(), where both WiFi
+  // and backend discovery keep retrying independently on their own timers. backendKnown is
+  // set from `discovered` itself (not inferred from WiFi.status() afterward) since WiFi could
+  // in principle drop mid-retry without discovery ever having actually succeeded.
+  bool discovered = false;
+  while (WiFi.status() == WL_CONNECTED && !discovered) {
+    readSerialCommands();
+    discovered = discoverBackend();
+    if (!discovered) Serial.println("Backend not found, retrying...");
   }
-  backendKnown = true;
+  backendKnown = discovered;
 }
 
 void loop() {
+  // Checked every iteration, not gated by broadcastInterval, so WIFI_SCAN/WIFI_SET/WIFI_STATUS
+  // stay responsive over USB at any time -- the whole point of "usable anytime the ESP32 is on
+  // USB," not just during initial setup().
+  readSerialCommands();
+
   unsigned long currentMillis = millis();
   if (currentMillis - lastBroadcastTime >= broadcastInterval) {
     lastBroadcastTime = currentMillis;

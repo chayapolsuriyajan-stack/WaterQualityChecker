@@ -3,7 +3,14 @@
  * relative so the app works same-origin whether served at / in prod or
  * proxied in dev (see vite.config.ts). Never hardcode a host here.
  */
-import type { CalibrationState, FlowUsageResponse, HistoryRow, HistoryWindow } from './types'
+import type {
+  CalibrationState,
+  FlowUsageResponse,
+  HistoryRow,
+  HistoryWindow,
+  WifiNetwork,
+  WifiStatus,
+} from './types'
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
@@ -88,4 +95,45 @@ export function getFlowUsage(days = 14): Promise<FlowUsageResponse> {
 
 export function resetFlowUsageToday(): Promise<{ ok: boolean; today: number }> {
   return request('/flow/reset-today', { method: 'POST' })
+}
+
+/**
+ * WiFi provisioning over USB (see wifi_serial.py / main.py's /wifi/* routes). Unlike every
+ * other fetcher in this file, a "the ESP32 isn't on USB" response (a plain, expected outcome,
+ * not a bug) comes back as a non-2xx HTTP status with a `{error}` body -- so these three
+ * report failure via a discriminated-union return instead of `request()`'s throw-on-non-ok,
+ * matching how push.ts's sendTestPush already handles this same shape for /push/test.
+ */
+export type WifiResult<T> = ({ ok: true } & T) | { ok: false; error: string }
+
+async function requestWifi<T>(input: string, init?: RequestInit): Promise<WifiResult<T>> {
+  try {
+    const res = await fetch(input, {
+      headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+      ...init,
+    })
+    const data = (await res.json().catch(() => null)) as (T & { ok?: boolean }) | { error?: string } | null
+    if (!res.ok) {
+      const error = (data as { error?: string } | null)?.error ?? `request failed (${res.status})`
+      return { ok: false, error }
+    }
+    return { ok: true, ...(data as T) }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+}
+
+export function getWifiStatus(): Promise<WifiResult<WifiStatus>> {
+  return requestWifi<WifiStatus>('/wifi/status')
+}
+
+export function scanWifiNetworks(): Promise<WifiResult<{ networks: WifiNetwork[] }>> {
+  return requestWifi<{ networks: WifiNetwork[] }>('/wifi/scan', { method: 'POST' })
+}
+
+export function connectWifi(ssid: string, password: string): Promise<WifiResult<{ ip: string }>> {
+  return requestWifi<{ ip: string }>('/wifi/connect', {
+    method: 'POST',
+    body: JSON.stringify({ ssid, password }),
+  })
 }
