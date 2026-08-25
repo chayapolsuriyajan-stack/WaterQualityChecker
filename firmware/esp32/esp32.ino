@@ -65,6 +65,21 @@ void saveWifiCredentials(const String& newSsid, const String& newPassword) {
 // the same sheet in the same row shape).
 const char* sheetsWebhookUrl = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_EXEC_URL_HERE";
 
+// The sheet's TDS column is always ppm, never raw voltage (there's no separate raw-voltage
+// column to backfill from later, unlike turbidity's raw ADC -- see google_apps_script.gs).
+// Sending this fallback path's raw tdsVoltage straight into that column would show up as a
+// wildly wrong ppm number (voltage is ~0-2.3, ppm is typically hundreds) and poison the
+// derived EC value too. This mirrors main.py's _dfrobot_ppm (the *uncalibrated*, k=1.0 shape
+// -- the personal k-factor lives in calibration.json on the backend PC, which this fallback
+// path has no access to) so the units/scale are at least correct, same as what the dashboard
+// already shows whenever calibration mode is off.
+float dfrobotUncalibratedPpm(float voltage, float temperatureC) {
+  float coeff = 1.0 + 0.02 * (temperatureC - 25.0);
+  float v = (coeff != 0.0) ? voltage / coeff : voltage;
+  float ppm = (133.42 * v * v * v - 255.86 * v * v + 857.39 * v) * 0.5;
+  return ppm > 0.0 ? ppm : 0.0;
+}
+
 // Sensors are read every broadcastInterval (2s), but each buffered reading becomes its own
 // Apps Script call once we're able to send (see the flush loop in loop() below) -- bursting
 // all of them at once is inconsiderate of Apps Script's per-call execution overhead, so sends
@@ -610,16 +625,13 @@ void loop() {
         for (int i = 0; i < sheetsFallbackBufferCount; i++) {
           int idx = (oldestIdx + i) % sheetsFallbackBufferSize;
 
-          // TDS is sent as raw sensor voltage here (tdsVoltage), not calibrated ppm -- the
-          // DFRobot ppm formula and its k-factor live in calibration.json on the backend PC,
-          // which this fallback path has no access to. Logged under the same "tds" field
-          // doPost expects, so it lands in the sheet's TDS column as a raw voltage during a
-          // backend outage rather than ppm (same spirit as turbidity already always being
-          // logged raw -- see google_apps_script.gs's header comment).
+          // TDS: uncalibrated ppm (see dfrobotUncalibratedPpm's header comment above), not the
+          // raw sensor voltage -- the sheet's TDS column is always ppm-shaped with no separate
+          // raw-voltage column to backfill from later, unlike turbidity's raw ADC.
           StaticJsonDocument<192> sheetsDoc;
           sheetsDoc["temperature"] = sheetsFallbackTempBuffer[idx];
           sheetsDoc["turbidity"] = sheetsFallbackTurbBuffer[idx];
-          sheetsDoc["tds"] = sheetsFallbackTdsVoltageBuffer[idx];
+          sheetsDoc["tds"] = dfrobotUncalibratedPpm(sheetsFallbackTdsVoltageBuffer[idx], sheetsFallbackTempBuffer[idx]);
 
           String sheetsPayload;
           serializeJson(sheetsDoc, sheetsPayload);
