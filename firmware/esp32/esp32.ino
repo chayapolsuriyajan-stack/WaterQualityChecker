@@ -55,57 +55,42 @@ void saveWifiCredentials(const String& newSsid, const String& newPassword) {
   currentPassword = newPassword;
 }
 
-// IFTTT Maker Webhooks fallback: used only when the backend PC (main.py) can't be reached but
+// Google Sheets fallback: used only when the backend PC (main.py) can't be reached but
 // Wi-Fi/internet still work, so a reading isn't silently dropped during a backend outage.
-// Fill in iftttWebhookKey with your own key from https://ifttt.com/maker_webhooks (the
-// "Documentation" link on that page shows your personal key). iftttEventName must match the
-// event name configured in the IFTTT applet's Webhooks "Receive a web request" trigger.
-const char* iftttEventName = "hydro_reading";
-const char* iftttWebhookKey = "YOUR_IFTTT_WEBHOOKS_KEY"; // <-- fill in your own key
+// Posts straight to the SAME Google Apps Script Web App main.py's own Sheets relay uses (see
+// google_apps_script.gs's doPost) -- no third-party service, no separate account/plan, and no
+// per-reading fee/rate-limit to work around, unlike the IFTTT Maker Webhooks path this
+// replaced. Paste in the deployed Web App's /exec URL (Apps Script editor -> Deploy -> Web
+// App; must match webconfig.json's googleSheetsWebhookUrl on the backend, since both write to
+// the same sheet in the same row shape).
+const char* sheetsWebhookUrl = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_EXEC_URL_HERE";
 
-// IFTTT's free tier rate-limits Maker Webhooks to roughly one request per 60s
-// (iftttPostInterval below), but sensors are read every broadcastInterval (2s) -- about 30
-// readings happen per IFTTT window. Sending only the single latest reading each time that
-// window opens (the previous behavior) silently drops the other ~29. Instead, buffer every
-// reading taken while the backend is unreachable and send the whole batch, packed as
-// comma-separated lists, in the three value fields Maker Webhooks provides -- so a 60s outage
-// window now reports all of it, not just its last instant. A circular buffer: once full, the
-// newest reading overwrites the oldest, so a delayed send window (jitter, a slow POST)
-// degrades to "most recent 30" instead of overflowing.
-const int iftttBufferSize = 30;
-float iftttTempBuffer[iftttBufferSize];
-float iftttTurbBuffer[iftttBufferSize];
-float iftttTdsBuffer[iftttBufferSize];
-int iftttBufferCount = 0; // how many valid entries (caps at iftttBufferSize)
-int iftttBufferNext = 0;  // next slot to write; wraps once the buffer is full
+// Sensors are read every broadcastInterval (2s), but each buffered reading becomes its own
+// Apps Script call once we're able to send (see the flush loop in loop() below) -- bursting
+// all of them at once is inconsiderate of Apps Script's per-call execution overhead, so sends
+// are throttled to one flush attempt per sheetsFallbackInterval, same spirit as the previous
+// IFTTT throttle. Readings taken between flushes accumulate in a circular buffer (once full,
+// the newest overwrites the oldest -- degrades to "most recent 30" instead of overflowing)
+// so a 60s outage window is recovered in full, not just its last instant.
+const int sheetsFallbackBufferSize = 30;
+float sheetsFallbackTempBuffer[sheetsFallbackBufferSize];
+float sheetsFallbackTurbBuffer[sheetsFallbackBufferSize];
+float sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferSize];
+int sheetsFallbackBufferCount = 0; // how many valid entries (caps at sheetsFallbackBufferSize)
+int sheetsFallbackBufferNext = 0;  // next slot to write; wraps once the buffer is full
 
-void iftttBufferPush(float temperature, float turbidity, float tdsVoltage) {
-  iftttTempBuffer[iftttBufferNext] = temperature;
-  iftttTurbBuffer[iftttBufferNext] = turbidity;
-  iftttTdsBuffer[iftttBufferNext] = tdsVoltage;
-  iftttBufferNext = (iftttBufferNext + 1) % iftttBufferSize;
-  if (iftttBufferCount < iftttBufferSize) iftttBufferCount++;
+void sheetsFallbackBufferPush(float temperature, float turbidity, float tdsVoltage) {
+  sheetsFallbackTempBuffer[sheetsFallbackBufferNext] = temperature;
+  sheetsFallbackTurbBuffer[sheetsFallbackBufferNext] = turbidity;
+  sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferNext] = tdsVoltage;
+  sheetsFallbackBufferNext = (sheetsFallbackBufferNext + 1) % sheetsFallbackBufferSize;
+  if (sheetsFallbackBufferCount < sheetsFallbackBufferSize) sheetsFallbackBufferCount++;
 }
 
-void iftttBufferClear() {
-  iftttBufferCount = 0;
-  iftttBufferNext = 0;
+void sheetsFallbackBufferClear() {
+  sheetsFallbackBufferCount = 0;
+  sheetsFallbackBufferNext = 0;
 }
-
-// Renders the buffer oldest-first as a comma-separated list, e.g. "23.50,23.51,23.49".
-String iftttBufferJoin(float* buffer) {
-  String out;
-  // Oldest entry is at iftttBufferNext once the buffer has wrapped (iftttBufferNext is about
-  // to overwrite it next); while still filling up for the first time, oldest is just index 0.
-  int oldestIdx = (iftttBufferCount < iftttBufferSize) ? 0 : iftttBufferNext;
-  for (int i = 0; i < iftttBufferCount; i++) {
-    int idx = (oldestIdx + i) % iftttBufferSize;
-    if (i > 0) out += ",";
-    out += String(buffer[idx], 2);
-  }
-  return out;
-}
-const String iftttWebhookUrl = "https://maker.ifttt.com/trigger/" + String(iftttEventName) + "/with/key/" + String(iftttWebhookKey);
 
 // Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
 // instead of being hardcoded, so the sketch keeps working after the backend PC's
@@ -164,8 +149,8 @@ const int maxFailuresBeforeRediscover = 3;
 unsigned long lastBroadcastTime = 0;
 const unsigned long broadcastInterval = 2000;
 
-unsigned long lastIftttPostTime = 0;
-const unsigned long iftttPostInterval = 60000; // 60s, independent of broadcastInterval -- respects IFTTT free-tier rate limits
+unsigned long lastSheetsFallbackPostTime = 0;
+const unsigned long sheetsFallbackInterval = 60000; // 60s, independent of broadcastInterval -- see the buffer's header comment
 
 // Flow sensor: pulse-counted via interrupt (unlike the other sensors' synchronous
 // analogRead) since pulses can arrive at any time between broadcastInterval ticks, not just
@@ -578,10 +563,10 @@ void loop() {
             Serial.println(response);
           }
           consecutiveFailures = 0;
-          // The backend has caught up to the present again -- readings buffered for IFTTT
-          // while it was down have served their purpose (or will on the next 60s window);
-          // clear so a late-arriving IFTTT window doesn't resend now-stale readings.
-          iftttBufferClear();
+          // The backend has caught up to the present again -- readings buffered for the
+          // Sheets fallback while it was down have served their purpose (or will on the next
+          // flush window); clear so a late-arriving flush doesn't resend now-stale readings.
+          sheetsFallbackBufferClear();
         } else {
           Serial.printf("HTTP POST failed: %s\n", http.errorToString(httpCode).c_str());
           consecutiveFailures++;
@@ -598,40 +583,58 @@ void loop() {
       }
     }
 
-    // IFTTT fallback: buffers every reading taken while the backend is unreachable (never
-    // discovered, or this attempt's POST just failed) so readings aren't silently dropped
-    // during a backend outage, then flushes the whole buffer as one batched request no more
-    // than once per iftttPostInterval to respect IFTTT's free-tier rate limit. Needs real
-    // internet (not just LAN) -- see iftttBufferPush's header comment above for why this
-    // batches instead of sending just the latest reading.
+    // Google Sheets fallback: buffers every reading taken while the backend is unreachable
+    // (never discovered, or this attempt's POST just failed) so readings aren't silently
+    // dropped during a backend outage, then flushes the whole buffer -- one Apps Script POST
+    // per buffered reading, matching google_apps_script.gs's doPost single-reading JSON shape
+    // -- no more than once per sheetsFallbackInterval so a long outage doesn't fire a burst of
+    // calls too often. Needs real internet (not just LAN) and sheetsWebhookUrl filled in above.
     if ((!backendKnown || backendPostFailed) && WiFi.status() == WL_CONNECTED) {
-      iftttBufferPush(temperatureC, turbidityADC, tdsVoltage);
+      sheetsFallbackBufferPush(temperatureC, turbidityADC, tdsVoltage);
 
-      if (currentMillis - lastIftttPostTime >= iftttPostInterval && iftttBufferCount > 0) {
-        lastIftttPostTime = currentMillis;
+      if (currentMillis - lastSheetsFallbackPostTime >= sheetsFallbackInterval && sheetsFallbackBufferCount > 0) {
+        lastSheetsFallbackPostTime = currentMillis;
 
-        // Sized for up to 30 comma-separated 2-decimal floats per field (~180 chars) plus
-        // JSON overhead across three fields -- comfortably under 1024.
-        StaticJsonDocument<1024> iftttDoc;
-        iftttDoc["value1"] = iftttBufferJoin(iftttTempBuffer);
-        iftttDoc["value2"] = iftttBufferJoin(iftttTurbBuffer);
-        iftttDoc["value3"] = iftttBufferJoin(iftttTdsBuffer);
+        // Oldest entry is at sheetsFallbackBufferNext once the buffer has wrapped (that slot
+        // is next to be overwritten); while still filling up for the first time, oldest is
+        // just index 0 -- same logic the old IFTTT buffer join used.
+        int oldestIdx = (sheetsFallbackBufferCount < sheetsFallbackBufferSize) ? 0 : sheetsFallbackBufferNext;
+        int sent = 0;
+        for (int i = 0; i < sheetsFallbackBufferCount; i++) {
+          int idx = (oldestIdx + i) % sheetsFallbackBufferSize;
 
-        String iftttPayload;
-        serializeJson(iftttDoc, iftttPayload);
+          // TDS is sent as raw sensor voltage here (tdsVoltage), not calibrated ppm -- the
+          // DFRobot ppm formula and its k-factor live in calibration.json on the backend PC,
+          // which this fallback path has no access to. Logged under the same "tds" field
+          // doPost expects, so it lands in the sheet's TDS column as a raw voltage during a
+          // backend outage rather than ppm (same spirit as turbidity already always being
+          // logged raw -- see google_apps_script.gs's header comment).
+          StaticJsonDocument<192> sheetsDoc;
+          sheetsDoc["temperature"] = sheetsFallbackTempBuffer[idx];
+          sheetsDoc["turbidity"] = sheetsFallbackTurbBuffer[idx];
+          sheetsDoc["tds"] = sheetsFallbackTdsVoltageBuffer[idx];
 
-        WiFiClient iftttClient;
-        HTTPClient iftttHttp;
-        iftttHttp.begin(iftttClient, iftttWebhookUrl);
-        iftttHttp.addHeader("Content-Type", "application/json");
-        int iftttHttpCode = iftttHttp.POST(iftttPayload);
-        Serial.printf("IFTTT fallback POST (%d buffered readings) -> %d\n", iftttBufferCount, iftttHttpCode);
-        iftttHttp.end();
+          String sheetsPayload;
+          serializeJson(sheetsDoc, sheetsPayload);
+
+          WiFiClientSecure sheetsClient;
+          // Apps Script's cert is a real public CA in practice, but this board has no CA
+          // store to validate against -- same accepted tradeoff as the fixed-backend HTTPS
+          // path above (encrypts in transit, doesn't authenticate the server).
+          sheetsClient.setInsecure();
+          HTTPClient sheetsHttp;
+          sheetsHttp.begin(sheetsClient, sheetsWebhookUrl);
+          sheetsHttp.addHeader("Content-Type", "application/json");
+          int sheetsHttpCode = sheetsHttp.POST(sheetsPayload);
+          sheetsHttp.end();
+          if (sheetsHttpCode > 0) sent++;
+        }
+        Serial.printf("Sheets fallback flush: %d/%d buffered readings sent\n", sent, sheetsFallbackBufferCount);
 
         // Sent (or at least attempted) -- start the next window's buffer fresh regardless of
-        // iftttHttpCode, matching the existing fire-and-forget posture elsewhere in this
-        // sketch (a lost IFTTT post is already best-effort, same as before this change).
-        iftttBufferClear();
+        // per-reading success, matching the existing fire-and-forget posture elsewhere in this
+        // sketch (a lost reading here is already best-effort, same as the previous IFTTT path).
+        sheetsFallbackBufferClear();
       }
     }
   }
