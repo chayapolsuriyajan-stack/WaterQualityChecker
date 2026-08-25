@@ -449,18 +449,25 @@ void setup() {
     applyBackendHost();
   } else {
     Serial.println("Searching for backend server...");
-    // Only attempts discovery while actually connected -- if the 20s WiFi wait above timed
-    // out, this loop is skipped entirely and setup() falls through to loop(), where both WiFi
-    // and backend discovery keep retrying independently on their own timers. backendKnown is
-    // set from `discovered` itself (not inferred from WiFi.status() afterward) since WiFi could
-    // in principle drop mid-retry without discovery ever having actually succeeded.
+    // Bounded (20s, not infinite -- same reasoning as the WiFi-connect wait above): a backend
+    // may never answer at all (no main.py running anywhere, e.g. Google Sheets fallback used
+    // as the only destination on purpose), and an unconditional wait here would hang setup()
+    // forever, which would keep loop() -- and therefore the Sheets fallback and every sensor
+    // read -- from ever running. Falls through to loop() either way; loop() keeps retrying
+    // discovery on its own timer, so a backend that shows up later is still picked up.
+    // backendKnown is set from `discovered` itself (not inferred from WiFi.status() afterward)
+    // since WiFi could in principle drop mid-retry without discovery ever having succeeded.
     bool discovered = false;
-    while (WiFi.status() == WL_CONNECTED && !discovered) {
+    unsigned long backendWaitStart = millis();
+    while (WiFi.status() == WL_CONNECTED && !discovered && millis() - backendWaitStart < 20000) {
       readSerialCommands();
       discovered = discoverBackend();
       if (!discovered) Serial.println("Backend not found, retrying...");
     }
     backendKnown = discovered;
+    if (!discovered) {
+      Serial.println("No backend found after 20s -- continuing without one. Sensor reads/Sheets fallback (if configured) proceed regardless; backend discovery keeps retrying in the background.");
+    }
   }
 }
 
