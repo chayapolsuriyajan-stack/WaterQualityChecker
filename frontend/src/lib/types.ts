@@ -115,3 +115,15 @@ export interface WifiStatus {
   ip: string
   rssi: number
 }
+
+/**
+ * `GET /wifi/backend`'s success shape -- the fixed-backend-host override (esp32.ino's
+ * BACKEND_SET/BACKEND_CLEAR), which lets the board reach a backend on a different network
+ * than same-LAN UDP discovery could ever find. `url` is whatever the firmware is currently
+ * using either way (the fixed host, or its last discovery result).
+ */
+export interface WifiBackendStatus {
+  fixed: boolean
+  host: string
+  url: string
+}

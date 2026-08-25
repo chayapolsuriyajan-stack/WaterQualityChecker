@@ -63,13 +63,37 @@ const char* iftttEventName = "hydro_reading";
 const char* iftttWebhookKey = "YOUR_IFTTT_WEBHOOKS_KEY"; // <-- fill in your own key
 const String iftttWebhookUrl = "https://maker.ifttt.com/trigger/" + String(iftttEventName) + "/with/key/" + String(iftttWebhookKey);
 
-// Backend IP is found at runtime via UDP broadcast discovery (see discoverBackend())
+// Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
 // instead of being hardcoded, so the sketch keeps working after the backend PC's
 // DHCP-assigned IP changes. main.py must be running its discovery listener on this port.
+// UDP broadcast never crosses networks though -- it only ever finds a backend sharing the
+// board's own subnet. When the board's WiFi network and the backend PC's network differ (see
+// BACKEND_SET below), a fixed host/IP set via USB overrides discovery entirely.
 const unsigned int discoveryPort = 8888;
 const char* discoveryRequest = "HYDRO_DISCOVER";
 const char* discoveryReply = "HYDRO_HERE";
 WiFiUDP discoveryUdp;
+
+// Fixed backend host override, persisted in NVS (separate namespace from WiFi credentials so
+// clearing one never disturbs the other) and settable over USB the same way as WIFI_SET --
+// see the "USB WiFi provisioning" section below for why USB is the provisioning channel.
+// Empty string (the default) means "keep using same-LAN auto-discovery"; any other value is
+// used verbatim as the backend's hostname/IP, skipping discoverBackend() entirely.
+Preferences backendPrefs;
+String currentBackendHost;
+
+void loadBackendHost() {
+  backendPrefs.begin("backend", true); // read-only
+  currentBackendHost = backendPrefs.getString("host", "");
+  backendPrefs.end();
+}
+
+void saveBackendHost(const String& host) {
+  backendPrefs.begin("backend", false); // read-write
+  backendPrefs.putString("host", host);
+  backendPrefs.end();
+  currentBackendHost = host;
+}
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -157,6 +181,43 @@ void handleWifiStatus() {
   );
 }
 
+// Applies currentBackendHost immediately: fixed host -> build backendUrl from it and mark
+// known (no discovery needed); cleared back to "" -> force rediscovery on the LAN, since the
+// previously-fixed host is no longer authoritative and the real one might be different.
+void applyBackendHost() {
+  if (currentBackendHost.length() > 0) {
+    backendUrl = String("http://") + currentBackendHost + ":" + backendPort + "/update";
+    backendKnown = true;
+    Serial.print("Using configured backend: ");
+    Serial.println(backendUrl);
+  } else {
+    backendKnown = false;
+  }
+}
+
+void handleBackendSet(const String& host) {
+  saveBackendHost(host);
+  applyBackendHost();
+  Serial.printf("BACKEND_SET_OK|%s\n", host.c_str());
+}
+
+void handleBackendClear() {
+  saveBackendHost("");
+  applyBackendHost();
+  Serial.println("BACKEND_SET_OK|");
+}
+
+void handleBackendStatus() {
+  // fixed=1 when a host override is active (currentBackendHost non-empty); backendUrl is
+  // whatever's currently in effect either way (fixed host, or the last-discovered LAN one).
+  Serial.printf(
+    "BACKEND_STATUS|%d|%s|%s\n",
+    currentBackendHost.length() > 0 ? 1 : 0,
+    currentBackendHost.c_str(),
+    backendUrl.c_str()
+  );
+}
+
 void handleSerialLine(String line) {
   line.trim();
   if (line == "WIFI_SCAN") {
@@ -172,6 +233,12 @@ void handleSerialLine(String line) {
     String newSsid = line.substring(9, firstSep);
     String newPassword = line.substring(firstSep + 1);
     handleWifiSet(newSsid, newPassword);
+  } else if (line.startsWith("BACKEND_SET|")) {
+    handleBackendSet(line.substring(12));
+  } else if (line == "BACKEND_CLEAR") {
+    handleBackendClear();
+  } else if (line == "BACKEND_STATUS") {
+    handleBackendStatus();
   }
   // Unrecognized lines are silently ignored -- could be stray input from a human typing in
   // the Serial Monitor rather than the backend's parser.
@@ -230,6 +297,7 @@ void setup() {
   pinMode(FLOW_PIN, INPUT_PULLUP); // YF-S201's open-collector output needs a pull-up
   attachInterrupt(digitalPinToInterrupt(FLOW_PIN), onFlowPulse, RISING);
   loadWifiCredentials(); // NVS if previously provisioned via USB, else the hardcoded defaults
+  loadBackendHost(); // NVS if a fixed backend was set via USB, else "" (same-LAN auto-discovery)
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
   WiFi.begin(currentSsid.c_str(), currentPassword.c_str()); // <-- This automatically gets a DYNAMIC IP via DHCP
@@ -261,19 +329,25 @@ void setup() {
     Serial.println("Error setting up MDNS responder!");
   }
 
-  Serial.println("Searching for backend server...");
-  // Only attempts discovery while actually connected -- if the 20s WiFi wait above timed
-  // out, this loop is skipped entirely and setup() falls through to loop(), where both WiFi
-  // and backend discovery keep retrying independently on their own timers. backendKnown is
-  // set from `discovered` itself (not inferred from WiFi.status() afterward) since WiFi could
-  // in principle drop mid-retry without discovery ever having actually succeeded.
-  bool discovered = false;
-  while (WiFi.status() == WL_CONNECTED && !discovered) {
-    readSerialCommands();
-    discovered = discoverBackend();
-    if (!discovered) Serial.println("Backend not found, retrying...");
+  if (currentBackendHost.length() > 0) {
+    // Fixed backend configured over USB (possibly on a different network) -- skip LAN
+    // discovery entirely.
+    applyBackendHost();
+  } else {
+    Serial.println("Searching for backend server...");
+    // Only attempts discovery while actually connected -- if the 20s WiFi wait above timed
+    // out, this loop is skipped entirely and setup() falls through to loop(), where both WiFi
+    // and backend discovery keep retrying independently on their own timers. backendKnown is
+    // set from `discovered` itself (not inferred from WiFi.status() afterward) since WiFi could
+    // in principle drop mid-retry without discovery ever having actually succeeded.
+    bool discovered = false;
+    while (WiFi.status() == WL_CONNECTED && !discovered) {
+      readSerialCommands();
+      discovered = discoverBackend();
+      if (!discovered) Serial.println("Backend not found, retrying...");
+    }
+    backendKnown = discovered;
   }
-  backendKnown = discovered;
 }
 
 void loop() {
@@ -287,7 +361,12 @@ void loop() {
     lastBroadcastTime = currentMillis;
 
     if (!backendKnown) {
-      if (discoverBackend()) {
+      if (currentBackendHost.length() > 0) {
+        // Fixed backend: nothing to rediscover, just resume posting to it. The failure
+        // was presumably transient Wi-Fi/routing, not the backend's IP changing.
+        applyBackendHost();
+        consecutiveFailures = 0;
+      } else if (discoverBackend()) {
         backendKnown = true;
         consecutiveFailures = 0;
       } else {

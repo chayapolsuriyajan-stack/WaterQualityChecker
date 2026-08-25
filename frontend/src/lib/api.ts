@@ -8,6 +8,7 @@ import type {
   FlowUsageResponse,
   HistoryRow,
   HistoryWindow,
+  WifiBackendStatus,
   WifiNetwork,
   WifiStatus,
 } from './types'
@@ -135,5 +136,17 @@ export function connectWifi(ssid: string, password: string): Promise<WifiResult<
   return requestWifi<{ ip: string }>('/wifi/connect', {
     method: 'POST',
     body: JSON.stringify({ ssid, password }),
+  })
+}
+
+export function getWifiBackend(): Promise<WifiResult<WifiBackendStatus>> {
+  return requestWifi<WifiBackendStatus>('/wifi/backend')
+}
+
+/** Pass '' to clear the override and go back to same-LAN auto-discovery. */
+export function setWifiBackend(host: string): Promise<WifiResult<{ host: string }>> {
+  return requestWifi<{ host: string }>('/wifi/backend', {
+    method: 'POST',
+    body: JSON.stringify({ host }),
   })
 }

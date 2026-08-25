@@ -1000,6 +1000,30 @@ async def connect_wifi(request: Request):
     return JSONResponse(result)
 
 
+# Same-LAN UDP discovery (see main.py's DiscoveryProtocol / esp32.ino's discoverBackend())
+# only ever finds a backend on the board's own subnet. These let the dashboard point the board
+# at a backend on a DIFFERENT network instead (over the same USB-serial provisioning channel
+# as /wifi/*, since that's the only channel guaranteed to reach the board) -- the target host
+# still has to be reachable from wherever the board's WiFi network is (port-forward + DDNS,
+# a VPN/tunnel, etc.); this only configures which address the board tries.
+@app.get("/wifi/backend")
+async def get_wifi_backend():
+    result = await asyncio.to_thread(wifi_serial.get_backend_status)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/backend")
+async def set_wifi_backend(request: Request):
+    body = await request.json()
+    host = body.get("host", "")
+    result = await asyncio.to_thread(wifi_serial.set_backend_host, host)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
 # --- Push notification API ---------------------------------------------------
 # Subscriptions are persisted to push_subscriptions (storage.py) so they survive restarts;
 # without local storage enabled there is nowhere to durably keep them, so these all 503.

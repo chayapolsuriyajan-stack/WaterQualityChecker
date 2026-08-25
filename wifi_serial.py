@@ -187,6 +187,59 @@ def set_wifi(ssid: str, password: str, timeout: float = 20.0) -> dict:
     return {"ok": False, "error": "timed out waiting for the ESP32's response"}
 
 
+def set_backend_host(host: str, timeout: float = 5.0) -> dict:
+    """Sets (host non-empty) or clears (host == "") the fixed-backend override -- see
+    esp32.ino's BACKEND_SET/BACKEND_CLEAR. A fixed host skips the ESP32's same-LAN UDP
+    discovery entirely, which is what lets the board reach a backend on a *different*
+    network than the one it's connected to (the backend must itself be reachable from
+    there, e.g. via port-forward + DDNS or a VPN/tunnel -- this only points the board at it).
+    Returns {"ok": True, "host": "..."} or {"ok": False, "error": "..."}."""
+    if "|" in host or "\n" in host:
+        return {"ok": False, "error": "host cannot contain '|' or a newline"}
+    with _lock:
+        conn = _get_connection()
+        if conn is None:
+            return {"ok": False, "error": "ESP32 not detected on USB"}
+        try:
+            conn.reset_input_buffer()
+            _send_line(conn, f"BACKEND_SET|{host}")
+            lines = _read_lines_until(conn, ("BACKEND_SET_OK|",), timeout)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    for line in lines:
+        if line.startswith("BACKEND_SET_OK|"):
+            return {"ok": True, "host": line.split("|", 1)[1]}
+    return {"ok": False, "error": "timed out waiting for the ESP32's response"}
+
+
+def get_backend_status(timeout: float = 5.0) -> dict:
+    """Returns {"ok": True, "fixed": bool, "host": str, "url": str} or
+    {"ok": False, "error": "..."}. `fixed` mirrors whether a BACKEND_SET override is active;
+    `url` is whatever backendUrl the firmware is currently using either way (the fixed host,
+    or its last same-LAN discovery result)."""
+    with _lock:
+        conn = _get_connection()
+        if conn is None:
+            return {"ok": False, "error": "ESP32 not detected on USB"}
+        try:
+            conn.reset_input_buffer()
+            _send_line(conn, "BACKEND_STATUS")
+            lines = _read_lines_until(conn, ("BACKEND_STATUS|",), timeout)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    for line in lines:
+        if not line.startswith("BACKEND_STATUS|"):
+            continue
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        _, fixed, host, url = parts
+        return {"ok": True, "fixed": fixed == "1", "host": host, "url": url}
+    return {"ok": False, "error": "timed out waiting for the ESP32's response"}
+
+
 def get_status(timeout: float = 5.0) -> dict:
     """Returns {"ok": True, "connected": bool, "ssid": str, "ip": str, "rssi": int} or
     {"ok": False, "error": "..."}."""

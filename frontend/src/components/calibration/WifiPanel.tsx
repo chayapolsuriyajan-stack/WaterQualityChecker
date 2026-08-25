@@ -13,11 +13,12 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { connectWifi, getWifiStatus, scanWifiNetworks } from '@/lib/api'
+import { connectWifi, getWifiBackend, getWifiStatus, scanWifiNetworks, setWifiBackend } from '@/lib/api'
 import { useT } from '@/lib/i18n'
 import type { WifiNetwork } from '@/lib/types'
 
 const STATUS_QUERY_KEY = ['wifi-status'] as const
+const BACKEND_QUERY_KEY = ['wifi-backend'] as const
 
 function signalIcon(rssi: number) {
   if (rssi >= -50) return SignalHigh
@@ -31,10 +32,17 @@ export function WifiPanel() {
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<WifiNetwork | null>(null)
   const [password, setPassword] = useState('')
+  const [backendHost, setBackendHost] = useState('')
 
   const { data: status, isLoading: statusLoading } = useQuery({
     queryKey: STATUS_QUERY_KEY,
     queryFn: getWifiStatus,
+    refetchInterval: 10_000,
+  })
+
+  const { data: backendStatus } = useQuery({
+    queryKey: BACKEND_QUERY_KEY,
+    queryFn: getWifiBackend,
     refetchInterval: 10_000,
   })
 
@@ -56,6 +64,20 @@ export function WifiPanel() {
       }
     },
     onError: () => toast.error(t('wifi.connectFailed')),
+  })
+
+  const backendMutation = useMutation({
+    mutationFn: (host: string) => setWifiBackend(host),
+    onSuccess: (result) => {
+      if (result.ok) {
+        toast.success(t('wifi.backendSaveSuccess'))
+        setBackendHost('')
+        void queryClient.invalidateQueries({ queryKey: BACKEND_QUERY_KEY })
+      } else {
+        toast.error(t('wifi.backendSaveFailed'), { description: result.error })
+      }
+    },
+    onError: () => toast.error(t('wifi.backendSaveFailed')),
   })
 
   const networks = scanMutation.data?.ok ? scanMutation.data.networks : []
@@ -163,6 +185,56 @@ export function WifiPanel() {
           )}
           {scanMutation.isSuccess && scanMutation.data.ok && networks.length === 0 && (
             <p className="text-sm text-muted-foreground">{t('wifi.noNetworks')}</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('wifi.backendTitle')}</CardTitle>
+          <CardDescription>{t('wifi.backendDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {backendStatus?.ok && (
+            <div className="rounded-md bg-secondary/40 px-3 py-2 text-sm">
+              {backendStatus.fixed ? (
+                <span className="text-foreground">
+                  {t('wifi.backendCurrentFixed', { host: backendStatus.host })}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{t('wifi.backendCurrentAuto')}</span>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="wifi-backend-host">{t('wifi.backendHostLabel')}</Label>
+              <Input
+                id="wifi-backend-host"
+                value={backendHost}
+                onChange={(e) => setBackendHost(e.target.value)}
+                placeholder={t('wifi.backendHostPlaceholder')}
+              />
+            </div>
+            <Button
+              type="button"
+              disabled={backendMutation.isPending || backendHost.trim().length === 0}
+              onClick={() => backendMutation.mutate(backendHost.trim())}
+            >
+              {backendMutation.isPending ? t('wifi.backendSaving') : t('wifi.backendSave')}
+            </Button>
+          </div>
+
+          {backendStatus?.ok && backendStatus.fixed && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={backendMutation.isPending}
+              onClick={() => backendMutation.mutate('')}
+            >
+              {t('wifi.backendClear')}
+            </Button>
           )}
         </CardContent>
       </Card>

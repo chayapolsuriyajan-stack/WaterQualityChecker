@@ -314,6 +314,18 @@ const en = {
   'wifi.connecting': 'Connecting...',
   'wifi.connectSuccess': 'Connected! New IP: {ip}',
   'wifi.connectFailed': "Couldn't connect",
+  'wifi.backendTitle': 'Backend on a different network',
+  'wifi.backendDescription':
+    "By default the board finds the backend by broadcasting on its own network, which only works if the backend PC is on the same network. If it's on a different one, enter the backend's address here (a hostname or IP it's reachable at from the internet or a VPN, e.g. a DDNS name) to point the board at it directly.",
+  'wifi.backendCurrentFixed': 'Using fixed backend: {host}',
+  'wifi.backendCurrentAuto': 'Using same-network auto-discovery.',
+  'wifi.backendHostLabel': 'Backend host or IP',
+  'wifi.backendHostPlaceholder': 'e.g. myhydro.duckdns.org',
+  'wifi.backendSave': 'Save',
+  'wifi.backendSaving': 'Saving...',
+  'wifi.backendClear': 'Clear (use auto-discovery)',
+  'wifi.backendSaveSuccess': 'Backend updated',
+  'wifi.backendSaveFailed': "Couldn't update the backend",
 } as const
 
 export const messages = {
@@ -597,6 +609,18 @@ export const messages = {
     'wifi.connecting': 'กำลังเชื่อมต่อ...',
     'wifi.connectSuccess': 'เชื่อมต่อสำเร็จ! IP ใหม่: {ip}',
     'wifi.connectFailed': 'เชื่อมต่อไม่สำเร็จ',
+    'wifi.backendTitle': 'แบ็กเอนด์อยู่คนละเครือข่าย',
+    'wifi.backendDescription':
+      'โดยปกติบอร์ดจะค้นหาแบ็กเอนด์ด้วยการกระจายสัญญาณในเครือข่ายของตัวเอง ซึ่งใช้ได้เฉพาะเมื่อคอมพิวเตอร์แบ็กเอนด์อยู่เครือข่ายเดียวกัน หากอยู่คนละเครือข่าย ให้กรอกที่อยู่ของแบ็กเอนด์ที่นี่ (โฮสต์เนมหรือ IP ที่เข้าถึงได้จากอินเทอร์เน็ตหรือ VPN เช่นชื่อ DDNS) เพื่อให้บอร์ดเชื่อมต่อโดยตรง',
+    'wifi.backendCurrentFixed': 'กำลังใช้แบ็กเอนด์คงที่: {host}',
+    'wifi.backendCurrentAuto': 'กำลังใช้การค้นหาอัตโนมัติในเครือข่ายเดียวกัน',
+    'wifi.backendHostLabel': 'โฮสต์หรือ IP ของแบ็กเอนด์',
+    'wifi.backendHostPlaceholder': 'เช่น myhydro.duckdns.org',
+    'wifi.backendSave': 'บันทึก',
+    'wifi.backendSaving': 'กำลังบันทึก...',
+    'wifi.backendClear': 'ล้างค่า (ใช้การค้นหาอัตโนมัติ)',
+    'wifi.backendSaveSuccess': 'อัปเดตแบ็กเอนด์แล้ว',
+    'wifi.backendSaveFailed': 'อัปเดตแบ็กเอนด์ไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 
