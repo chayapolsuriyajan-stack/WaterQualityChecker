@@ -143,6 +143,22 @@ export function getWifiBackend(): Promise<WifiResult<WifiBackendStatus>> {
   return requestWifi<WifiBackendStatus>('/wifi/backend')
 }
 
+/**
+ * Has the ESP32 itself round-trip a GET against whatever backend it's currently configured to
+ * use (see main.py's GET /update/health) -- exercises the real WiFi/DNS/TLS/API-key path the
+ * board's actual /update POSTs take, not just whether this machine can reach the host.
+ * `reachable: false` (httpCode 0) means a connection-level failure (DNS/TCP/TLS/no backend
+ * configured); `reachable: true` with a non-2xx `httpCode` means the host answered but
+ * rejected the request (e.g. a wrong API key -> 401).
+ */
+export function testWifiBackend(): Promise<
+  WifiResult<{ reachable: boolean; httpCode: number; detail: string }>
+> {
+  return requestWifi<{ reachable: boolean; httpCode: number; detail: string }>('/wifi/backend/test', {
+    method: 'POST',
+  })
+}
+
 /** Pass host: '' to clear the override and go back to same-LAN auto-discovery. */
 export function setWifiBackend(
   host: string,

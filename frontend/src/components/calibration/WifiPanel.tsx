@@ -14,7 +14,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { connectWifi, getWifiBackend, getWifiStatus, scanWifiNetworks, setWifiBackend } from '@/lib/api'
+import {
+  connectWifi,
+  getWifiBackend,
+  getWifiStatus,
+  scanWifiNetworks,
+  setWifiBackend,
+  testWifiBackend,
+} from '@/lib/api'
 import { useT } from '@/lib/i18n'
 import type { WifiNetwork } from '@/lib/types'
 
@@ -83,6 +90,22 @@ export function WifiPanel() {
       }
     },
     onError: () => toast.error(t('wifi.backendSaveFailed')),
+  })
+
+  const testMutation = useMutation({
+    mutationFn: testWifiBackend,
+    onSuccess: (result) => {
+      if (!result.ok) {
+        toast.error(t('wifi.backendTestFailed'), { description: result.error })
+        return
+      }
+      if (result.reachable) {
+        toast.success(t('wifi.backendTestSuccess', { detail: result.detail }))
+      } else {
+        toast.error(t('wifi.backendTestUnreachable'), { description: result.detail })
+      }
+    },
+    onError: () => toast.error(t('wifi.backendTestFailed')),
   })
 
   const networks = scanMutation.data?.ok ? scanMutation.data.networks : []
@@ -268,6 +291,15 @@ export function WifiPanel() {
                 {t('wifi.backendClear')}
               </Button>
             )}
+
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testMutation.isPending || !(backendStatus?.ok && backendStatus.fixed)}
+              onClick={() => testMutation.mutate()}
+            >
+              {testMutation.isPending ? t('wifi.backendTesting') : t('wifi.backendTest')}
+            </Button>
           </div>
         </CardContent>
       </Card>

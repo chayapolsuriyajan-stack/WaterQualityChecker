@@ -259,6 +259,49 @@ void handleBackendStatus() {
   );
 }
 
+// GETs main.py's GET /update/health -- a no-op reachability/auth check that doesn't write a
+// fake sensor reading, unlike POSTing to the real /update would. Exercises the exact
+// URL/TLS-trust/API-key combination the real POSTs in loop() use (mirrors that block's client
+// setup deliberately), so a green result here is a real guarantee the sensor path will work,
+// not just that *something* answered on the host. Reports BACKEND_TEST_OK|<httpCode> on any
+// HTTP response at all (even a 401 -- that's still "reachable", just misconfigured auth) or
+// BACKEND_TEST_FAILED|<reason> when the request never got an HTTP response (DNS/TCP/TLS
+// failure, or nothing configured yet).
+void handleBackendTest() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("BACKEND_TEST_FAILED|wifi_not_connected");
+    return;
+  }
+  if (backendUrl.length() == 0) {
+    Serial.println("BACKEND_TEST_FAILED|no_backend_configured");
+    return;
+  }
+  String healthUrl = backendUrl + "/health"; // backendUrl always ends in ".../update"
+
+  HTTPClient http;
+  WiFiClientSecure secureClient;
+  WiFiClient plainClient;
+  bool https = healthUrl.startsWith("https://");
+  if (https) {
+    secureClient.setInsecure(); // see loop()'s POST block for why this is an accepted tradeoff
+    http.begin(secureClient, healthUrl);
+  } else {
+    http.begin(plainClient, healthUrl);
+  }
+  if (currentApiKey.length() > 0) {
+    http.addHeader("X-API-Key", currentApiKey);
+  }
+  int httpCode = http.GET();
+  String failureReason = httpCode > 0 ? "" : http.errorToString(httpCode); // must read before end()
+  http.end();
+
+  if (httpCode > 0) {
+    Serial.printf("BACKEND_TEST_OK|%d\n", httpCode);
+  } else {
+    Serial.printf("BACKEND_TEST_FAILED|%s\n", failureReason.c_str());
+  }
+}
+
 void handleSerialLine(String line) {
   line.trim();
   if (line == "WIFI_SCAN") {
@@ -280,6 +323,8 @@ void handleSerialLine(String line) {
     handleBackendClear();
   } else if (line == "BACKEND_STATUS") {
     handleBackendStatus();
+  } else if (line == "BACKEND_TEST") {
+    handleBackendTest();
   }
   // Unrecognized lines are silently ignored -- could be stray input from a human typing in
   // the Serial Monitor rather than the backend's parser.

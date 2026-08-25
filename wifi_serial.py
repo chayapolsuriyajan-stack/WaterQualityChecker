@@ -253,6 +253,42 @@ def get_backend_status(timeout: float = 5.0) -> dict:
     return {"ok": False, "error": "timed out waiting for the ESP32's response"}
 
 
+def test_backend_connection(timeout: float = 15.0) -> dict:
+    """Has the ESP32 itself GET /update/health against whatever backend it's currently
+    configured to use (fixed host or last same-LAN discovery result -- see esp32.ino's
+    BACKEND_TEST), through its own WiFi/DNS/TLS stack, so this actually verifies the path the
+    board's real /update POSTs will take (not just this machine's). `timeout` is generous
+    (default 15s, vs. the ~5s used elsewhere) since a TLS handshake plus a possibly-slow
+    off-LAN round trip both add real latency on top of the USB round trip itself.
+    Returns {"ok": True, "reachable": bool, "httpCode": int, "detail": str} (reachable=False
+    with httpCode<=0 for a connection-level failure, e.g. DNS/TCP/TLS; reachable=True with a
+    non-2xx httpCode for a server-level rejection, e.g. a wrong API key) or
+    {"ok": False, "error": "..."} if the ESP32 itself couldn't be reached over USB."""
+    with _lock:
+        conn = _get_connection()
+        if conn is None:
+            return {"ok": False, "error": "ESP32 not detected on USB"}
+        try:
+            conn.reset_input_buffer()
+            _send_line(conn, "BACKEND_TEST")
+            lines = _read_lines_until(conn, ("BACKEND_TEST_OK|", "BACKEND_TEST_FAILED|"), timeout)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    for line in lines:
+        if line.startswith("BACKEND_TEST_OK|"):
+            code_str = line.split("|", 1)[1]
+            try:
+                code = int(code_str)
+            except ValueError:
+                code = 0
+            return {"ok": True, "reachable": True, "httpCode": code, "detail": f"HTTP {code}"}
+        if line.startswith("BACKEND_TEST_FAILED|"):
+            detail = line.split("|", 1)[1]
+            return {"ok": True, "reachable": False, "httpCode": 0, "detail": detail}
+    return {"ok": False, "error": "timed out waiting for the ESP32's response"}
+
+
 def get_status(timeout: float = 5.0) -> dict:
     """Returns {"ok": True, "connected": bool, "ssid": str, "ip": str, "rssi": int} or
     {"ok": False, "error": "..."}."""

@@ -333,6 +333,11 @@ const en = {
   'wifi.backendClear': 'Clear (use auto-discovery)',
   'wifi.backendSaveSuccess': 'Backend updated',
   'wifi.backendSaveFailed': "Couldn't update the backend",
+  'wifi.backendTest': 'Test connection',
+  'wifi.backendTesting': 'Testing...',
+  'wifi.backendTestSuccess': 'Connected ({detail})',
+  'wifi.backendTestUnreachable': "Couldn't reach the backend",
+  'wifi.backendTestFailed': "Couldn't run the test",
 } as const
 
 export const messages = {
@@ -635,6 +640,11 @@ export const messages = {
     'wifi.backendClear': 'ล้างค่า (ใช้การค้นหาอัตโนมัติ)',
     'wifi.backendSaveSuccess': 'อัปเดตแบ็กเอนด์แล้ว',
     'wifi.backendSaveFailed': 'อัปเดตแบ็กเอนด์ไม่สำเร็จ',
+    'wifi.backendTest': 'ทดสอบการเชื่อมต่อ',
+    'wifi.backendTesting': 'กำลังทดสอบ...',
+    'wifi.backendTestSuccess': 'เชื่อมต่อสำเร็จ ({detail})',
+    'wifi.backendTestUnreachable': 'เชื่อมต่อแบ็กเอนด์ไม่ได้',
+    'wifi.backendTestFailed': 'ทดสอบไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

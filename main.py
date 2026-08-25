@@ -528,12 +528,30 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
 
 
+# Same auth as /update (see its check below), factored out so both routes enforce it
+# identically -- a health check that skipped auth would "pass" against a backend whose real
+# /update then rejects the board, which is exactly the failure this endpoint exists to catch.
+def _check_update_api_key(request: Request) -> bool:
+    return not UPDATE_API_KEY or hmac.compare_digest(request.headers.get("x-api-key", ""), UPDATE_API_KEY)
+
+
+@app.get("/update/health")
+async def update_health(request: Request):
+    # Dedicated no-op reachability/auth check for BACKEND_TEST (esp32.ino) / the WiFi panel's
+    # "Test connection" button, so verifying the fixed-backend-host override doesn't write a
+    # fake sensor reading into history/Sheets/push-notification thresholds the way a real
+    # /update POST would.
+    if not _check_update_api_key(request):
+        return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/update")
 async def update_sensor(request: Request):
     # Checked only when UPDATE_API_KEY is configured (see its definition above) -- keeps every
     # same-LAN-only setup working unauthenticated exactly as before. constant_time comparison
     # since this is a secret comparison over a network-reachable endpoint.
-    if UPDATE_API_KEY and not hmac.compare_digest(request.headers.get("x-api-key", ""), UPDATE_API_KEY):
+    if not _check_update_api_key(request):
         return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
     try:
         data = await request.json()
@@ -1035,6 +1053,19 @@ async def set_wifi_backend(request: Request):
     api_key = body.get("apiKey", "")
     use_https = bool(body.get("useHttps", False))
     result = await asyncio.to_thread(wifi_serial.set_backend_host, host, api_key, use_https)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/backend/test")
+async def test_wifi_backend():
+    # Has the ESP32 itself round-trip GET /update/health against whatever it's currently
+    # configured to use (BACKEND_TEST in esp32.ino) -- exercises the exact path/TLS
+    # trust/API-key combination the board's real /update POSTs will use, which a test run
+    # from this backend process couldn't (this backend isn't the one whose DNS/routing/NAT
+    # path to the target host is in question -- the board's is).
+    result = await asyncio.to_thread(wifi_serial.test_backend_connection)
     if not result["ok"]:
         return JSONResponse({"error": result["error"]}, status_code=503)
     return JSONResponse(result)
