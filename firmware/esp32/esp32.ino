@@ -62,6 +62,49 @@ void saveWifiCredentials(const String& newSsid, const String& newPassword) {
 // event name configured in the IFTTT applet's Webhooks "Receive a web request" trigger.
 const char* iftttEventName = "hydro_reading";
 const char* iftttWebhookKey = "YOUR_IFTTT_WEBHOOKS_KEY"; // <-- fill in your own key
+
+// IFTTT's free tier rate-limits Maker Webhooks to roughly one request per 60s
+// (iftttPostInterval below), but sensors are read every broadcastInterval (2s) -- about 30
+// readings happen per IFTTT window. Sending only the single latest reading each time that
+// window opens (the previous behavior) silently drops the other ~29. Instead, buffer every
+// reading taken while the backend is unreachable and send the whole batch, packed as
+// comma-separated lists, in the three value fields Maker Webhooks provides -- so a 60s outage
+// window now reports all of it, not just its last instant. A circular buffer: once full, the
+// newest reading overwrites the oldest, so a delayed send window (jitter, a slow POST)
+// degrades to "most recent 30" instead of overflowing.
+const int iftttBufferSize = 30;
+float iftttTempBuffer[iftttBufferSize];
+float iftttTurbBuffer[iftttBufferSize];
+float iftttTdsBuffer[iftttBufferSize];
+int iftttBufferCount = 0; // how many valid entries (caps at iftttBufferSize)
+int iftttBufferNext = 0;  // next slot to write; wraps once the buffer is full
+
+void iftttBufferPush(float temperature, float turbidity, float tdsVoltage) {
+  iftttTempBuffer[iftttBufferNext] = temperature;
+  iftttTurbBuffer[iftttBufferNext] = turbidity;
+  iftttTdsBuffer[iftttBufferNext] = tdsVoltage;
+  iftttBufferNext = (iftttBufferNext + 1) % iftttBufferSize;
+  if (iftttBufferCount < iftttBufferSize) iftttBufferCount++;
+}
+
+void iftttBufferClear() {
+  iftttBufferCount = 0;
+  iftttBufferNext = 0;
+}
+
+// Renders the buffer oldest-first as a comma-separated list, e.g. "23.50,23.51,23.49".
+String iftttBufferJoin(float* buffer) {
+  String out;
+  // Oldest entry is at iftttBufferNext once the buffer has wrapped (iftttBufferNext is about
+  // to overwrite it next); while still filling up for the first time, oldest is just index 0.
+  int oldestIdx = (iftttBufferCount < iftttBufferSize) ? 0 : iftttBufferNext;
+  for (int i = 0; i < iftttBufferCount; i++) {
+    int idx = (oldestIdx + i) % iftttBufferSize;
+    if (i > 0) out += ",";
+    out += String(buffer[idx], 2);
+  }
+  return out;
+}
 const String iftttWebhookUrl = "https://maker.ifttt.com/trigger/" + String(iftttEventName) + "/with/key/" + String(iftttWebhookKey);
 
 // Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
@@ -535,6 +578,10 @@ void loop() {
             Serial.println(response);
           }
           consecutiveFailures = 0;
+          // The backend has caught up to the present again -- readings buffered for IFTTT
+          // while it was down have served their purpose (or will on the next 60s window);
+          // clear so a late-arriving IFTTT window doesn't resend now-stale readings.
+          iftttBufferClear();
         } else {
           Serial.printf("HTTP POST failed: %s\n", http.errorToString(httpCode).c_str());
           consecutiveFailures++;
@@ -551,18 +598,24 @@ void loop() {
       }
     }
 
-    // IFTTT fallback: fires when the backend is unreachable (never discovered, or this
-    // attempt's POST just failed) so a reading isn't silently dropped during a backend
-    // outage. Needs real internet (not just LAN), and is throttled independently of the
-    // 2s sensor-read cadence to respect IFTTT's free-tier rate limits.
+    // IFTTT fallback: buffers every reading taken while the backend is unreachable (never
+    // discovered, or this attempt's POST just failed) so readings aren't silently dropped
+    // during a backend outage, then flushes the whole buffer as one batched request no more
+    // than once per iftttPostInterval to respect IFTTT's free-tier rate limit. Needs real
+    // internet (not just LAN) -- see iftttBufferPush's header comment above for why this
+    // batches instead of sending just the latest reading.
     if ((!backendKnown || backendPostFailed) && WiFi.status() == WL_CONNECTED) {
-      if (currentMillis - lastIftttPostTime >= iftttPostInterval) {
+      iftttBufferPush(temperatureC, turbidityADC, tdsVoltage);
+
+      if (currentMillis - lastIftttPostTime >= iftttPostInterval && iftttBufferCount > 0) {
         lastIftttPostTime = currentMillis;
 
-        StaticJsonDocument<192> iftttDoc;
-        iftttDoc["value1"] = temperatureC;
-        iftttDoc["value2"] = turbidityADC;
-        iftttDoc["value3"] = tdsVoltage;
+        // Sized for up to 30 comma-separated 2-decimal floats per field (~180 chars) plus
+        // JSON overhead across three fields -- comfortably under 1024.
+        StaticJsonDocument<1024> iftttDoc;
+        iftttDoc["value1"] = iftttBufferJoin(iftttTempBuffer);
+        iftttDoc["value2"] = iftttBufferJoin(iftttTurbBuffer);
+        iftttDoc["value3"] = iftttBufferJoin(iftttTdsBuffer);
 
         String iftttPayload;
         serializeJson(iftttDoc, iftttPayload);
@@ -572,8 +625,13 @@ void loop() {
         iftttHttp.begin(iftttClient, iftttWebhookUrl);
         iftttHttp.addHeader("Content-Type", "application/json");
         int iftttHttpCode = iftttHttp.POST(iftttPayload);
-        Serial.printf("IFTTT fallback POST -> %d\n", iftttHttpCode);
+        Serial.printf("IFTTT fallback POST (%d buffered readings) -> %d\n", iftttBufferCount, iftttHttpCode);
         iftttHttp.end();
+
+        // Sent (or at least attempted) -- start the next window's buffer fresh regardless of
+        // iftttHttpCode, matching the existing fire-and-forget posture elsewhere in this
+        // sketch (a lost IFTTT post is already best-effort, same as before this change).
+        iftttBufferClear();
       }
     }
   }
