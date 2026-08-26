@@ -32,12 +32,20 @@ except ImportError:  # pyserial not installed -- degrade to "unavailable", never
 BAUD_RATE = 115200
 _BOOT_SETTLE_SECONDS = 2.0  # let the ESP32 finish its DTR/RTS-triggered reset before talking to it
 
-# Common ESP32 dev-board USB-to-serial chip VID:PID pairs. Not exhaustive -- boards vary --
-# but covers the two chips on the overwhelming majority of ESP32 dev boards.
+# Common ESP32 dev-board USB-to-serial chip VID:PID pairs. Not exhaustive -- boards vary -- but
+# covers the identifiers on the overwhelming majority of ESP32 dev boards, including the
+# native USB CDC some newer boards (ESP32-S2/S3/C3, "USB-JTAG/serial") expose directly with no
+# separate USB-to-serial chip at all.
 KNOWN_VID_PID = {
-    (0x10C4, 0xEA60),  # Silicon Labs CP2102/CP2104
+    (0x10C4, 0xEA60),  # Silicon Labs CP2102/CP2104/CP2102N (same PID across that family)
     (0x1A86, 0x7523),  # QinHeng CH340
+    (0x1A86, 0x5523),  # QinHeng CH341 (some CH340 clones/knockoffs report this PID instead)
     (0x1A86, 0x55D4),  # QinHeng CH9102 (newer CH340 variant, some ESP32-S3 boards)
+    (0x0403, 0x6001),  # FTDI FT232R (a few ESP32 boards use FTDI instead of CP210x/CH34x)
+    (0x0403, 0x6015),  # FTDI FT231X/FT230X
+    (0x303A, 0x1001),  # Espressif native USB-JTAG/serial (ESP32-S2/S3/C3 built-in USB, no
+                        # separate USB-to-serial chip -- the board enumerates as this directly)
+    (0x303A, 0x0002),  # Espressif native USB CDC-ACM, alternate PID seen on some S3/C3 boards
 }
 
 _conn = None
@@ -57,15 +65,58 @@ def available() -> bool:
 
 def find_port() -> str | None:
     """The configured override if set, else the first port matching a known ESP32 USB-serial
-    chip. None if pyserial isn't installed or nothing matches."""
+    chip. None if pyserial isn't installed or nothing matches.
+
+    Falls back to "the only serial port currently present" when KNOWN_VID_PID doesn't match
+    anything -- that list is inherently incomplete (new chip revisions, unusual clones,
+    boards we've never seen), but a machine plugged into exactly one serial device is, in
+    practice, almost always plugged into the ESP32 specifically for this workflow. Skipped
+    when there's more than one port, since guessing wrong there could talk to the wrong
+    device instead of just failing closed.
+    """
     if serial is None:
         return None
     if _configured_port:
         return _configured_port
-    for p in serial.tools.list_ports.comports():
+    ports = list(serial.tools.list_ports.comports())
+    for p in ports:
         if (p.vid, p.pid) in KNOWN_VID_PID:
             return p.device
+    if len(ports) == 1:
+        return ports[0].device
     return None
+
+
+def list_ports() -> list[dict]:
+    """Every serial port currently visible to the OS, for diagnosing a failed find_port() --
+    e.g. "the board enumerated as a port but its chip isn't in KNOWN_VID_PID, here's what's
+    actually there so a human can set webconfig.json's esp32SerialPort explicitly"."""
+    if serial is None:
+        return []
+    return [
+        {
+            "device": p.device,
+            "description": p.description,
+            "vid": f"{p.vid:04X}" if p.vid is not None else None,
+            "pid": f"{p.pid:04X}" if p.pid is not None else None,
+        }
+        for p in serial.tools.list_ports.comports()
+    ]
+
+
+def _not_detected_error() -> str:
+    """Builds the "ESP32 not detected" error with whatever ports ARE visible, if any -- so a
+    board that enumerated but didn't match KNOWN_VID_PID (or a genuinely wrong port) is
+    diagnosable from the error message alone instead of just a dead end."""
+    ports = list_ports()
+    if not ports:
+        return "ESP32 not detected on USB (no serial ports found at all -- check the cable/port)"
+    seen = ", ".join(f"{p['device']} ({p['description']})" for p in ports)
+    return (
+        "ESP32 not detected on USB (none of the visible ports matched a known ESP32 chip -- "
+        f"seen: {seen}. If one of these is the board, set webconfig.json's esp32SerialPort "
+        "to it explicitly)"
+    )
 
 
 def _get_connection():
@@ -134,7 +185,7 @@ def scan_networks(timeout: float = 12.0) -> dict:
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, "WIFI_SCAN")
@@ -171,7 +222,7 @@ def set_wifi(ssid: str, password: str, timeout: float = 20.0) -> dict:
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, f"WIFI_SET|{ssid}|{password}")
@@ -204,7 +255,7 @@ def set_backend_host(host: str, api_key: str = "", use_https: bool = False, time
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, f"BACKEND_SET|{host}|{api_key}|{1 if use_https else 0}")
@@ -227,7 +278,7 @@ def get_backend_status(timeout: float = 5.0) -> dict:
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, "BACKEND_STATUS")
@@ -267,7 +318,7 @@ def test_backend_connection(timeout: float = 15.0) -> dict:
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, "BACKEND_TEST")
@@ -295,7 +346,7 @@ def get_status(timeout: float = 5.0) -> dict:
     with _lock:
         conn = _get_connection()
         if conn is None:
-            return {"ok": False, "error": "ESP32 not detected on USB"}
+            return {"ok": False, "error": _not_detected_error()}
         try:
             conn.reset_input_buffer()
             _send_line(conn, "WIFI_STATUS")
