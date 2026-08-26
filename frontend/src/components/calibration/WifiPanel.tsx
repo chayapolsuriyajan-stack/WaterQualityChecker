@@ -1,29 +1,30 @@
 /**
- * USB WiFi provisioning panel (Calibration > WiFi). Talks to main.py's /wifi/* routes, which
- * themselves bridge to the ESP32 over its USB-serial port -- a separate channel from every
- * other endpoint in this app, since the whole point is reconfiguring WiFi at a moment the
- * board may have no working WiFi yet (see wifi_serial.py's header comment). An OS-style
- * network picker: scan, pick a network, type a password if it's secured, connect.
+ * USB WiFi provisioning panel (Calibration > WiFi). Talks DIRECTLY to the ESP32 over the
+ * browser's Web Serial API (see lib/webSerial.ts) -- no backend involved. Clicking "Connect to
+ * board" opens the browser's own native device picker (same UX as python.microbit.org's
+ * Connect button), the user selects the board's USB-serial port, and every command after that
+ * goes straight from this tab to the board. This replaced an earlier version that bridged
+ * through main.py's /wifi/* routes (wifi_serial.py + pyserial on the machine running the
+ * backend) -- that only worked from the browser on the SAME machine as a running backend, and
+ * depended on server-side USB auto-detect ever finding the right port. Web Serial needs no
+ * backend at all and lets the user pick the exact device themselves.
+ *
+ * Chromium-only (Chrome/Edge/Opera -- not Firefox/Safari) and needs a secure context
+ * (https:// or http://localhost); unsupported browsers get a clear message instead of a
+ * silently broken panel.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, RefreshCw, SignalHigh, SignalLow, SignalMedium, SignalZero, WifiOff } from 'lucide-react'
+import { Lock, RefreshCw, SignalHigh, SignalLow, SignalMedium, SignalZero, Usb, WifiOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import {
-  connectWifi,
-  getWifiBackend,
-  getWifiStatus,
-  scanWifiNetworks,
-  setWifiBackend,
-  testWifiBackend,
-} from '@/lib/api'
 import { useT } from '@/lib/i18n'
 import type { WifiNetwork } from '@/lib/types'
+import * as webSerial from '@/lib/webSerial'
 
 const STATUS_QUERY_KEY = ['wifi-status'] as const
 const BACKEND_QUERY_KEY = ['wifi-backend'] as const
@@ -38,31 +39,64 @@ function signalIcon(rssi: number) {
 export function WifiPanel() {
   const { t } = useT()
   const queryClient = useQueryClient()
+  const [connected, setConnected] = useState(webSerial.isConnected())
+  const [connecting, setConnecting] = useState(false)
   const [selected, setSelected] = useState<WifiNetwork | null>(null)
   const [password, setPassword] = useState('')
   const [backendHost, setBackendHost] = useState('')
   const [backendApiKey, setBackendApiKey] = useState('')
   const [backendUseHttps, setBackendUseHttps] = useState(true)
 
+  const supported = webSerial.isSupported()
+
+  useEffect(() => {
+    return webSerial.onDisconnect(() => {
+      setConnected(false)
+      toast.error(t('wifi.deviceDisconnected'))
+      void queryClient.resetQueries({ queryKey: STATUS_QUERY_KEY })
+      void queryClient.resetQueries({ queryKey: BACKEND_QUERY_KEY })
+    })
+  }, [queryClient, t])
+
+  const handleConnectDevice = async () => {
+    setConnecting(true)
+    const result = await webSerial.connect()
+    setConnecting(false)
+    if (result.ok) {
+      setConnected(true)
+      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: BACKEND_QUERY_KEY })
+    } else {
+      toast.error(t('wifi.deviceConnectFailed'), { description: result.error })
+    }
+  }
+
+  const handleDisconnectDevice = async () => {
+    await webSerial.disconnect()
+    setConnected(false)
+  }
+
   const { data: status, isLoading: statusLoading } = useQuery({
     queryKey: STATUS_QUERY_KEY,
-    queryFn: getWifiStatus,
-    refetchInterval: 10_000,
+    queryFn: () => webSerial.getStatus(),
+    enabled: connected,
+    refetchInterval: connected ? 10_000 : false,
   })
 
   const { data: backendStatus } = useQuery({
     queryKey: BACKEND_QUERY_KEY,
-    queryFn: getWifiBackend,
-    refetchInterval: 10_000,
+    queryFn: () => webSerial.getBackendStatus(),
+    enabled: connected,
+    refetchInterval: connected ? 10_000 : false,
   })
 
   const scanMutation = useMutation({
-    mutationFn: scanWifiNetworks,
+    mutationFn: () => webSerial.scanNetworks(),
     onError: () => toast.error(t('wifi.scanFailed')),
   })
 
   const connectMutation = useMutation({
-    mutationFn: ({ ssid, password }: { ssid: string; password: string }) => connectWifi(ssid, password),
+    mutationFn: ({ ssid, password }: { ssid: string; password: string }) => webSerial.setWifi(ssid, password),
     onSuccess: (result) => {
       if (result.ok) {
         toast.success(t('wifi.connectSuccess', { ip: result.ip }))
@@ -78,7 +112,7 @@ export function WifiPanel() {
 
   const backendMutation = useMutation({
     mutationFn: ({ host, apiKey, useHttps }: { host: string; apiKey: string; useHttps: boolean }) =>
-      setWifiBackend(host, apiKey, useHttps),
+      webSerial.setBackendHost(host, apiKey, useHttps),
     onSuccess: (result) => {
       if (result.ok) {
         toast.success(t('wifi.backendSaveSuccess'))
@@ -93,7 +127,7 @@ export function WifiPanel() {
   })
 
   const testMutation = useMutation({
-    mutationFn: testWifiBackend,
+    mutationFn: () => webSerial.testBackendConnection(),
     onSuccess: (result) => {
       if (!result.ok) {
         toast.error(t('wifi.backendTestFailed'), { description: result.error })
@@ -109,12 +143,47 @@ export function WifiPanel() {
   })
 
   const networks = scanMutation.data?.ok ? scanMutation.data.networks : []
-  const espNotFound = status !== undefined && !status.ok
-  const connecting = connectMutation.isPending
+  const espError = status !== undefined && !status.ok ? status.error : null
+  const isConnectingWifi = connectMutation.isPending
 
   const handleConnect = () => {
     if (!selected) return
     connectMutation.mutate({ ssid: selected.ssid, password: selected.secured ? password : '' })
+  }
+
+  if (!supported) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('wifi.title')}</CardTitle>
+          <CardDescription>{t('wifi.description')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 rounded-md bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
+            <WifiOff className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {t('wifi.unsupportedBrowser')}
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!connected) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('wifi.title')}</CardTitle>
+          <CardDescription>{t('wifi.description')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button type="button" disabled={connecting} onClick={() => void handleConnectDevice()}>
+            <Usb className="mr-2 h-4 w-4" aria-hidden="true" />
+            {connecting ? t('wifi.deviceConnecting') : t('wifi.deviceConnect')}
+          </Button>
+          <p className="mt-2 text-xs text-muted-foreground">{t('wifi.deviceConnectHint')}</p>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
@@ -125,10 +194,10 @@ export function WifiPanel() {
           <CardDescription>{t('wifi.description')}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {!statusLoading && espNotFound && (
+          {!statusLoading && espError && (
             <div className="flex items-center gap-2 rounded-md bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
               <WifiOff className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {t('wifi.notDetected')}
+              {espError}
             </div>
           )}
           {status?.ok && (
@@ -143,15 +212,20 @@ export function WifiPanel() {
             </div>
           )}
 
-          <Button
-            type="button"
-            variant="outline"
-            disabled={scanMutation.isPending}
-            onClick={() => scanMutation.mutate()}
-          >
-            <RefreshCw className={scanMutation.isPending ? 'mr-2 h-4 w-4 animate-spin' : 'mr-2 h-4 w-4'} />
-            {scanMutation.isPending ? t('wifi.scanning') : t('wifi.scan')}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={scanMutation.isPending}
+              onClick={() => scanMutation.mutate()}
+            >
+              <RefreshCw className={scanMutation.isPending ? 'mr-2 h-4 w-4 animate-spin' : 'mr-2 h-4 w-4'} />
+              {scanMutation.isPending ? t('wifi.scanning') : t('wifi.scan')}
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => void handleDisconnectDevice()}>
+              {t('wifi.deviceDisconnect')}
+            </Button>
+          </div>
 
           {networks.length > 0 && (
             <ul className="space-y-1.5">
@@ -195,10 +269,10 @@ export function WifiPanel() {
                         )}
                         <Button
                           type="button"
-                          disabled={connecting || (network.secured && password.length === 0)}
+                          disabled={isConnectingWifi || (network.secured && password.length === 0)}
                           onClick={handleConnect}
                         >
-                          {connecting ? t('wifi.connecting') : t('wifi.connect')}
+                          {isConnectingWifi ? t('wifi.connecting') : t('wifi.connect')}
                         </Button>
                       </div>
                     )}
