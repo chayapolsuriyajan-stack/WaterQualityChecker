@@ -43,8 +43,8 @@ const float adcVref = 5.0;
 const char* enterpriseSsid = "@JumboPlus"; // NOT "@JumboPlus5GHz" -- ESP32 has no 5GHz radio at
                                             // all (2.4GHz 802.11b/g/n only), so a 5GHz-only SSID
                                             // can never be joined regardless of credentials/certs.
-const char* enterpriseIdentity = "katunyu.h@satitcmu.ac.th";
-const char* enterprisePassword = "s@1579901492444";
+const char* enterpriseIdentity = "phitsupha.a@cmu.ac.th";
+const char* enterprisePassword = "Pp2002**";
 const int backendPort = 8080;
 
 // Currently-active WiFi credentials, loaded from NVS at boot and updated in-memory whenever a
