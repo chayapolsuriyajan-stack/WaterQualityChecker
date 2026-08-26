@@ -206,7 +206,13 @@ void handleWifiScan() {
 }
 
 void handleWifiSet(const String& newSsid, const String& newPassword) {
-  WiFi.disconnect();
+  // wifioff=true, eraseap=true: a plain WiFi.disconnect() leaves the ESP-IDF driver's own
+  // cached AP association alone, and on ESP32 that can win a race against the WiFi.begin()
+  // right below it -- symptom is exactly "changed the password/network over USB and the board
+  // just keeps reconnecting to the OLD one" (or never leaves it). Fully tearing the radio down
+  // first, then giving it a beat to settle, makes the switch to different credentials reliable.
+  WiFi.disconnect(true, true);
+  delay(200);
   WiFi.begin(newSsid.c_str(), newPassword.c_str());
 
   unsigned long start = millis();
@@ -224,7 +230,8 @@ void handleWifiSet(const String& newSsid, const String& newPassword) {
     Serial.println("WIFI_FAILED|timeout");
     // Fall back to whatever was working before, so a typo'd password doesn't leave the
     // board stranded offline until the next USB session.
-    WiFi.disconnect();
+    WiFi.disconnect(true, true);
+    delay(200);
     WiFi.begin(currentSsid.c_str(), currentPassword.c_str());
   }
 }
@@ -425,6 +432,15 @@ void setup() {
   analogSetAttenuation(ADC_11db);
   pinMode(FLOW_PIN, INPUT_PULLUP); // YF-S201's open-collector output needs a pull-up
   attachInterrupt(digitalPinToInterrupt(FLOW_PIN), onFlowPulse, RISING);
+  // The ESP-IDF WiFi driver underneath Arduino keeps its OWN flash-persisted copy of the last
+  // AP it connected to, separate from -- and normally invisible to -- our own credential
+  // storage in wifiPrefs (NVS namespace "wifi"). WiFi.persistent(true) is the Arduino default;
+  // turning it off here stops that internal store from writing on every WiFi.begin() (flash
+  // wear) and, more importantly, from re-asserting a stale cached network out from under an
+  // explicit reconnect to a *different* one over USB (see handleWifiSet below) -- we already
+  // own persistence ourselves and always pass explicit credentials to WiFi.begin().
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
   loadWifiCredentials(); // NVS if previously provisioned via USB, else the hardcoded defaults
   loadBackendHost(); // NVS if a fixed backend was set via USB, else "" (same-LAN auto-discovery)
   Serial.println();
