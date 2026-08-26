@@ -7,6 +7,12 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Preferences.h>
+#include "esp_eap_client.h" // WPA2/WPA3-Enterprise (PEAP/TTLS/TLS) join, arduino-esp32 3.x (IDF5)
+                            // API -- see enterpriseSsid/etc below. If this header doesn't exist
+                            // on your installed core version, try "esp_wpa2.h" instead (older
+                            // 2.x cores put the same esp_wifi_sta_wpa2_ent_* functions there
+                            // under different names -- esp_eap_client_set_identity/username/
+                            // password below would need to become esp_wifi_sta_wpa2_ent_set_*).
 
 #define ONE_WIRE_BUS 13 // NOT GPIO12 -- that's a boot-strapping pin (controls flash voltage) and
                         // the DS18B20's required pull-up resistor would hold it HIGH at reset,
@@ -27,22 +33,45 @@ const float adcVref = 5.0;
 // Factory-default WiFi -- only ever used on a completely fresh board, before it has been
 // provisioned once via USB (see the WIFI_SCAN/WIFI_SET serial protocol below). Once a
 // WIFI_SET succeeds, the real credentials live in NVS flash (Preferences, namespace "wifi")
-// and these consts are never consulted again.
-const char* defaultSsid = "W7";
-const char* defaultPassword = "Asdfghjkl";
+// and these consts are never consulted again. This is a WPA2-Enterprise (802.1X) network --
+// not a plain password -- so it needs an identity/password rather than a single password, and
+// connectWifi() below routes it through the ESP-IDF enterprise join instead of a plain
+// WiFi.begin(ssid, password). There's no separate "username" here: the EAP-PEAP inner
+// (MSCHAPv2) auth reuses the same identity string as its username when none is set
+// separately, which matches how phone WiFi-Enterprise screens show one "Identity" field, not
+// two -- see esp_eap_client_set_username's call below. FILL IN before flashing.
+const char* enterpriseSsid = "@JumboPlus"; // NOT "@JumboPlus5GHz" -- ESP32 has no 5GHz radio at
+                                            // all (2.4GHz 802.11b/g/n only), so a 5GHz-only SSID
+                                            // can never be joined regardless of credentials/certs.
+const char* enterpriseIdentity = "katunyu.h@satitcmu.ac.th";
+const char* enterprisePassword = "s@1579901492444";
 const int backendPort = 8080;
 
-// Currently-active WiFi credentials, loaded from NVS at boot (falling back to the defaults
-// above) and updated in-memory whenever a WIFI_SET succeeds -- kept separately from NVS so a
-// failed WIFI_SET can immediately retry these without a flash read.
+// Currently-active WiFi credentials, loaded from NVS at boot and updated in-memory whenever a
+// WIFI_SET succeeds -- kept separately from NVS so a failed WIFI_SET can immediately retry
+// these without a flash read. Only meaningful in PSK mode (wifiIsEnterpriseFallback == false);
+// in enterprise-fallback mode connectWifi() ignores currentPassword entirely and uses the
+// enterprise* consts above instead.
 Preferences wifiPrefs;
 String currentSsid;
 String currentPassword;
 
+// True only on a board that has never had a successful WIFI_SET -- i.e. nothing has ever been
+// saved to NVS. Decided once here at boot; a later successful WIFI_SET flips it off in memory
+// (see handleWifiSet) so the board doesn't fall back to the enterprise network again until NVS
+// is erased.
+bool wifiIsEnterpriseFallback = true;
+
 void loadWifiCredentials() {
   wifiPrefs.begin("wifi", true); // read-only
-  currentSsid = wifiPrefs.getString("ssid", defaultSsid);
-  currentPassword = wifiPrefs.getString("pass", defaultPassword);
+  wifiIsEnterpriseFallback = !wifiPrefs.isKey("ssid"); // nothing ever saved via WIFI_SET yet
+  if (wifiIsEnterpriseFallback) {
+    currentSsid = enterpriseSsid; // for WIFI_STATUS/logging only
+    currentPassword = "";
+  } else {
+    currentSsid = wifiPrefs.getString("ssid", enterpriseSsid);
+    currentPassword = wifiPrefs.getString("pass", "");
+  }
   wifiPrefs.end();
 }
 
@@ -55,6 +84,29 @@ void saveWifiCredentials(const String& newSsid, const String& newPassword) {
   currentPassword = newPassword;
 }
 
+// Centralizes how the board joins WiFi, since there are now two shapes: the hardcoded
+// @JumboPlus WPA2-Enterprise fallback (fresh/unprovisioned board) or a plain WPA-PSK network
+// saved via WIFI_SET. Called from setup()'s initial connect and from handleWifiSet's
+// revert-to-previous-network path on a failed WIFI_SET, so both stay in sync automatically
+// rather than duplicating the branch.
+void connectWifi() {
+  if (wifiIsEnterpriseFallback) {
+    esp_eap_client_set_identity((const uint8_t*)enterpriseIdentity, strlen(enterpriseIdentity));
+    // No separate username field on this network -- reuse the identity string (see the
+    // enterpriseIdentity comment above).
+    esp_eap_client_set_username((const uint8_t*)enterpriseIdentity, strlen(enterpriseIdentity));
+    esp_eap_client_set_password((const uint8_t*)enterprisePassword, strlen(enterprisePassword));
+    esp_wifi_sta_enterprise_enable();
+    WiFi.begin(enterpriseSsid);
+  } else {
+    // No-op if enterprise mode was never enabled -- required so a plain PSK join doesn't try
+    // an EAP handshake against a network that isn't expecting one (e.g. right after a WIFI_SET
+    // to a normal network on a board that just booted into the enterprise fallback).
+    esp_wifi_sta_enterprise_disable();
+    WiFi.begin(currentSsid.c_str(), currentPassword.c_str());
+  }
+}
+
 // Google Sheets fallback: used only when the backend PC (main.py) can't be reached but
 // Wi-Fi/internet still work, so a reading isn't silently dropped during a backend outage.
 // Posts straight to the SAME Google Apps Script Web App main.py's own Sheets relay uses (see
@@ -63,7 +115,7 @@ void saveWifiCredentials(const String& newSsid, const String& newPassword) {
 // replaced. Paste in the deployed Web App's /exec URL (Apps Script editor -> Deploy -> Web
 // App; must match webconfig.json's googleSheetsWebhookUrl on the backend, since both write to
 // the same sheet in the same row shape).
-const char* sheetsWebhookUrl = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_EXEC_URL_HERE";
+const char* sheetsWebhookUrl = "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec";
 
 // The sheet's TDS column is always ppm, never raw voltage (there's no separate raw-voltage
 // column to backfill from later, unlike turbidity's raw ADC -- see google_apps_script.gs).
@@ -211,7 +263,11 @@ void handleWifiSet(const String& newSsid, const String& newPassword) {
   // right below it -- symptom is exactly "changed the password/network over USB and the board
   // just keeps reconnecting to the OLD one" (or never leaves it). Fully tearing the radio down
   // first, then giving it a beat to settle, makes the switch to different credentials reliable.
+  // Also disable enterprise mode unconditionally before this plain PSK attempt -- if the board
+  // booted into the @JumboPlus enterprise fallback, leaving that enabled would make this
+  // WiFi.begin(ssid, password) try an EAP handshake against a network that isn't expecting one.
   WiFi.disconnect(true, true);
+  esp_wifi_sta_enterprise_disable();
   delay(200);
   WiFi.begin(newSsid.c_str(), newPassword.c_str());
 
@@ -224,15 +280,18 @@ void handleWifiSet(const String& newSsid, const String& newPassword) {
     // Only persist on confirmed success -- a bad password never overwrites a working
     // previously-saved network (see saveWifiCredentials's header comment).
     saveWifiCredentials(newSsid, newPassword);
+    wifiIsEnterpriseFallback = false; // a real PSK network now exists -- don't fall back to
+                                       // the enterprise default again until NVS is erased
     backendKnown = false; // force UDP rediscovery -- the backend's IP may differ on this network
     Serial.printf("WIFI_CONNECTED|%s\n", WiFi.localIP().toString().c_str());
   } else {
     Serial.println("WIFI_FAILED|timeout");
-    // Fall back to whatever was working before, so a typo'd password doesn't leave the
-    // board stranded offline until the next USB session.
+    // Fall back to whatever was working before (enterprise fallback or a previously-saved PSK
+    // network), so a typo'd password doesn't leave the board stranded offline until the next
+    // USB session. Routed through connectWifi() so this stays correct for either mode.
     WiFi.disconnect(true, true);
     delay(200);
-    WiFi.begin(currentSsid.c_str(), currentPassword.c_str());
+    connectWifi();
   }
 }
 
@@ -245,6 +304,23 @@ void handleWifiStatus() {
     connected ? WiFi.localIP().toString().c_str() : "",
     connected ? WiFi.RSSI() : 0
   );
+}
+
+// Erases any WIFI_SET-saved PSK network from NVS and reverts to the hardcoded @JumboPlus
+// enterprise fallback -- needed because loadWifiCredentials() only ever picks the enterprise
+// path when NVS has no saved "ssid" at all, so a board that was previously provisioned (e.g. to
+// the old W7 default) would otherwise keep retrying that PSK network forever and never attempt
+// enterprise mode. This is the USB-recoverable equivalent of a full flash erase, scoped to just
+// the "wifi" namespace (BACKEND_* settings in the separate "backend" namespace are untouched).
+void handleWifiClear() {
+  wifiPrefs.begin("wifi", false); // read-write
+  wifiPrefs.clear();
+  wifiPrefs.end();
+  WiFi.disconnect(true, true);
+  delay(200);
+  loadWifiCredentials(); // no "ssid" key left -> wifiIsEnterpriseFallback becomes true
+  connectWifi();
+  Serial.println("WIFI_CLEARED");
 }
 
 // Applies currentBackendHost/currentUseHttps immediately: fixed host -> build backendUrl from
@@ -358,6 +434,8 @@ void handleSerialLine(String line) {
     handleWifiScan();
   } else if (line == "WIFI_STATUS") {
     handleWifiStatus();
+  } else if (line == "WIFI_CLEAR") {
+    handleWifiClear();
   } else if (line.startsWith("WIFI_SET|")) {
     int firstSep = line.indexOf('|', 9);
     if (firstSep == -1) {
@@ -441,11 +519,11 @@ void setup() {
   // own persistence ourselves and always pass explicit credentials to WiFi.begin().
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
-  loadWifiCredentials(); // NVS if previously provisioned via USB, else the hardcoded defaults
+  loadWifiCredentials(); // NVS if previously provisioned via USB, else the @JumboPlus enterprise fallback
   loadBackendHost(); // NVS if a fixed backend was set via USB, else "" (same-LAN auto-discovery)
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
-  WiFi.begin(currentSsid.c_str(), currentPassword.c_str()); // <-- This automatically gets a DYNAMIC IP via DHCP
+  connectWifi(); // enterprise (@JumboPlus) or plain PSK, whichever loadWifiCredentials() picked; DHCP either way
 
   // Bounded, not infinite: stored credentials could be wrong (a mistyped WIFI_SET password,
   // or a network that's since gone away), and an unconditional infinite wait here would brick
