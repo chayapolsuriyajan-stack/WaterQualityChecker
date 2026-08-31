@@ -668,6 +668,12 @@ async def update_sensor(request: Request):
             }
             if "tds" in payload:
                 sheet_payload["tds"] = payload["tds"]
+            # Instantaneous flow rate only -- water usage (the daily cumulative total) is a
+            # different shape/cadence (see storage.py's daily_usage table) that doesn't fit
+            # this per-reading log, same reasoning google_apps_script.gs's insertReadingAtTop_
+            # documents for its Flow Rate column.
+            if "flowRate" in payload:
+                sheet_payload["flowRate"] = payload["flowRate"]
             asyncio.create_task(relay_to_google_sheets(sheet_payload))
 
             # Threshold-breach push notifications: detection is synchronous/inline (must
@@ -719,8 +725,9 @@ def _with_ntu(rows: list) -> list:
         ec = r.get("ec")
         if ec is None:
             ec = ppm_to_ec(r.get("tds"))
-        # Sheet-backed rows have no flow column at all (flow postdates the Sheets schema and
-        # isn't logged there, see CLAUDE.md) -- backfill None so every row has the key.
+        # Sheets rows carry flowRate once google_apps_script.gs has been redeployed with its
+        # Flow Rate column (see CLAUDE.md); rows logged before that redeploy, or the DB/buffer
+        # tiers when a reading simply had no flow data, fall back to None here uniformly.
         flow_rate = r.get("flowRate")
         out.append({**r, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
     return out

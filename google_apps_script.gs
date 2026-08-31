@@ -32,7 +32,8 @@ function doPost(e) {
     new Date(),
     data.temperature !== undefined ? data.temperature : "",
     data.turbidity !== undefined ? data.turbidity : "",
-    data.tds !== undefined ? data.tds : ""
+    data.tds !== undefined ? data.tds : "",
+    data.flowRate !== undefined ? data.flowRate : ""
   );
 
   return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
@@ -43,13 +44,19 @@ function doPost(e) {
 // (relayed by main.py) and a recovered one (posted directly by esp32.ino's fallback once the
 // backend's been unreachable) -- both go through the exact same code path here, so there's
 // nothing else to migrate or reconcile later. Creates the header row on first use.
-function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds) {
+//
+// flowRate is instantaneous L/min (not the daily cumulative usage total -- that's a separate
+// daily-bucketed aggregate in storage.py's daily_usage table, a different shape/cadence that
+// doesn't fit this per-reading log; see CLAUDE.md's Flow sensor section). Older rows written
+// before this column existed simply have a blank cell here -- doGet treats a blank the same
+// as any other missing value (see below).
+function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds, flowRate) {
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)"]);
+    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)", "Flow Rate (L/min)"]);
   }
 
   sheet.insertRowBefore(2);
-  sheet.getRange(2, 1, 1, 4).setValues([[timestamp, temperature, turbidity, tds]]);
+  sheet.getRange(2, 1, 1, 5).setValues([[timestamp, temperature, turbidity, tds, flowRate]]);
 }
 
 // Serves recent rows back as JSON so the dashboard's history graph can read a chosen window
@@ -83,7 +90,9 @@ function doGet(e) {
   // Leading slice: row 2 is the newest reading, row (2 + numRows - 1) is the oldest one
   // still inside our read budget. This is correct regardless of how much older, previously
   // bottom-appended data sits further down the sheet -- we simply never read that far.
-  var values = sheet.getRange(2, 1, numRows, 4).getValues();
+  // 5 columns even though older rows (written before the Flow Rate column existed) only have
+  // 4 -- getRange on a short row just returns "" for the missing cell, handled below.
+  var values = sheet.getRange(2, 1, numRows, 5).getValues();
   values.reverse(); // newest-first -> chronological ascending (oldest first)
 
   // Keep only rows inside the window.
@@ -92,7 +101,16 @@ function doGet(e) {
   for (var i = 0; i < values.length; i++) {
     var ts = (values[i][0] && values[i][0].getTime) ? values[i][0].getTime() : null;
     if (ts !== null && ts >= cutoffMs) {
-      filtered.push({ timestamp: ts, temperature: values[i][1], turbidity: values[i][2], tds: values[i][3] });
+      // "" (blank cell, either an unset flowRate or a pre-Flow-Rate-column row) -> null,
+      // matching how the backend represents "no flow reading" everywhere else.
+      var flowRate = values[i][4];
+      filtered.push({
+        timestamp: ts,
+        temperature: values[i][1],
+        turbidity: values[i][2],
+        tds: values[i][3],
+        flowRate: flowRate === "" ? null : flowRate,
+      });
     }
   }
 
