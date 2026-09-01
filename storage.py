@@ -1,24 +1,16 @@
-"""Local SQLite persistence for sensor readings.
+"""Local SQLite persistence for push subscriptions and daily water usage.
 
-WHY THIS EXISTS: before this module, history had exactly two tiers -- an in-memory buffer
-(wiped on every restart) and Google Sheets (a network round-trip to a third party, with a
-row cap and no offline story). Anything past the buffer window depended on a Google
-deployment being reachable and correctly redeployed.
-
-SQLite sits between them: every reading is written locally as it arrives, so `/history`
-can answer any window from disk, instantly, with no network and no Google account. Sheets
-is unchanged and still the shareable/inspectable copy -- this is an addition, not a
-replacement, and the sheet remains the fallback when the local DB has a coverage gap (e.g.
-readings collected while the DB was disabled, or a database restored onto a fresh machine).
+Sensor reading history is NOT stored here -- it lives in the in-memory `history_buffer`
+(main.py) for the live short-window graph, and in Google Sheets (via google_apps_script.gs)
+for anything older. This module exists only for the two things Sheets can't reasonably
+hold: durable Web Push subscription state (so subscriptions survive a restart), and the
+flow sensor's daily-resetting water-usage counter (a small aggregate, not a per-reading log).
 
 Design notes:
 - One module-level connection with `check_same_thread=False`, guarded by a lock. Every
   public function here is blocking, and `main.py` calls them via `asyncio.to_thread` so a
   slow disk never stalls the event loop or the ESP32's `/update` response.
-- WAL journal mode so the write on each reading doesn't block concurrent `/history` reads.
-- Column names deliberately mirror the row shape used by `history_buffer` and the Apps
-  Script's `doGet` (`timestamp` in epoch MILLISECONDS, `turbidity` = raw ADC), so rows from
-  all three sources merge without translation.
+- WAL journal mode so a write doesn't block a concurrent read.
 """
 
 import json
@@ -31,16 +23,6 @@ _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS readings (
-    timestamp_ms INTEGER NOT NULL,
-    temperature  REAL,
-    turbidity    REAL,   -- raw averaged ADC, matching the sheet's "Turbidity (raw ADC)" column
-    tds          REAL,   -- calibrated ppm
-    ec           REAL,   -- derived from tds; stored so reads don't re-derive it
-    flow_rate    REAL    -- calibrated L/min, instantaneous (see daily_usage for cumulative)
-);
-CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings (timestamp_ms);
-
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint    TEXT PRIMARY KEY,
     p256dh      TEXT NOT NULL,
@@ -52,27 +34,20 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 
 -- One row per local calendar day (YYYY-MM-DD), total_liters accumulated as readings arrive.
 -- A day rollover just starts a new row -- that alone gives the flow sensor's "daily usage"
--- an automatic reset with no scheduler needed. Kept indefinitely (not subject to
--- historyRetentionDays -- one tiny row/day, unlike the 2s-cadence readings table).
+-- an automatic reset with no scheduler needed. Kept indefinitely.
 CREATE TABLE IF NOT EXISTS daily_usage (
     date         TEXT PRIMARY KEY,
     total_liters REAL NOT NULL DEFAULT 0
 );
 """
 
-# readings.flow_rate was added after the initial release -- CREATE TABLE IF NOT EXISTS won't
-# retrofit it onto an existing history.db, so add it explicitly and swallow the "duplicate
-# column" error on every subsequent startup once it's already there.
-_MIGRATIONS = [
-    "ALTER TABLE readings ADD COLUMN flow_rate REAL",
-]
-
 
 def init(path: str) -> bool:
-    """Open (creating if needed) the history database. Returns False if unusable.
+    """Open (creating if needed) the local database. Returns False if unusable.
 
-    A failure here is never fatal: main.py degrades to the previous buffer+Sheets behavior,
-    because losing local persistence is much better than refusing to monitor the water.
+    A failure here is never fatal: main.py degrades gracefully -- push subscriptions simply
+    have nowhere durable to live, and daily water usage stops persisting, but sensor readings
+    and the rest of the app keep working normally.
     """
     global _conn
     try:
@@ -87,16 +62,10 @@ def init(path: str) -> bool:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SCHEMA)
         conn.commit()
-        for migration in _MIGRATIONS:
-            try:
-                conn.execute(migration)
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # column already exists -- already-migrated DB, nothing to do
         _conn = conn
         return True
     except Exception as exc:  # sqlite3.Error, OSError, permissions...
-        print(f"⚠️ History database unavailable at {path}: {exc}")
+        print(f"⚠️ Local database unavailable at {path}: {exc}")
         _conn = None
         return False
 
@@ -111,110 +80,6 @@ def close() -> None:
         if _conn is not None:
             _conn.close()
             _conn = None
-
-
-def insert(row: dict) -> None:
-    """Append one reading. `row` uses the history_buffer shape (timestamp in epoch ms)."""
-    if _conn is None:
-        return
-    try:
-        with _lock:
-            _conn.execute(
-                "INSERT INTO readings (timestamp_ms, temperature, turbidity, tds, ec, flow_rate)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    int(row["timestamp"]),
-                    row.get("temperature"),
-                    row.get("turbidity"),
-                    row.get("tds"),
-                    row.get("ec"),
-                    row.get("flowRate"),
-                ),
-            )
-            _conn.commit()
-    except Exception as exc:
-        print(f"⚠️ History database write failed: {exc}")
-
-
-def query(cutoff_ms: float) -> list[dict]:
-    """All readings at/after `cutoff_ms`, chronological ascending.
-
-    Returns the full window undownsampled -- main.py applies the same `_downsample` stride
-    every other source goes through, so all three history sources stay consistent.
-    """
-    if _conn is None:
-        return []
-    try:
-        with _lock:
-            cur = _conn.execute(
-                "SELECT timestamp_ms, temperature, turbidity, tds, ec, flow_rate FROM readings"
-                " WHERE timestamp_ms >= ? ORDER BY timestamp_ms ASC",
-                (int(cutoff_ms),),
-            )
-            rows = cur.fetchall()
-    except Exception as exc:
-        print(f"⚠️ History database read failed: {exc}")
-        return []
-
-    return [
-        {
-            "timestamp": r["timestamp_ms"],
-            "temperature": r["temperature"],
-            "turbidity": r["turbidity"],
-            "tds": r["tds"],
-            "ec": r["ec"],
-            "flowRate": r["flow_rate"],
-        }
-        for r in rows
-    ]
-
-
-def oldest_ms() -> int | None:
-    """Timestamp of the earliest stored reading, or None when the table is empty.
-
-    Used to detect a coverage gap: if the DB's oldest row is newer than the requested
-    window's cutoff, the DB alone can't answer the window and Sheets fills the older part.
-    """
-    if _conn is None:
-        return None
-    try:
-        with _lock:
-            cur = _conn.execute("SELECT MIN(timestamp_ms) AS m FROM readings")
-            row = cur.fetchone()
-    except Exception as exc:
-        print(f"⚠️ History database read failed: {exc}")
-        return None
-    return row["m"] if row and row["m"] is not None else None
-
-
-def count() -> int:
-    if _conn is None:
-        return 0
-    try:
-        with _lock:
-            return _conn.execute("SELECT COUNT(*) AS c FROM readings").fetchone()["c"]
-    except Exception:
-        return 0
-
-
-def prune(retention_days: int) -> int:
-    """Delete readings older than `retention_days`. Returns rows removed; 0 disables pruning.
-
-    At one reading per 2 seconds a year is ~15M rows -- fine for SQLite, but the file grows
-    unbounded on a machine that is also somebody's PC. VACUUM is deliberately NOT run here:
-    it rewrites the whole file and would block writes for seconds on a large database.
-    """
-    if _conn is None or retention_days <= 0:
-        return 0
-    cutoff_ms = int((time.time() - retention_days * 86400) * 1000)
-    try:
-        with _lock:
-            cur = _conn.execute("DELETE FROM readings WHERE timestamp_ms < ?", (cutoff_ms,))
-            _conn.commit()
-            return cur.rowcount or 0
-    except Exception as exc:
-        print(f"⚠️ History database prune failed: {exc}")
-        return 0
 
 
 def upsert_push_subscription(endpoint: str, p256dh: str, auth: str, prefs: dict) -> None:

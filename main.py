@@ -9,9 +9,9 @@ import datetime
 import urllib.request
 from collections import deque
 from urllib.parse import parse_qs, urlencode
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pywebpush import webpush, WebPushException
 
@@ -40,10 +40,11 @@ except FileNotFoundError:
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
 CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
-# Local SQLite history (see storage.py). Set "historyDbFile" to "" to disable it and fall
-# back to the previous in-memory-buffer + Google Sheets behavior.
+# Local SQLite file for push subscriptions + daily water usage only (see storage.py).
+# Reading history is NOT stored here -- it lives in the in-memory buffer and Google Sheets.
+# Set "historyDbFile" to "" to disable it (push subscriptions won't survive a restart and
+# daily usage won't persist, but everything else keeps working).
 HISTORY_DB_PATH = webconfig.get("historyDbFile", "history.db")
-HISTORY_RETENTION_DAYS = int(webconfig.get("historyRetentionDays", 365))
 # Web Push (see push notification section below). Missing VAPID key file -> push endpoints
 # degrade to 503 rather than crashing startup, matching the existing degrade-not-crash
 # pattern used by storage.init/the Sheets webhook.
@@ -129,14 +130,9 @@ else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
 
 if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
-    removed = storage.prune(HISTORY_RETENTION_DAYS)
-    print(
-        f"✅ Local history database at {HISTORY_DB_PATH} ({storage.count():,} readings"
-        + (f", pruned {removed:,} older than {HISTORY_RETENTION_DAYS}d" if removed else "")
-        + ")."
-    )
+    print(f"✅ Local database at {HISTORY_DB_PATH} (push subscriptions + daily water usage).")
 else:
-    print("⚠️ Local history database disabled; /history falls back to memory + Google Sheets.")
+    print("⚠️ Local database disabled; push subscriptions and daily water usage won't persist.")
 
 print("Starting FastAPI Backend Server...")
 
@@ -319,7 +315,7 @@ def _load_calibration() -> dict:
 
 calibration = _load_calibration()
 # Whether saved calibrations are APPLIED to the live stream. Toggled by the on/off button
-# on the /calibrate page. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
+# on the frontend's Calibration tab. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
 # as uncalibrated DFRobot ppm); when ON, saved coefficients are applied (NTU + calibrated
 # ppm). Defaults ON when a real calibration already exists on disk, so a calibrated rig
 # keeps applying after a restart; otherwise OFF. Held in memory (resets to this default on
@@ -574,8 +570,8 @@ async def update_sensor(request: Request):
             # dashboards read that key). The calibrated NTU rides along in `turbidityNtu`
             # when a turbidity calibration is active (else None).
             turbidity_adc = float(data["turbidity"])
-            # Only apply the saved calibration when calibration mode is ON (the /calibrate
-            # on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
+            # Only apply the saved calibration when calibration mode is ON (the Calibration
+            # tab's on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
             ntu = apply_turbidity(turbidity_adc) if calibration_mode else None
             # `turbidityRaw` always carries the raw averaged ADC (for the calibration page +
             # honest Google Sheets logging). The primary `turbidity` field carries calibrated
@@ -660,12 +656,6 @@ async def update_sensor(request: Request):
             }
             history_buffer.append(history_row)
 
-            # Persist the same row locally (see storage.py). Off the event loop, and
-            # fire-and-forget like the Sheets relay, so disk latency never delays the
-            # ESP32's /update response.
-            if storage.enabled():
-                asyncio.create_task(asyncio.to_thread(storage.insert, history_row))
-
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
             sheet_payload = {
@@ -721,9 +711,9 @@ def _downsample(rows: list, max_points: int) -> list:
 
 
 def _with_ntu(rows: list) -> list:
-    # Each row's `turbidity` is raw ADC (matching the sheet and the local DB). Add
-    # `turbidityNtu` = calibrated NTU (or None if uncalibrated) so the dashboard stays
-    # consistent with the live WS value, while `turbidity` keeps carrying the raw ADC.
+    # Each row's `turbidity` is raw ADC (matching the sheet). Add `turbidityNtu` = calibrated
+    # NTU (or None if uncalibrated) so the dashboard stays consistent with the live WS value,
+    # while `turbidity` keeps carrying the raw ADC.
     out = []
     for r in rows:
         adc = r.get("turbidity")
@@ -734,8 +724,8 @@ def _with_ntu(rows: list) -> list:
         if ec is None:
             ec = ppm_to_ec(r.get("tds"))
         # Sheets rows carry flowRate once google_apps_script.gs has been redeployed with its
-        # Flow Rate column (see CLAUDE.md); rows logged before that redeploy, or the DB/buffer
-        # tiers when a reading simply had no flow data, fall back to None here uniformly.
+        # Flow Rate column (see CLAUDE.md); rows logged before that redeploy, or buffer rows
+        # where a reading simply had no flow data, fall back to None here uniformly.
         flow_rate = r.get("flowRate")
         out.append({**r, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
     return out
@@ -771,14 +761,11 @@ async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> 
 async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     """Readings for the requested window, newest-last, from the cheapest source that covers it.
 
-    Three tiers, in order:
-      1. the local SQLite database (storage.py) -- answers ANY window straight off disk and
-         survives restarts, so it is preferred whenever it is enabled;
-      2. the in-memory buffer -- only adds anything when the database is disabled or a write
-         failed, since /update writes both;
-      3. Google Sheets -- consulted only for the part of the window the local sources don't
-         reach (a fresh database, a restored machine, or readings collected before this
-         database existed). Proxied here so the dashboard's fetch stays same-origin.
+    Two tiers, in order:
+      1. the in-memory buffer -- answers instantly for anything still in the rolling window;
+      2. Google Sheets -- consulted only for the part of the window the buffer doesn't reach
+         (a fresh restart, or a window longer than the buffer holds). Proxied here so the
+         dashboard's fetch stays same-origin.
     """
     seconds = HISTORY_WINDOWS.get(window)
     if seconds is None:
@@ -790,37 +777,21 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     cutoff_ms = (time.time() - seconds) * 1000
     sources: list[str] = []
 
-    # Tier 1 -- local database. Blocking sqlite read, kept off the event loop.
-    db_rows: list = []
-    if storage.enabled():
-        db_rows = await asyncio.to_thread(storage.query, cutoff_ms)
-        if db_rows:
-            sources.append("db")
+    # Tier 1 -- in-memory buffer, the whole live path (wiped on restart).
+    rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+    if rows:
+        sources.append("live")
 
-    # Tier 2 -- in-memory buffer. When the database is on, this only contributes rows newer
-    # than its newest (i.e. an insert that failed); when it is off, this is the whole live path.
-    buffer_rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
-    if db_rows:
-        newest_db_ms = db_rows[-1]["timestamp"]
-        tail = [r for r in buffer_rows if r["timestamp"] > newest_db_ms]
-        rows = db_rows + tail
-        if tail:
-            sources.append("live")
-    else:
-        rows = buffer_rows
-        if buffer_rows:
-            sources.append("live")
-
-    # Tier 3 -- Sheets fills the older end when the local sources start too late. The
-    # tolerance keeps a normal steady-state request (oldest row a second or two after the
-    # cutoff) from counting as a gap; see HISTORY_GAP_TOLERANCE_MS.
+    # Tier 2 -- Sheets fills the older end when the buffer starts too late. The tolerance
+    # keeps a normal steady-state request (oldest row a second or two after the cutoff) from
+    # counting as a gap; see HISTORY_GAP_TOLERANCE_MS.
     local_floor_ms = rows[0]["timestamp"] if rows else float("inf")
     coverage_gap = (not rows) or (local_floor_ms > cutoff_ms + HISTORY_GAP_TOLERANCE_MS)
 
     if coverage_gap and GOOGLE_SHEETS_WEBHOOK_URL:
         sheet_rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
-        # Keep only rows strictly older than what the local sources already cover, so the
-        # merge has no duplicate/overlapping rows at the seam.
+        # Keep only rows strictly older than what the buffer already covers, so the merge
+        # has no duplicate/overlapping rows at the seam.
         sheet_rows = [r for r in sheet_rows if r["timestamp"] < local_floor_ms]
         if sheet_rows:
             rows = sheet_rows + rows  # both chronological ascending -> merge stays ordered
@@ -838,7 +809,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
 
 
 # --- Calibration API ---------------------------------------------------------
-# Drives the standalone /calibrate page. State lives in the `calibration` dict and is
+# Drives the frontend's Calibration tab. State lives in the `calibration` dict and is
 # only persisted to calibration.json on an explicit save, so captures can be reviewed
 # (and discarded) before they take effect on the live stream.
 
@@ -848,14 +819,6 @@ def _avg_raw(key: str):
     if buf:
         return sum(buf) / len(buf)
     return latest_raw.get(key)
-
-
-@app.get("/calibrate")
-async def get_calibrate_page():
-    page = "web/calibrate.html"
-    if not os.path.isfile(page):
-        raise HTTPException(status_code=404, detail="Calibration page not found")
-    return FileResponse(page)
 
 
 @app.get("/calibration")
@@ -986,8 +949,8 @@ async def reset_calibration(request: Request):
 
 # --- Flow sensor API ----------------------------------------------------------
 # Separate from /history: daily usage is one row per calendar day (storage.daily_usage),
-# not the per-2s readings table, so it needs its own small endpoints rather than riding the
-# three-tier /history merge (see storage.py's daily_usage table docstring).
+# a different shape/cadence than live readings, so it needs its own small endpoints rather
+# than riding the /history buffer+Sheets merge (see storage.py's daily_usage table docstring).
 
 
 @app.get("/flow/usage")
@@ -1268,7 +1231,7 @@ async def websocket_app(websocket: WebSocket):
 
 # The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
 # only catches requests that no explicit route above already matched (Starlette tries
-# routes in registration order; specific routes like /history, /calibrate, /ws/app all win
+# routes in registration order; specific routes like /history, /calibration, /ws/app all win
 # over this root Mount since they were registered earlier). StaticFiles(html=True) serves
 # frontend/dist/index.html for "/" and transparently serves every nested file the built app
 # needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.

@@ -1,6 +1,6 @@
 /**
  * Shared types for the Aqua Monitor frontend.
- * Mirrors the backend contract documented in AQUA_MONITOR_PLAN.md ("Backend contract").
+ * Mirrors the backend's `/update`/`/history` payload shape (see main.py).
  */
 
 /** A single live sensor reading pushed over `/ws/app` (sensor_update payload). */

@@ -58,12 +58,6 @@ screen. On a first visit a short **guided tour** walks through the sidebar, the 
 grid, the Quick View card, and the calibration tab; it can be replayed any time from the
 help button in the sidebar.
 
-A separate lightweight page at **`/calibrate`** offers the same sensor calibration in a
-single self-contained HTML file, useful for calibrating from a phone or a machine that
-doesn't need the full dashboard.
-
-![Calibration page](docs/calibrate.png?v=49b675d)
-
 ### How it works, briefly
 
 ```
@@ -97,7 +91,7 @@ ESP32 station ──raw readings──▶  FastAPI server (main.py)  ──live�
   `/history` falls back to Google Sheets for that window rather than showing a hole.
 
 More detail — wiring, the calibration math, the Google Sheets contract, the frontend's
-architecture — is in [`CLAUDE.md`](CLAUDE.md) and [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md).
+architecture — is in [`CLAUDE.md`](CLAUDE.md).
 
 ### Known gaps / where to improve it next
 
@@ -119,10 +113,10 @@ Honest status, roughly in priority order:
    coefficients were not captured against certified reference solutions, so NTU and ppm are
    currently indicative rather than trustworthy. Recalibrate against known standards and
    record when/with what.
-5. ~~**Long history depends entirely on Google Sheets.**~~ **Fixed** — every reading is now
-   also written to a local SQLite database (`history.db`, see `storage.py`), so any time range
-   is answered straight off disk with no network. Google Sheets stays as the shareable copy
-   and still fills in any period the local database doesn't cover.
+5. **Long history depends entirely on Google Sheets.** `/history` answers short windows from
+   the in-memory buffer, but anything the buffer doesn't cover falls back to a network round
+   trip to Google Sheets — no local database backs reading history. Deliberate: SQLite is
+   reserved for push subscriptions and daily water usage only.
 6. **Wi-Fi credentials and the IFTTT key are hardcoded** in
    [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino), so sharing the sketch means
    sharing secrets, and moving networks means a reflash. A WiFiManager-style captive portal
@@ -176,11 +170,6 @@ python main.py
 เมื่อเข้าใช้งานครั้งแรกจะมี **ทัวร์แนะนำการใช้งาน** พาดูแถบเมนู, ตารางพารามิเตอร์, การ์ด Quick View
 และแท็บปรับเทียบเซนเซอร์ และสามารถเปิดดูซ้ำได้จากปุ่มช่วยเหลือในแถบเมนู
 
-นอกจากนี้ยังมีหน้าเบา ๆ แยกต่างหากที่ **`/calibrate`** สำหรับปรับเทียบเซนเซอร์ในไฟล์ HTML เดียวจบ
-เหมาะสำหรับปรับเทียบจากมือถือหรือเครื่องที่ไม่จำเป็นต้องเปิดแดชบอร์ดเต็มรูปแบบ
-
-![หน้าปรับเทียบเซนเซอร์](docs/calibrate.png?v=49b675d)
-
 ### หลักการทำงานโดยสรุป
 
 ```
@@ -225,9 +214,9 @@ python main.py
    ยังไม่มีเทสต์ครอบคลุม และสัญญาข้อมูล JSON ระหว่าง ESP32 กับเซิร์ฟเวอร์ตรวจสอบด้วยมือล้วน ๆ
 4. **ยังยืนยันที่มาของค่าปรับเทียบไม่ได้** ไฟล์ `calibration.json` ไม่ถูกเก็บใน git และค่าที่ใช้อยู่ไม่ได้เทียบกับ
    สารละลายมาตรฐานที่รับรองแล้ว ค่า NTU และ ppm จึงยังเป็นค่าบ่งชี้ ไม่ใช่ค่าที่เชื่อถือได้เต็มที่
-5. ~~**ประวัติย้อนหลังพึ่ง Google Sheets ทั้งหมด**~~ **แก้ไขแล้ว** — ทุกค่าที่อ่านได้จะถูกบันทึกลงฐานข้อมูล SQLite
-   ในเครื่องด้วย (`history.db` ดู `storage.py`) ทุกช่วงเวลาจึงอ่านจากดิสก์ได้ทันทีโดยไม่ต้องใช้เครือข่าย
-   ส่วน Google Sheets ยังคงเป็นสำเนาสำหรับแชร์ และใช้เติมช่วงข้อมูลที่ฐานข้อมูลในเครื่องยังไม่มี
+5. **ประวัติย้อนหลังพึ่ง Google Sheets ทั้งหมด** `/history` ตอบช่วงเวลาสั้น ๆ จากบัฟเฟอร์ในหน่วยความจำ
+   แต่ช่วงที่บัฟเฟอร์ไม่ครอบคลุมต้องย้อนไปขอ Google Sheets ผ่านเครือข่ายทุกครั้ง — ไม่มีฐานข้อมูลในเครื่อง
+   รองรับประวัติการอ่านค่า (ตั้งใจให้ SQLite เก็บเฉพาะการสมัครรับ push notification และปริมาณการใช้น้ำรายวันเท่านั้น)
 6. **รหัส Wi-Fi และคีย์ IFTTT ฝังอยู่ในเฟิร์มแวร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino))
    การแชร์โค้ดจึงเท่ากับแชร์รหัส และการย้ายเครือข่ายต้องอัปโหลดเฟิร์มแวร์ใหม่ ควรใช้ WiFiManager แบบ captive portal
 7. ~~**เอกสารบางส่วนล้าสมัย**~~ **แก้ไขแล้ว** — `CLAUDE.md` ไม่กล่าวถึง `server.js` และหน้า `/classic`
@@ -235,4 +224,4 @@ python main.py
    ก็ถูกนำออกจาก `main.py` ด้วย
 
 รายละเอียดเพิ่มเติม — การเดินสาย, สูตรการปรับเทียบ, รูปแบบข้อมูลของ Google Sheets, สถาปัตยกรรมของฝั่งหน้าเว็บ —
-อยู่ใน [`CLAUDE.md`](CLAUDE.md) และ [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md)
+อยู่ใน [`CLAUDE.md`](CLAUDE.md)
