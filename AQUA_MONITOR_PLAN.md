@@ -165,3 +165,37 @@ Removed `simulatedReading()` and the entire `startSimulation`/`stopSimulation`/`
 - History hydration confirmed with a controlled test: fed a short burst of readings, stopped the feed entirely, reloaded, and found **5 chart points already present** within ~10s with zero live traffic possible in that window — the only source for those points is the history seed.
 - Frozen-not-fake confirmed with a controlled test: after the last real POST, the displayed temperature/turbidity/TDS/EC stayed byte-for-byte identical across repeated checks while the status badge read "Offline" — no drifting numbers.
 - Not independently re-verified live: the reconnect transition back to "Online" after a real gap (the underlying `ws.onmessage` handler unconditionally sets `connected=true` on any message, by inspection) — the browser automation tool in this session became unresponsive mid-check on this specific case.
+
+---
+
+# Appendix: superseded rationale (moved out of CLAUDE.md)
+
+These notes explain *why* certain shapes in the code look the way they do. They were trimmed
+from `CLAUDE.md` to keep that file's per-session context cost down — the constraints they
+describe are either gone or no longer something a reader needs loaded up front. Nothing here
+is current guidance; it's the archaeology behind decisions the code still reflects.
+
+**Why `/update` puts calibrated NTU in `turbidity` rather than only in `turbidityNtu`.** The
+original dashboard at `/` was a prebuilt React bundle generated externally, with no source in
+this repo, that hardcoded an "NTU" unit label onto whatever the `turbidity` field contained.
+Since it couldn't be edited, the backend shaped its payload to suit it. That bundle has since
+been deleted, but the field shape stayed — the current frontend also just wants real NTU, so
+there was never a reason to churn the contract.
+
+**Why the frontend has no fake-data fallback.** An earlier `useSensorSocket` fabricated
+plausible random readings whenever the socket went quiet, mirroring the demo behaviour of the
+even older vanilla dashboard. It was removed once the full ESP32 → backend → Sheets → frontend
+chain ran on real hardware: synthetic noise during a real outage makes a dead sensor
+indistinguishable from healthy water, which is the exact failure a monitoring system exists to
+prevent. The hook now freezes the last real reading and flips an "Offline" flag instead.
+
+**The two removed dashboards.** A black-box prebuilt React SPA (`web-react/`) served at `/`,
+and a hand-built vanilla dashboard (`web/index.html` + `app.js` + `style.css`) served at
+`/classic`. Both files and both routes are gone. `web/calibrate.html` is the one survivor from
+`web/`. CLAUDE.md retains the short "don't reintroduce these" guard; this is the longer story.
+
+**Google Sheets insert-at-top migration.** `doPost` originally appended each reading to the
+bottom of the sheet; it now inserts at row 2 so the newest reading is always the top data row
+and recent data is readable without scrolling. Rows written under the old model simply sit
+further down and are never rewritten. Because the Apps Script is deployed manually, a repo
+copy can be ahead of what's actually live — see the redeploy gotcha in CLAUDE.md.

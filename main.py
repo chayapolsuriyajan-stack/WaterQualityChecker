@@ -55,6 +55,14 @@ VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
 HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
 HTTPS_KEY_FILE = webconfig.get("httpsKeyFile", "")
 HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
+
+
+def https_enabled() -> bool:
+    """Only enable HTTPS when both configured files exist on disk. Missing certs should
+    degrade to plain HTTP instead of crashing the process on startup."""
+    return bool(HTTPS_CERT_FILE and HTTPS_KEY_FILE and os.path.exists(HTTPS_CERT_FILE) and os.path.exists(HTTPS_KEY_FILE))
+
+
 # USB WiFi provisioning (see wifi_serial.py). Empty/missing -> auto-detect the ESP32's port by
 # its USB-to-serial chip; set this only if auto-detect picks the wrong device.
 wifi_serial.configure(webconfig.get("esp32SerialPort", "") or None)
@@ -1285,10 +1293,11 @@ if __name__ == "__main__":
 
     async def _run_servers():
         # HTTP:8080 always runs (unchanged -- ESP32 firmware keeps POSTing here). HTTPS is
-        # additive: only started when both a cert and key are configured, since Web Push
-        # requires a secure context and http://localhost is only exempt on the same machine.
+        # additive: only started when both a cert and key are configured and present on disk,
+        # since Web Push requires a secure context and http://localhost is only exempt on the
+        # same machine.
         configs = [uvicorn.Config("main:app", host="0.0.0.0", port=8080, reload=dev_mode)]
-        if HTTPS_CERT_FILE and HTTPS_KEY_FILE:
+        if https_enabled():
             configs.append(
                 uvicorn.Config(
                     "main:app",
@@ -1300,7 +1309,15 @@ if __name__ == "__main__":
             )
             print(f"🔒 HTTPS listener enabled on port {HTTPS_PORT} (push notifications available over LAN).")
         else:
-            print("⚠️ httpsCertFile/httpsKeyFile not set; HTTPS disabled -- push notifications only work over localhost.")
+            if HTTPS_CERT_FILE or HTTPS_KEY_FILE:
+                missing = [p for p in (HTTPS_CERT_FILE, HTTPS_KEY_FILE) if p and not os.path.exists(p)]
+                print(
+                    "⚠️ HTTPS disabled because required certificate file(s) are missing: "
+                    + ", ".join(missing)
+                    + " -- push notifications only work over localhost."
+                )
+            else:
+                print("⚠️ httpsCertFile/httpsKeyFile not set; HTTPS disabled -- push notifications only work over localhost.")
 
         servers = [uvicorn.Server(c) for c in configs]
         await asyncio.gather(*(s.serve() for s in servers))
