@@ -111,10 +111,9 @@ void connectWifi() {
 // Wi-Fi/internet still work, so a reading isn't silently dropped during a backend outage.
 // Posts straight to the SAME Google Apps Script Web App main.py's own Sheets relay uses (see
 // google_apps_script.gs's doPost) -- no third-party service, no separate account/plan, and no
-// per-reading fee/rate-limit to work around, unlike the IFTTT Maker Webhooks path this
-// replaced. Paste in the deployed Web App's /exec URL (Apps Script editor -> Deploy -> Web
-// App; must match webconfig.json's googleSheetsWebhookUrl on the backend, since both write to
-// the same sheet in the same row shape).
+// per-reading fee/rate-limit to work around. Paste in the deployed Web App's /exec URL
+// (Apps Script editor -> Deploy -> Web App; must match webconfig.json's googleSheetsWebhookUrl
+// on the backend, since both write to the same sheet in the same row shape).
 const char* sheetsWebhookUrl = "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec";
 
 // The sheet's TDS column is always ppm, never raw voltage (there's no separate raw-voltage
@@ -135,10 +134,10 @@ float dfrobotUncalibratedPpm(float voltage, float temperatureC) {
 // Sensors are read every broadcastInterval (2s), but each buffered reading becomes its own
 // Apps Script call once we're able to send (see the flush loop in loop() below) -- bursting
 // all of them at once is inconsiderate of Apps Script's per-call execution overhead, so sends
-// are throttled to one flush attempt per sheetsFallbackInterval, same spirit as the previous
-// IFTTT throttle. Readings taken between flushes accumulate in a circular buffer (once full,
-// the newest overwrites the oldest -- degrades to "most recent 30" instead of overflowing)
-// so a 60s outage window is recovered in full, not just its last instant.
+// are throttled to one flush attempt per sheetsFallbackInterval. Readings taken between
+// flushes accumulate in a circular buffer (once full, the newest overwrites the oldest --
+// degrades to "most recent 30" instead of overflowing) so a 60s outage window is recovered
+// in full, not just its last instant.
 const int sheetsFallbackBufferSize = 30;
 float sheetsFallbackTempBuffer[sheetsFallbackBufferSize];
 float sheetsFallbackTurbBuffer[sheetsFallbackBufferSize];
@@ -713,7 +712,7 @@ void loop() {
 
         // Oldest entry is at sheetsFallbackBufferNext once the buffer has wrapped (that slot
         // is next to be overwritten); while still filling up for the first time, oldest is
-        // just index 0 -- same logic the old IFTTT buffer join used.
+        // just index 0.
         int oldestIdx = (sheetsFallbackBufferCount < sheetsFallbackBufferSize) ? 0 : sheetsFallbackBufferNext;
         int sent = 0;
         for (int i = 0; i < sheetsFallbackBufferCount; i++) {
@@ -746,7 +745,7 @@ void loop() {
 
         // Sent (or at least attempted) -- start the next window's buffer fresh regardless of
         // per-reading success, matching the existing fire-and-forget posture elsewhere in this
-        // sketch (a lost reading here is already best-effort, same as the previous IFTTT path).
+        // sketch (a lost reading here is already best-effort).
         sheetsFallbackBufferClear();
       }
     }
