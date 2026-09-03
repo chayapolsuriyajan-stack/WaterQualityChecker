@@ -25,7 +25,7 @@ import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { getHistory } from '@/lib/api'
 import { PARAM_META, type ParamKey } from '@/lib/paramMeta'
-import { colorFor, normalRangeText, rangeStatusFor, type Status } from '@/lib/thresholds'
+import { colorFor, normalRangeText, RANGE_BANDS, rangeStatusFor, type RangeParam, type Status } from '@/lib/thresholds'
 import type { HistoryWindow } from '@/lib/types'
 import { WindowChips } from './WindowChips'
 import { DetailChart } from './DetailChart'
@@ -86,10 +86,14 @@ export function ParamDetailDialog({
       )
   }, [data, meta])
 
-  const range = param && scorable && liveValue !== null ? rangeStatusFor(param, liveValue) : null
+  // Params with no RANGE_BANDS entry (e.g. flow) have no good/warn/danger judgment at all --
+  // same "no score" path already used for an uncalibrated/unscorable reading.
+  const rangeParam: RangeParam | null = param && param in RANGE_BANDS ? (param as RangeParam) : null
+  const range = rangeParam && scorable && liveValue !== null ? rangeStatusFor(rangeParam, liveValue) : null
   const status: CardStatus = range ? range.status : 'unknown'
-  const color = range && param ? colorFor(param, liveValue as number) : 'hsl(var(--muted-foreground))'
-  const showImpactAndRecommendation = range !== null && range.direction !== 'ok'
+  const color = range && rangeParam ? colorFor(rangeParam, liveValue as number) : 'hsl(var(--muted-foreground))'
+  const showImpactAndRecommendation =
+    range !== null && range.direction !== 'ok' && meta?.impactKey !== undefined && meta?.recommendationKey !== undefined
 
   if (!param || !meta) {
     return null
@@ -120,9 +124,13 @@ export function ParamDetailDialog({
                   to a non-technical viewer. Omitted for params whose label is already
                   a plain word (temperature, turbidity). */}
               {fullName && <p className="text-xs text-muted-foreground">{fullName}</p>}
-              <DialogDescription>
-                {t('detail.normalRange', { range: normalRangeText(param) })}
-              </DialogDescription>
+              {/* No normal-range text for params with no RANGE_BANDS entry (e.g. flow) --
+                  there's no good/warn/danger band to describe. */}
+              {rangeParam && (
+                <DialogDescription>
+                  {t('detail.normalRange', { range: normalRangeText(rangeParam) })}
+                </DialogDescription>
+              )}
             </div>
           </div>
         </DialogHeader>
@@ -178,9 +186,9 @@ export function ParamDetailDialog({
         <StatTiles values={chartRows.map((r) => r.value)} unit={unit} precision={meta.precision} />
 
         {/* Range warning */}
-        {range && liveValue !== null && (
+        {range && rangeParam && liveValue !== null && (
           <RangeWarning
-            param={param}
+            param={rangeParam}
             paramLabel={label}
             value={liveValue}
             unit={unit}
@@ -204,14 +212,15 @@ export function ParamDetailDialog({
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div>
                   <p className="font-medium">{t('detail.impactTitle')}</p>
-                  <p className="mt-0.5 text-muted-foreground">{t(meta.impactKey)}</p>
+                  {/* Non-null: showImpactAndRecommendation already checked both keys exist. */}
+                  <p className="mt-0.5 text-muted-foreground">{t(meta.impactKey!)}</p>
                 </div>
               </div>
               <div className="flex gap-2 rounded-lg border border-border p-3 text-sm">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div>
                   <p className="font-medium">{t('detail.recommendationTitle')}</p>
-                  <p className="mt-0.5 text-muted-foreground">{t(meta.recommendationKey)}</p>
+                  <p className="mt-0.5 text-muted-foreground">{t(meta.recommendationKey!)}</p>
                 </div>
               </div>
             </>

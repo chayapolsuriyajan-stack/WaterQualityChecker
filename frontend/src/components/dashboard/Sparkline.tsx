@@ -2,7 +2,7 @@
  * Compact per-parameter sparkline for a ParamCard. Draws the last ~30s of
  * samples plus a single labeled threshold reference line (the "warn" band
  * edge from lib/thresholds.ts) so every chart on the dashboard — down to the
- * smallest one — carries a visible numeric threshold per AQUA_MONITOR_PLAN.md.
+ * smallest one — carries a visible numeric threshold.
  */
 import { Area, AreaChart, ReferenceLine, ResponsiveContainer, YAxis } from 'recharts'
 import type { SeriesPoint } from '@/lib/useSensorSocket'

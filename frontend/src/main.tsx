@@ -19,6 +19,7 @@ import '@fontsource/inter/600.css'
 import './index.css'
 import App from './App'
 import { LanguageProvider, translateStandalone } from '@/lib/i18n'
+import { DashboardPrefsProvider } from '@/lib/DashboardPrefsProvider'
 import { isPushSupported, registerServiceWorker } from '@/lib/push'
 
 // Registering the service worker doesn't itself prompt for permission or
@@ -85,12 +86,14 @@ createRoot(document.getElementById('root')!).render(
         disableTransitionOnChange
       >
         <LanguageProvider>
-          <MotionConfig reducedMotion="user">
-            <QueryClientProvider client={queryClient}>
-              <App />
-              <Toaster richColors position="top-right" />
-            </QueryClientProvider>
-          </MotionConfig>
+          <DashboardPrefsProvider>
+            <MotionConfig reducedMotion="user">
+              <QueryClientProvider client={queryClient}>
+                <App />
+                <Toaster richColors position="top-right" />
+              </QueryClientProvider>
+            </MotionConfig>
+          </DashboardPrefsProvider>
         </LanguageProvider>
       </ThemeProvider>
     </ErrorBoundary>

@@ -13,9 +13,9 @@ export type TurbidityCoefficients = { slope: number; intercept: number }
 export type TdsCoefficients = { k: number }
 
 interface CoefficientPreviewProps {
-  sensor: 'turbidity' | 'tds'
+  sensor: 'turbidity' | 'tds' | 'flow'
   coefficients: TurbidityCoefficients | TdsCoefficients | null
-  /** Live raw reading: ADC for turbidity, voltage for tds. */
+  /** Live raw reading: ADC for turbidity, voltage for tds, pulse count for flow. */
   latestRaw: number | null
   /** True while an optimistic (unconfirmed) prediction is showing. */
   pending?: boolean
@@ -24,7 +24,7 @@ interface CoefficientPreviewProps {
 }
 
 function isTurbidity(
-  sensor: 'turbidity' | 'tds',
+  sensor: 'turbidity' | 'tds' | 'flow',
   _coefficients: TurbidityCoefficients | TdsCoefficients,
 ): _coefficients is TurbidityCoefficients {
   return sensor === 'turbidity'
@@ -53,7 +53,11 @@ export function CoefficientPreview({
         {!coefficients ? (
           <p className="text-sm text-muted-foreground">
             {t('calib.notCalibrated')} —{' '}
-            {sensor === 'turbidity' ? t('calib.needTurbidityPoints') : t('calib.needTdsPoints')}
+            {sensor === 'turbidity'
+              ? t('calib.needTurbidityPoints')
+              : sensor === 'flow'
+                ? t('calib.needFlowPoints')
+                : t('calib.needTdsPoints')}
           </p>
         ) : isTurbidity(sensor, coefficients) ? (
           <>
@@ -83,7 +87,9 @@ export function CoefficientPreview({
               <p className="text-muted-foreground text-sm">k-factor</p>
               <p className="font-mono text-2xl font-semibold">{coefficients.k.toFixed(4)}</p>
             </div>
-            <p className="text-xs text-muted-foreground">{t('calib.kFactorFormula')}</p>
+            <p className="text-xs text-muted-foreground">
+              {sensor === 'flow' ? t('calib.flowKFactorFormula') : t('calib.kFactorFormula')}
+            </p>
           </>
         )}
         {updated && !pending && (

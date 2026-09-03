@@ -24,6 +24,8 @@ export default defineConfig({
       '/calibration': 'http://localhost:8080',
       '/update': 'http://localhost:8080',
       '/push': 'http://localhost:8080',
+      '/flow': 'http://localhost:8080',
+      '/wifi': 'http://localhost:8080',
     },
   },
 })

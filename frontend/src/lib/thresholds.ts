@@ -1,7 +1,6 @@
 /**
  * Single source of truth for reference-line values and status bands used across
- * every chart, sparkline, and gauge (per AQUA_MONITOR_PLAN.md — "hard requirement,
- * on every chart/sparkline/gauge").
+ * every chart, sparkline, and gauge — a hard requirement, on every chart/sparkline/gauge.
  *
  * Units:
  * - turbidity: NTU (Nephelometric Turbidity Units)

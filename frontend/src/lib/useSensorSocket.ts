@@ -18,7 +18,7 @@ const STALE_TIMEOUT_MS = 5_000
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 15_000
 
-export type SeriesParam = 'temperature' | 'turbidity' | 'tds' | 'ec'
+export type SeriesParam = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow'
 
 export type SeriesPoint = { t: number; v: number }
 
@@ -31,7 +31,7 @@ export interface UseSensorSocketResult {
 }
 
 function emptySeries(): SensorSeries {
-  return { temperature: [], turbidity: [], tds: [], ec: [] }
+  return { temperature: [], turbidity: [], tds: [], ec: [], flow: [] }
 }
 
 function pushSample(series: SensorSeries, reading: SensorReading, now: number): SensorSeries {
@@ -40,6 +40,7 @@ function pushSample(series: SensorSeries, reading: SensorReading, now: number): 
     turbidity: [...series.turbidity, { t: now, v: reading.turbidityNtu ?? reading.turbidity }],
     tds: [...series.tds, ...(reading.tds != null ? [{ t: now, v: reading.tds }] : [])],
     ec: [...series.ec, ...(reading.ec != null ? [{ t: now, v: reading.ec }] : [])],
+    flow: [...series.flow, ...(reading.flowRate != null ? [{ t: now, v: reading.flowRate }] : [])],
   }
   const cutoff = now - SPARKLINE_WINDOW_MS
   for (const key of Object.keys(next) as SeriesParam[]) {
@@ -60,6 +61,7 @@ function seriesFromHistory(rows: HistoryRow[], now: number): SensorSeries {
     if (typeof turbidityValue === 'number') next.turbidity.push({ t: row.timestamp, v: turbidityValue })
     if (typeof row.tds === 'number') next.tds.push({ t: row.timestamp, v: row.tds })
     if (typeof row.ec === 'number') next.ec.push({ t: row.timestamp, v: row.ec })
+    if (typeof row.flowRate === 'number') next.flow.push({ t: row.timestamp, v: row.flowRate })
   }
   return next
 }
@@ -136,6 +138,8 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
     tds,
     tdsVoltage: num(obj.tdsVoltage),
     ec,
+    flowRate: numOrNull(obj.flowRate),
+    waterUsageToday: numOrNull(obj.waterUsageToday),
     timestamp,
   }
 }

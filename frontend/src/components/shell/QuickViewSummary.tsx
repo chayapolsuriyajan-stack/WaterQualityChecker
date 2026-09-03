@@ -10,16 +10,22 @@
  * status dot, rather than silently presenting e.g. a disconnected TDS
  * probe's ~0 ppm as if it were a genuine reading.
  */
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Droplet } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { PARAM_META, PARAM_ORDER, type ParamKey } from '@/lib/paramMeta'
 import { useSensorData } from '@/lib/SensorProvider'
-import { colorFor, isSensorFault, rangeStatusFor } from '@/lib/thresholds'
+import { colorFor, isSensorFault, rangeStatusFor, type RangeParam } from '@/lib/thresholds'
 import { wqiFromReading, type WqiBand } from '@/lib/wqi'
 import type { MessageKey } from '@/lib/strings'
 import type { SensorReading } from '@/lib/types'
+
+/** flow has no RANGE_BANDS entry (see thresholds.ts's decoupled RangeParam union) -- it's a
+ * plain quantity with no good/warn/danger judgment, unlike the other 4 params. */
+function isRangeParam(param: ParamKey): param is RangeParam {
+  return param !== 'flow'
+}
 
 const WQI_BAND_KEY: Record<WqiBand, MessageKey> = {
   good: 'wqi.good',
@@ -46,6 +52,8 @@ function valueFor(reading: SensorReading, param: ParamKey): number | null {
       return reading.tds
     case 'ec':
       return reading.ec
+    case 'flow':
+      return reading.flowRate
   }
 }
 
@@ -76,6 +84,7 @@ function analysisText(reading: SensorReading | null, t: ReturnType<typeof useT>[
   const watching: ParamKey[] = []
 
   for (const param of PARAM_ORDER) {
+    if (!isRangeParam(param)) continue // flow has no good/warn/danger judgment to report
     const value = valueFor(reading, param)
     if (value === null) continue
     if (isSensorFault(param, value)) {
@@ -117,10 +126,12 @@ function QuickViewRow({ param, reading }: QuickViewRowProps) {
   const meta = PARAM_META[param]
   const Icon = meta.icon
   const value = reading ? valueFor(reading, param) : null
-  const fault = value !== null && isSensorFault(param, value)
-  const scorable = param === 'turbidity' ? reading?.turbidityUnit === 'NTU' : true
+  const fault = value !== null && isRangeParam(param) && isSensorFault(param, value)
+  const scorable = param === 'turbidity' ? reading?.turbidityUnit === 'NTU' : isRangeParam(param)
   const color =
-    value === null || !scorable ? 'hsl(var(--muted-foreground))' : colorFor(param, value)
+    value === null || !scorable || !isRangeParam(param)
+      ? 'hsl(var(--muted-foreground))'
+      : colorFor(param, value)
   const unitFullNameKey = reading ? unitFullNameKeyFor(reading, param) : undefined
   const unitTitle = value !== null && unitFullNameKey ? t(unitFullNameKey) : undefined
 
@@ -152,6 +163,24 @@ function QuickViewRow({ param, reading }: QuickViewRowProps) {
   )
 }
 
+/** Today's cumulative usage isn't a ParamKey/PARAM_META entry (see paramMeta.ts) -- it gets
+ * its own row rather than folding into the PARAM_ORDER loop above. */
+function QuickViewUsageRow({ reading }: { reading: SensorReading | null }) {
+  const { t } = useT()
+  const value = reading?.waterUsageToday ?? null
+  return (
+    <div className="flex items-center justify-between gap-2 py-1.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <Droplet className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="truncate text-xs text-muted-foreground">{t('quickview.usage.label')}</span>
+      </div>
+      <span className="shrink-0 text-xs font-medium tabular-nums text-foreground">
+        {value === null ? '—' : `${value.toFixed(1)} L`}
+      </span>
+    </div>
+  )
+}
+
 interface QuickViewSummaryProps {
   className?: string
 }
@@ -179,6 +208,7 @@ export function QuickViewSummary({ className }: QuickViewSummaryProps) {
         {PARAM_ORDER.map((param) => (
           <QuickViewRow key={param} param={param} reading={reading} />
         ))}
+        <QuickViewUsageRow reading={reading} />
       </div>
     </div>
   )

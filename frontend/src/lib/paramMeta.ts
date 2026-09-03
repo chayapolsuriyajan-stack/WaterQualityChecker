@@ -5,10 +5,10 @@
  * information in their own local arrays/objects.
  */
 import type { LucideIcon } from 'lucide-react'
-import { Activity, Droplets, FlaskConical, Thermometer } from 'lucide-react'
+import { Activity, Droplets, FlaskConical, Thermometer, Waves } from 'lucide-react'
 import type { MessageKey } from './strings'
 
-export type ParamKey = 'temperature' | 'turbidity' | 'tds' | 'ec'
+export type ParamKey = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow'
 
 export interface ParamMeta {
   key: ParamKey
@@ -29,8 +29,14 @@ export interface ParamMeta {
    */
   unitFullNameKey?: MessageKey
   aboutKey: MessageKey
-  impactKey: MessageKey
-  recommendationKey: MessageKey
+  /**
+   * Omitted for params with no good/warn/danger judgment (currently just `flow` — a plain
+   * quantity, not a water-quality score). `ParamDetailDialog`/`ParamCard` skip the
+   * Impact/Recommendation cards and status coloring entirely when these are absent, the same
+   * way they already skip them for an unscorable/uncalibrated turbidity reading.
+   */
+  impactKey?: MessageKey
+  recommendationKey?: MessageKey
   unit: string
   /** Decimal places for display, e.g. value.toFixed(precision). */
   precision: number
@@ -40,7 +46,7 @@ export interface ParamMeta {
    * Turbidity plots `turbidityNtu` (the calibrated NTU column) — a HistoryRow's
    * `turbidity` field is always raw ADC, never a value to score/chart directly.
    */
-  historyField: 'temperature' | 'turbidityNtu' | 'tds' | 'ec'
+  historyField: 'temperature' | 'turbidityNtu' | 'tds' | 'ec' | 'flowRate'
 }
 
 export const PARAM_META: Record<ParamKey, ParamMeta> = {
@@ -94,6 +100,17 @@ export const PARAM_META: Record<ParamKey, ParamMeta> = {
     icon: Activity,
     historyField: 'ec',
   },
+  flow: {
+    key: 'flow',
+    labelKey: 'param.flow.label',
+    aboutKey: 'param.flow.about',
+    // No impactKey/recommendationKey -- flow rate is a plain quantity, not a water-quality
+    // judgment (see the ParamMeta interface comment above).
+    unit: 'L/min',
+    precision: 1,
+    icon: Waves,
+    historyField: 'flowRate',
+  },
 }
 
-export const PARAM_ORDER: ParamKey[] = ['temperature', 'turbidity', 'tds', 'ec']
+export const PARAM_ORDER: ParamKey[] = ['temperature', 'turbidity', 'tds', 'ec', 'flow']

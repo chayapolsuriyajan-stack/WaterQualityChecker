@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import sys
 import json
@@ -8,14 +9,15 @@ import datetime
 import urllib.request
 from collections import deque
 from urllib.parse import parse_qs, urlencode
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pywebpush import webpush, WebPushException
 
 import storage
 import thresholds
+import wifi_serial
 
 # Windows consoles default to cp1252, where the emoji in the startup prints below raise
 # UnicodeEncodeError and crash the server on launch. Force UTF-8 so `python main.py` just works.
@@ -38,10 +40,11 @@ except FileNotFoundError:
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
 CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
-# Local SQLite history (see storage.py). Set "historyDbFile" to "" to disable it and fall
-# back to the previous in-memory-buffer + Google Sheets behavior.
+# Local SQLite file for push subscriptions + daily water usage only (see storage.py).
+# Reading history is NOT stored here -- it lives in the in-memory buffer and Google Sheets.
+# Set "historyDbFile" to "" to disable it (push subscriptions won't survive a restart and
+# daily usage won't persist, but everything else keeps working).
 HISTORY_DB_PATH = webconfig.get("historyDbFile", "history.db")
-HISTORY_RETENTION_DAYS = int(webconfig.get("historyRetentionDays", 365))
 # Web Push (see push notification section below). Missing VAPID key file -> push endpoints
 # degrade to 503 rather than crashing startup, matching the existing degrade-not-crash
 # pattern used by storage.init/the Sheets webhook.
@@ -53,6 +56,25 @@ VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
 HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
 HTTPS_KEY_FILE = webconfig.get("httpsKeyFile", "")
 HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
+
+
+def https_enabled() -> bool:
+    """Only enable HTTPS when both configured files exist on disk. Missing certs should
+    degrade to plain HTTP instead of crashing the process on startup."""
+    return bool(HTTPS_CERT_FILE and HTTPS_KEY_FILE and os.path.exists(HTTPS_CERT_FILE) and os.path.exists(HTTPS_KEY_FILE))
+
+
+# USB WiFi provisioning (see wifi_serial.py). Empty/missing -> auto-detect the ESP32's port by
+# its USB-to-serial chip; set this only if auto-detect picks the wrong device.
+wifi_serial.configure(webconfig.get("esp32SerialPort", "") or None)
+# Shared secret for POST /update (see the update_sensor auth check below). Empty/missing ->
+# auth stays OFF and /update accepts any request, matching every prior version of this app
+# (same-LAN-only, no exposure). Set this to a random string once the ESP32 might reach this
+# backend from outside the LAN (see the fixed-backend-host override in WiFi provisioning) --
+# an internet-reachable /update with no auth lets anyone inject fake sensor readings or spam
+# the Google Sheets relay/push notifications. The ESP32 sends it back via the X-API-Key header
+# (set through the same USB provisioning channel as WIFI_SET/BACKEND_SET, see esp32.ino).
+UPDATE_API_KEY = webconfig.get("updateApiKey", "")
 
 
 def vapid_available() -> bool:
@@ -108,14 +130,9 @@ else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
 
 if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
-    removed = storage.prune(HISTORY_RETENTION_DAYS)
-    print(
-        f"✅ Local history database at {HISTORY_DB_PATH} ({storage.count():,} readings"
-        + (f", pruned {removed:,} older than {HISTORY_RETENTION_DAYS}d" if removed else "")
-        + ")."
-    )
+    print(f"✅ Local database at {HISTORY_DB_PATH} (push subscriptions + daily water usage).")
 else:
-    print("⚠️ Local history database disabled; /history falls back to memory + Google Sheets.")
+    print("⚠️ Local database disabled; push subscriptions and daily water usage won't persist.")
 
 print("Starting FastAPI Backend Server...")
 
@@ -157,7 +174,7 @@ ui_clients_lock = asyncio.Lock()
 # Living on the backend (not per-browser) so every connected dashboard shows the
 # same range and it survives page refreshes. Mutated only from the event loop in
 # update_sensor, so no lock is needed.
-STAT_KEYS = ("temperature", "turbidity", "tds")
+STAT_KEYS = ("temperature", "turbidity", "tds", "flowRate")
 sensor_stats: dict = {}
 
 # Edge-detection state for push notifications: last known severity per param, so a push
@@ -169,6 +186,32 @@ last_severity: dict = {}
 # logs (raw ADC turbidity). Resets on restart; long windows still read from the sheet.
 HISTORY_BUFFER_MAX = 2000  # ~66 min at a 2s cadence; covers the 5m/15m/1h live windows
 history_buffer = deque(maxlen=HISTORY_BUFFER_MAX)
+
+# Today's cumulative water usage. Kept in-memory as the hot-path value (so the quick-view
+# doesn't need a DB round-trip on every 2s reading) and persisted to storage.daily_usage
+# fire-and-forget for durability + the Water Usage chart. Reseeded from storage at startup
+# so a restart mid-day doesn't visibly reset usage to 0. A date rollover just starts a fresh
+# in-memory total at 0 -- same "new day, new row" reasoning as the storage.py table itself.
+def _local_date() -> str:
+    return datetime.date.today().isoformat()
+
+_daily_usage_date = _local_date()
+_daily_usage_total = storage.get_daily_usage(_daily_usage_date) if storage.enabled() else 0.0
+
+
+def _add_daily_usage(liters: float) -> float:
+    """Adds `liters` to today's running total (rolling the in-memory total over to a fresh
+    day first if the date has changed since the last reading), persists async, and returns
+    the new total."""
+    global _daily_usage_date, _daily_usage_total
+    today = _local_date()
+    if today != _daily_usage_date:
+        _daily_usage_date = today
+        _daily_usage_total = 0.0
+    _daily_usage_total += liters
+    if storage.enabled():
+        asyncio.create_task(asyncio.to_thread(storage.add_daily_usage, today, liters))
+    return _daily_usage_total
 
 
 def _update_stats(payload: dict) -> None:
@@ -243,10 +286,17 @@ async def relay_to_google_sheets(payload: dict) -> None:
 # calibration endpoints), so no lock is needed.
 
 
+CALIBRATED_SENSORS = ("turbidity", "tds", "flow")
+
+
 def _default_calibration() -> dict:
     return {
         "turbidity": {"model": "linear2", "points": [], "coefficients": None, "updated": None},
         "tds": {"model": "kfactor", "points": [], "coefficients": {"k": 1.0}, "updated": None},
+        # k = pulses per liter. YF-S201 nominal is ~450 (7.5 pulses/sec per L/min * 60s);
+        # refined the same way TDS's k is -- pour a known volume through, capture the pulse
+        # count, k = counted_pulses / measured_liters.
+        "flow": {"model": "kfactor", "points": [], "coefficients": {"k": 450.0}, "updated": None},
     }
 
 
@@ -257,7 +307,7 @@ def _load_calibration() -> dict:
             stored = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return calib
-    for sensor in ("turbidity", "tds"):
+    for sensor in CALIBRATED_SENSORS:
         if isinstance(stored.get(sensor), dict):
             calib[sensor].update(stored[sensor])
     return calib
@@ -265,7 +315,7 @@ def _load_calibration() -> dict:
 
 calibration = _load_calibration()
 # Whether saved calibrations are APPLIED to the live stream. Toggled by the on/off button
-# on the /calibrate page. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
+# on the frontend's Calibration tab. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
 # as uncalibrated DFRobot ppm); when ON, saved coefficients are applied (NTU + calibrated
 # ppm). Defaults ON when a real calibration already exists on disk, so a calibrated rig
 # keeps applying after a restart; otherwise OFF. Held in memory (resets to this default on
@@ -273,12 +323,13 @@ calibration = _load_calibration()
 calibration_mode = bool(
     calibration["turbidity"]["coefficients"]
     or (calibration["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
+    or (calibration["flow"]["coefficients"] or {}).get("k", 450.0) != 450.0
 )
 
 # Latest raw reading per sensor plus a short rolling buffer, so a calibration "capture"
 # can average out electrical noise instead of grabbing a single instant.
-latest_raw: dict = {"turbidity": None, "tdsVoltage": None, "temperature": None}
-_raw_buffers = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5)}
+latest_raw: dict = {"turbidity": None, "tdsVoltage": None, "temperature": None, "flowRaw": None}
+_raw_buffers = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
 
 
 def _save_calibration() -> None:
@@ -353,6 +404,37 @@ def ppm_to_ec(ppm) -> float | None:
     if not isinstance(ppm, (int, float)):
         return None
     return round(ppm / TDS_TO_EC_FACTOR, 1)
+
+
+def _recompute_flow() -> None:
+    # Single-point k-factor, same shape as _recompute_tds: k = counted_pulses / measured
+    # liters (pulses per liter), from a "pour a known volume through, capture the pulse
+    # count" calibration point.
+    points = calibration["flow"]["points"]
+    if not points:
+        calibration["flow"]["coefficients"] = {"k": 450.0}
+        return
+    p = points[-1]
+    liters = p.get("reference", 0)
+    k = (p["rawPulses"] / liters) if liters > 0 else 450.0
+    calibration["flow"]["coefficients"] = {"k": k}
+
+
+# Matches the firmware's 2s broadcastInterval -- flowPulses arrives as a raw count over that
+# fixed window, same "no elapsed-time bookkeeping" simplicity turbidity/TDS already use.
+FLOW_INTERVAL_SECONDS = 2.0
+
+
+def apply_flow(pulses: float) -> tuple[float, float]:
+    """Returns (litersThisInterval, flowRateLpm) from a raw pulse count. Only applies the
+    saved k-factor when calibration mode is ON (mirrors apply_tds); OFF uses the nominal
+    YF-S201 default so an unconfigured/miscalibrated k can't silently skew the live reading."""
+    k = (calibration["flow"]["coefficients"] or {}).get("k", 450.0) if calibration_mode else 450.0
+    if not k:
+        return 0.0, 0.0
+    liters = pulses / k
+    rate_lpm = liters * (60.0 / FLOW_INTERVAL_SECONDS)
+    return round(liters, 4), round(rate_lpm, 2)
 
 
 # --- Push notifications -------------------------------------------------------
@@ -450,8 +532,31 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
 
 
+# Same auth as /update (see its check below), factored out so both routes enforce it
+# identically -- a health check that skipped auth would "pass" against a backend whose real
+# /update then rejects the board, which is exactly the failure this endpoint exists to catch.
+def _check_update_api_key(request: Request) -> bool:
+    return not UPDATE_API_KEY or hmac.compare_digest(request.headers.get("x-api-key", ""), UPDATE_API_KEY)
+
+
+@app.get("/update/health")
+async def update_health(request: Request):
+    # Dedicated no-op reachability/auth check for BACKEND_TEST (esp32.ino) / the WiFi panel's
+    # "Test connection" button, so verifying the fixed-backend-host override doesn't write a
+    # fake sensor reading into history/Sheets/push-notification thresholds the way a real
+    # /update POST would.
+    if not _check_update_api_key(request):
+        return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/update")
 async def update_sensor(request: Request):
+    # Checked only when UPDATE_API_KEY is configured (see its definition above) -- keeps every
+    # same-LAN-only setup working unauthenticated exactly as before. constant_time comparison
+    # since this is a secret comparison over a network-reachable endpoint.
+    if not _check_update_api_key(request):
+        return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
     try:
         data = await request.json()
         payload = {
@@ -465,8 +570,8 @@ async def update_sensor(request: Request):
             # dashboards read that key). The calibrated NTU rides along in `turbidityNtu`
             # when a turbidity calibration is active (else None).
             turbidity_adc = float(data["turbidity"])
-            # Only apply the saved calibration when calibration mode is ON (the /calibrate
-            # on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
+            # Only apply the saved calibration when calibration mode is ON (the Calibration
+            # tab's on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
             ntu = apply_turbidity(turbidity_adc) if calibration_mode else None
             # `turbidityRaw` always carries the raw averaged ADC (for the calibration page +
             # honest Google Sheets logging). The primary `turbidity` field carries calibrated
@@ -509,6 +614,18 @@ async def update_sensor(request: Request):
             ec = ppm_to_ec(payload.get("tds"))
             if ec is not None:
                 payload["ec"] = ec
+
+            # Flow sensor: firmware sends the raw pulse count accumulated over the last
+            # FLOW_INTERVAL_SECONDS (a hall-effect pulse counter, unlike the other analog
+            # sensors). No thresholds/calibration-mode-off fallback beyond apply_flow's own
+            # gating -- flow rate/usage are plain quantities, not water-quality judgments.
+            if "flowPulses" in data:
+                flow_pulses = float(data["flowPulses"])
+                liters, flow_rate = apply_flow(flow_pulses)
+                payload["flowRate"] = flow_rate
+                payload["waterUsageToday"] = round(_add_daily_usage(liters), 4)
+                latest_raw["flowRaw"] = flow_pulses
+                _raw_buffers["flowRaw"].append(flow_pulses)
         else:
             text = await request.body()
             if not text:
@@ -535,14 +652,9 @@ async def update_sensor(request: Request):
                 "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
                 "tds": payload.get("tds"),
                 "ec": payload.get("ec"),
+                "flowRate": payload.get("flowRate"),
             }
             history_buffer.append(history_row)
-
-            # Persist the same row locally (see storage.py). Off the event loop, and
-            # fire-and-forget like the Sheets relay, so disk latency never delays the
-            # ESP32's /update response.
-            if storage.enabled():
-                asyncio.create_task(asyncio.to_thread(storage.insert, history_row))
 
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
@@ -554,6 +666,12 @@ async def update_sensor(request: Request):
             }
             if "tds" in payload:
                 sheet_payload["tds"] = payload["tds"]
+            # Instantaneous flow rate only -- water usage (the daily cumulative total) is a
+            # different shape/cadence (see storage.py's daily_usage table) that doesn't fit
+            # this per-reading log, same reasoning google_apps_script.gs's insertReadingAtTop_
+            # documents for its Flow Rate column.
+            if "flowRate" in payload:
+                sheet_payload["flowRate"] = payload["flowRate"]
             asyncio.create_task(relay_to_google_sheets(sheet_payload))
 
             # Threshold-breach push notifications: detection is synchronous/inline (must
@@ -593,9 +711,9 @@ def _downsample(rows: list, max_points: int) -> list:
 
 
 def _with_ntu(rows: list) -> list:
-    # Each row's `turbidity` is raw ADC (matching the sheet and the local DB). Add
-    # `turbidityNtu` = calibrated NTU (or None if uncalibrated) so the dashboard stays
-    # consistent with the live WS value, while `turbidity` keeps carrying the raw ADC.
+    # Each row's `turbidity` is raw ADC (matching the sheet). Add `turbidityNtu` = calibrated
+    # NTU (or None if uncalibrated) so the dashboard stays consistent with the live WS value,
+    # while `turbidity` keeps carrying the raw ADC.
     out = []
     for r in rows:
         adc = r.get("turbidity")
@@ -605,7 +723,11 @@ def _with_ntu(rows: list) -> list:
         ec = r.get("ec")
         if ec is None:
             ec = ppm_to_ec(r.get("tds"))
-        out.append({**r, "turbidityNtu": ntu, "ec": ec})
+        # Sheets rows carry flowRate once google_apps_script.gs has been redeployed with its
+        # Flow Rate column (see CLAUDE.md); rows logged before that redeploy, or buffer rows
+        # where a reading simply had no flow data, fall back to None here uniformly.
+        flow_rate = r.get("flowRate")
+        out.append({**r, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
     return out
 
 
@@ -639,14 +761,11 @@ async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> 
 async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     """Readings for the requested window, newest-last, from the cheapest source that covers it.
 
-    Three tiers, in order:
-      1. the local SQLite database (storage.py) -- answers ANY window straight off disk and
-         survives restarts, so it is preferred whenever it is enabled;
-      2. the in-memory buffer -- only adds anything when the database is disabled or a write
-         failed, since /update writes both;
-      3. Google Sheets -- consulted only for the part of the window the local sources don't
-         reach (a fresh database, a restored machine, or readings collected before this
-         database existed). Proxied here so the dashboard's fetch stays same-origin.
+    Two tiers, in order:
+      1. the in-memory buffer -- answers instantly for anything still in the rolling window;
+      2. Google Sheets -- consulted only for the part of the window the buffer doesn't reach
+         (a fresh restart, or a window longer than the buffer holds). Proxied here so the
+         dashboard's fetch stays same-origin.
     """
     seconds = HISTORY_WINDOWS.get(window)
     if seconds is None:
@@ -658,37 +777,21 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     cutoff_ms = (time.time() - seconds) * 1000
     sources: list[str] = []
 
-    # Tier 1 -- local database. Blocking sqlite read, kept off the event loop.
-    db_rows: list = []
-    if storage.enabled():
-        db_rows = await asyncio.to_thread(storage.query, cutoff_ms)
-        if db_rows:
-            sources.append("db")
+    # Tier 1 -- in-memory buffer, the whole live path (wiped on restart).
+    rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+    if rows:
+        sources.append("live")
 
-    # Tier 2 -- in-memory buffer. When the database is on, this only contributes rows newer
-    # than its newest (i.e. an insert that failed); when it is off, this is the whole live path.
-    buffer_rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
-    if db_rows:
-        newest_db_ms = db_rows[-1]["timestamp"]
-        tail = [r for r in buffer_rows if r["timestamp"] > newest_db_ms]
-        rows = db_rows + tail
-        if tail:
-            sources.append("live")
-    else:
-        rows = buffer_rows
-        if buffer_rows:
-            sources.append("live")
-
-    # Tier 3 -- Sheets fills the older end when the local sources start too late. The
-    # tolerance keeps a normal steady-state request (oldest row a second or two after the
-    # cutoff) from counting as a gap; see HISTORY_GAP_TOLERANCE_MS.
+    # Tier 2 -- Sheets fills the older end when the buffer starts too late. The tolerance
+    # keeps a normal steady-state request (oldest row a second or two after the cutoff) from
+    # counting as a gap; see HISTORY_GAP_TOLERANCE_MS.
     local_floor_ms = rows[0]["timestamp"] if rows else float("inf")
     coverage_gap = (not rows) or (local_floor_ms > cutoff_ms + HISTORY_GAP_TOLERANCE_MS)
 
     if coverage_gap and GOOGLE_SHEETS_WEBHOOK_URL:
         sheet_rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
-        # Keep only rows strictly older than what the local sources already cover, so the
-        # merge has no duplicate/overlapping rows at the seam.
+        # Keep only rows strictly older than what the buffer already covers, so the merge
+        # has no duplicate/overlapping rows at the seam.
         sheet_rows = [r for r in sheet_rows if r["timestamp"] < local_floor_ms]
         if sheet_rows:
             rows = sheet_rows + rows  # both chronological ascending -> merge stays ordered
@@ -706,7 +809,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
 
 
 # --- Calibration API ---------------------------------------------------------
-# Drives the standalone /calibrate page. State lives in the `calibration` dict and is
+# Drives the frontend's Calibration tab. State lives in the `calibration` dict and is
 # only persisted to calibration.json on an explicit save, so captures can be reviewed
 # (and discarded) before they take effect on the live stream.
 
@@ -718,14 +821,6 @@ def _avg_raw(key: str):
     return latest_raw.get(key)
 
 
-@app.get("/calibrate")
-async def get_calibrate_page():
-    page = "web/calibrate.html"
-    if not os.path.isfile(page):
-        raise HTTPException(status_code=404, detail="Calibration page not found")
-    return FileResponse(page)
-
-
 @app.get("/calibration")
 async def get_calibration():
     return JSONResponse(
@@ -733,10 +828,12 @@ async def get_calibration():
             "mode": calibration_mode,
             "turbidity": calibration["turbidity"],
             "tds": calibration["tds"],
+            "flow": calibration["flow"],
             "latestRaw": {
                 "turbidity": latest_raw["turbidity"],
                 "tdsVoltage": latest_raw["tdsVoltage"],
                 "temperature": latest_raw["temperature"],
+                "flowRaw": latest_raw["flowRaw"],
             },
         }
     )
@@ -750,20 +847,31 @@ async def set_calibration_mode(request: Request):
     return JSONResponse({"mode": calibration_mode})
 
 
+_RECOMPUTE_FNS = {
+    "turbidity": _recompute_turbidity,
+    "tds": _recompute_tds,
+    "flow": _recompute_flow,
+}
+
+
 @app.post("/calibration/capture")
 async def capture_calibration_point(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     try:
         reference = float(body["reference"])
     except (KeyError, TypeError, ValueError):
         return JSONResponse({"error": "reference (numeric) is required"}, status_code=400)
     label = str(body.get("label", ""))
 
-    # Raw value: use the user-typed `raw` when provided (manual entry -- type the ADC/voltage
-    # and the reference it maps to), otherwise fall back to the averaged live reading.
+    # Raw value: use the user-typed `raw` when provided (manual entry -- type the ADC/voltage/
+    # pulse-count and the reference it maps to), otherwise fall back to the averaged live
+    # reading. For flow this fallback is a weaker signal than turbidity/tds's -- it averages
+    # recent per-interval pulse counts rather than a true total-pulses-over-the-test-pour, so
+    # manual entry is the primary path for flow calibration in practice.
+    raw_key = {"turbidity": "turbidity", "tds": "tdsVoltage", "flow": "flowRaw"}[sensor]
     manual_raw = body.get("raw")
     if manual_raw is not None and manual_raw != "":
         try:
@@ -771,9 +879,9 @@ async def capture_calibration_point(request: Request):
         except (TypeError, ValueError):
             return JSONResponse({"error": "raw must be numeric"}, status_code=400)
     else:
-        raw = _avg_raw("turbidity" if sensor == "turbidity" else "tdsVoltage")
+        raw = _avg_raw(raw_key)
         if raw is None:
-            unit = "Raw ADC" if sensor == "turbidity" else "Raw V"
+            unit = {"turbidity": "Raw ADC", "tds": "Raw V", "flow": "pulse count"}[sensor]
             return JSONResponse(
                 {"error": f"no live {sensor} reading yet — type a {unit} value instead"},
                 status_code=409,
@@ -783,8 +891,7 @@ async def capture_calibration_point(request: Request):
         calibration["turbidity"]["points"].append(
             {"raw": round(raw, 1), "reference": reference, "label": label}
         )
-        _recompute_turbidity()
-    else:
+    elif sensor == "tds":
         calibration["tds"]["points"].append(
             {
                 "rawVoltage": round(raw, 4),
@@ -793,7 +900,11 @@ async def capture_calibration_point(request: Request):
                 "temperature": latest_raw["temperature"] if latest_raw["temperature"] is not None else 25.0,
             }
         )
-        _recompute_tds()
+    else:
+        calibration["flow"]["points"].append(
+            {"rawPulses": round(raw, 1), "reference": reference, "label": label}
+        )
+    _RECOMPUTE_FNS[sensor]()
 
     return JSONResponse({sensor: calibration[sensor]})
 
@@ -802,38 +913,140 @@ async def capture_calibration_point(request: Request):
 async def delete_calibration_point(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     try:
         index = int(body["index"])
         calibration[sensor]["points"].pop(index)
     except (KeyError, TypeError, ValueError, IndexError):
         return JSONResponse({"error": "valid point index required"}, status_code=400)
-    (_recompute_turbidity if sensor == "turbidity" else _recompute_tds)()
+    _RECOMPUTE_FNS[sensor]()
     return JSONResponse({sensor: calibration[sensor]})
 
 
 @app.post("/calibration/save")
 async def save_calibration():
     now = _now_iso()
-    for sensor in ("turbidity", "tds"):
+    for sensor in CALIBRATED_SENSORS:
         calibration[sensor]["updated"] = now
     try:
         _save_calibration()
     except OSError as exc:
         return JSONResponse({"error": f"failed to write {CALIBRATION_PATH}: {exc}"}, status_code=500)
     print(f"💾 Calibration saved to {CALIBRATION_PATH}")
-    return JSONResponse({"ok": True, "turbidity": calibration["turbidity"], "tds": calibration["tds"]})
+    return JSONResponse({"ok": True, **{s: calibration[s] for s in CALIBRATED_SENSORS}})
 
 
 @app.post("/calibration/reset")
 async def reset_calibration(request: Request):
     body = await request.json()
     sensor = body.get("sensor")
-    if sensor not in ("turbidity", "tds"):
-        return JSONResponse({"error": "sensor must be 'turbidity' or 'tds'"}, status_code=400)
+    if sensor not in CALIBRATED_SENSORS:
+        return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
     calibration[sensor] = _default_calibration()[sensor]
     return JSONResponse({sensor: calibration[sensor]})
+
+
+# --- Flow sensor API ----------------------------------------------------------
+# Separate from /history: daily usage is one row per calendar day (storage.daily_usage),
+# a different shape/cadence than live readings, so it needs its own small endpoints rather
+# than riding the /history buffer+Sheets merge (see storage.py's daily_usage table docstring).
+
+
+@app.get("/flow/usage")
+async def get_flow_usage(days: int = 14):
+    if not storage.enabled():
+        return JSONResponse({"today": round(_daily_usage_total, 4), "days": []})
+    days = max(1, min(days, 365))
+    rows = await asyncio.to_thread(storage.get_recent_daily_usage, days)
+    return JSONResponse({"today": round(_daily_usage_total, 4), "days": rows})
+
+
+@app.post("/flow/reset-today")
+async def reset_flow_usage_today():
+    global _daily_usage_total
+    _daily_usage_total = 0.0
+    if storage.enabled():
+        await asyncio.to_thread(storage.reset_daily_usage, _local_date())
+    return JSONResponse({"ok": True, "today": 0.0})
+
+
+# --- WiFi provisioning API -----------------------------------------------------
+# A SEPARATE channel from every other endpoint in this file: these talk to the ESP32 over its
+# USB-serial port (wifi_serial.py), not HTTP-over-WiFi, because the whole point is
+# reconfiguring WiFi credentials at a moment the ESP32 may not have working WiFi yet. See the
+# "Push notifications"-style degrade-gracefully posture -- a missing/unplugged board 503s with
+# a clear reason rather than crashing or hanging. No authentication, same as every other
+# endpoint in this app (there is no login system anywhere in this codebase) -- worth naming
+# explicitly since this one accepts a WiFi password, but not a new gap this feature introduces.
+
+
+@app.get("/wifi/status")
+async def get_wifi_status():
+    result = await asyncio.to_thread(wifi_serial.get_status)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/scan")
+async def scan_wifi():
+    result = await asyncio.to_thread(wifi_serial.scan_networks)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/connect")
+async def connect_wifi(request: Request):
+    body = await request.json()
+    ssid = body.get("ssid")
+    password = body.get("password")
+    if not ssid or password is None:
+        return JSONResponse({"error": "ssid and password are required"}, status_code=400)
+    result = await asyncio.to_thread(wifi_serial.set_wifi, ssid, password)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+# Same-LAN UDP discovery (see main.py's DiscoveryProtocol / esp32.ino's discoverBackend())
+# only ever finds a backend on the board's own subnet. These let the dashboard point the board
+# at a backend on a DIFFERENT network instead (over the same USB-serial provisioning channel
+# as /wifi/*, since that's the only channel guaranteed to reach the board) -- the target host
+# still has to be reachable from wherever the board's WiFi network is (port-forward + DDNS,
+# a VPN/tunnel, etc.); this only configures which address the board tries.
+@app.get("/wifi/backend")
+async def get_wifi_backend():
+    result = await asyncio.to_thread(wifi_serial.get_backend_status)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/backend")
+async def set_wifi_backend(request: Request):
+    body = await request.json()
+    host = body.get("host", "")
+    api_key = body.get("apiKey", "")
+    use_https = bool(body.get("useHttps", False))
+    result = await asyncio.to_thread(wifi_serial.set_backend_host, host, api_key, use_https)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
+
+
+@app.post("/wifi/backend/test")
+async def test_wifi_backend():
+    # Has the ESP32 itself round-trip GET /update/health against whatever it's currently
+    # configured to use (BACKEND_TEST in esp32.ino) -- exercises the exact path/TLS
+    # trust/API-key combination the board's real /update POSTs will use, which a test run
+    # from this backend process couldn't (this backend isn't the one whose DNS/routing/NAT
+    # path to the target host is in question -- the board's is).
+    result = await asyncio.to_thread(wifi_serial.test_backend_connection)
+    if not result["ok"]:
+        return JSONResponse({"error": result["error"]}, status_code=503)
+    return JSONResponse(result)
 
 
 # --- Push notification API ---------------------------------------------------
@@ -1018,7 +1231,7 @@ async def websocket_app(websocket: WebSocket):
 
 # The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
 # only catches requests that no explicit route above already matched (Starlette tries
-# routes in registration order; specific routes like /history, /calibrate, /ws/app all win
+# routes in registration order; specific routes like /history, /calibration, /ws/app all win
 # over this root Mount since they were registered earlier). StaticFiles(html=True) serves
 # frontend/dist/index.html for "/" and transparently serves every nested file the built app
 # needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.
@@ -1043,10 +1256,11 @@ if __name__ == "__main__":
 
     async def _run_servers():
         # HTTP:8080 always runs (unchanged -- ESP32 firmware keeps POSTing here). HTTPS is
-        # additive: only started when both a cert and key are configured, since Web Push
-        # requires a secure context and http://localhost is only exempt on the same machine.
+        # additive: only started when both a cert and key are configured and present on disk,
+        # since Web Push requires a secure context and http://localhost is only exempt on the
+        # same machine.
         configs = [uvicorn.Config("main:app", host="0.0.0.0", port=8080, reload=dev_mode)]
-        if HTTPS_CERT_FILE and HTTPS_KEY_FILE:
+        if https_enabled():
             configs.append(
                 uvicorn.Config(
                     "main:app",
@@ -1058,7 +1272,15 @@ if __name__ == "__main__":
             )
             print(f"🔒 HTTPS listener enabled on port {HTTPS_PORT} (push notifications available over LAN).")
         else:
-            print("⚠️ httpsCertFile/httpsKeyFile not set; HTTPS disabled -- push notifications only work over localhost.")
+            if HTTPS_CERT_FILE or HTTPS_KEY_FILE:
+                missing = [p for p in (HTTPS_CERT_FILE, HTTPS_KEY_FILE) if p and not os.path.exists(p)]
+                print(
+                    "⚠️ HTTPS disabled because required certificate file(s) are missing: "
+                    + ", ".join(missing)
+                    + " -- push notifications only work over localhost."
+                )
+            else:
+                print("⚠️ httpsCertFile/httpsKeyFile not set; HTTPS disabled -- push notifications only work over localhost.")
 
         servers = [uvicorn.Server(c) for c in configs]
         await asyncio.gather(*(s.serve() for s in servers))

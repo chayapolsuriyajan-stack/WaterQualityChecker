@@ -10,7 +10,9 @@ import {
   TDS_THRESHOLDS,
   TEMPERATURE_THRESHOLDS,
   TURBIDITY_THRESHOLDS,
+  type ThresholdParam,
 } from '@/lib/thresholds'
+import { useDashboardPrefs } from '@/lib/DashboardPrefsProvider'
 import { useT } from '@/lib/i18n'
 import { PARAM_META, PARAM_ORDER, type ParamKey } from '@/lib/paramMeta'
 import type { HistoryWindow, SensorReading } from '@/lib/types'
@@ -26,17 +28,24 @@ interface ParamGridProps {
   onWindowChange: (window: HistoryWindow) => void
 }
 
-/** Sparkline threshold + label per param, kept out of paramMeta since it's dashboard-card-only. */
-const SPARKLINE_THRESHOLD: Record<ParamKey, { value: number; label: string }> = {
+/** Sparkline threshold + label per param, kept out of paramMeta since it's dashboard-card-only.
+ * `flow` has no entry -- it's not in RangeParam, so its card renders with no threshold line
+ * (see the `showThreshold` fallback below). */
+const SPARKLINE_THRESHOLD: Partial<Record<ParamKey, { value: number; label: string }>> = {
   temperature: { value: TEMPERATURE_THRESHOLDS.max, label: `${TEMPERATURE_THRESHOLDS.max}${TEMPERATURE_THRESHOLDS.unit} max` },
   turbidity: { value: TURBIDITY_THRESHOLDS.warn, label: `${TURBIDITY_THRESHOLDS.warn} ${TURBIDITY_THRESHOLDS.unit}` },
   tds: { value: TDS_THRESHOLDS.warn, label: `${TDS_THRESHOLDS.warn} ${TDS_THRESHOLDS.unit}` },
   ec: { value: EC_THRESHOLDS.warn, label: `${EC_THRESHOLDS.warn} ${EC_THRESHOLDS.unit}` },
 }
 
+/** Params with no good/warn/danger judgment at all (see ParamMeta's impactKey comment). */
+const UNSCORABLE_PARAMS = new Set<ParamKey>(['flow'])
+
 export function ParamGrid({ reading, series, window, onWindowChange }: ParamGridProps) {
   const { t } = useT()
+  const { visible } = useDashboardPrefs()
   const [openParam, setOpenParam] = useState<ParamKey | null>(null)
+  const visibleParams = PARAM_ORDER.filter((param) => visible[param])
 
   const turbidityIsNtu = reading?.turbidityUnit === 'NTU'
   const turbidityValue =
@@ -53,6 +62,8 @@ export function ParamGrid({ reading, series, window, onWindowChange }: ParamGrid
         return reading.tds
       case 'ec':
         return reading.ec
+      case 'flow':
+        return reading.flowRate
     }
   }
 
@@ -72,14 +83,23 @@ export function ParamGrid({ reading, series, window, onWindowChange }: ParamGrid
     return PARAM_META[param].precision
   }
 
+  /** ParamCard's `param` prop is typed ThresholdParam (a subset of ParamKey, no 'flow') --
+   * this narrows explicitly since a Set.has() check alone doesn't narrow for TS. */
+  function thresholdParamFor(param: ParamKey): ThresholdParam | undefined {
+    if (param === 'flow') return undefined
+    if (param === 'turbidity') return turbidityIsNtu ? 'turbidity' : undefined
+    return param
+  }
+
   const openMeta = openParam ? PARAM_META[openParam] : null
-  const openScorable = openParam === 'turbidity' ? turbidityIsNtu : true
+  const openScorable = openParam === 'turbidity' ? turbidityIsNtu : openParam !== null && !UNSCORABLE_PARAMS.has(openParam)
 
   /** Same priority as RangeWarning: uncalibrated (turbidity only) > sensor fault > no hint.
    * Uncalibrated turbidity's raw ADC value isn't in NTU, so it's never checked against
    * sensorFaultBelow (which is an NTU threshold) -- these two states can't collide. */
   function hintFor(param: ParamKey): string | undefined {
     if (param === 'turbidity' && !turbidityIsNtu) return t('common.uncalibrated')
+    if (param === 'flow') return undefined
     const value = valueFor(param)
     if (value !== null && isSensorFault(param, value)) return t('quickview.sensorFault')
     return undefined
@@ -88,10 +108,11 @@ export function ParamGrid({ reading, series, window, onWindowChange }: ParamGrid
   return (
     <>
       <div data-tour="param-grid" className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-2">
-        {PARAM_ORDER.map((param, index) => {
+        {visibleParams.map((param, index) => {
           const meta = PARAM_META[param]
-          const { value: threshold, label: thresholdLabel } = SPARKLINE_THRESHOLD[param]
+          const { value: threshold = 0, label: thresholdLabel = '' } = SPARKLINE_THRESHOLD[param] ?? {}
           const isTurbidity = param === 'turbidity'
+          const isUnscorable = UNSCORABLE_PARAMS.has(param)
           return (
             <ParamCard
               key={param}
@@ -101,10 +122,10 @@ export function ParamGrid({ reading, series, window, onWindowChange }: ParamGrid
               unit={unitFor(param)}
               unitFullNameKey={unitFullNameKeyFor(param)}
               precision={precisionFor(param)}
-              param={isTurbidity ? (turbidityIsNtu ? 'turbidity' : undefined) : param}
+              param={thresholdParamFor(param)}
               threshold={threshold}
               thresholdLabel={thresholdLabel}
-              showThreshold={isTurbidity ? turbidityIsNtu : true}
+              showThreshold={isUnscorable ? false : isTurbidity ? turbidityIsNtu : true}
               hint={hintFor(param)}
               series={series[param]}
               onOpen={() => setOpenParam(param)}

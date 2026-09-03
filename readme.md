@@ -58,12 +58,6 @@ screen. On a first visit a short **guided tour** walks through the sidebar, the 
 grid, the Quick View card, and the calibration tab; it can be replayed any time from the
 help button in the sidebar.
 
-A separate lightweight page at **`/calibrate`** offers the same sensor calibration in a
-single self-contained HTML file, useful for calibrating from a phone or a machine that
-doesn't need the full dashboard.
-
-![Calibration page](docs/calibrate.png?v=49b675d)
-
 ### How it works, briefly
 
 ```
@@ -87,26 +81,27 @@ ESP32 station ──raw readings──▶  FastAPI server (main.py)  ──live�
 
 **If the server is unreachable**, readings are not simply lost:
 
-- The station falls back to posting to an **IFTTT Maker Webhooks** applet (once a minute, to
-  stay inside the free tier), which parks the reading in an `IFTTT_Buffer` tab of the same
-  spreadsheet. A scheduled Apps Script job (`migrateIftttBuffer`) folds those rows back into
-  the main sheet in the normal order. This needs a one-time manual setup in the IFTTT and
-  Apps Script UIs — see the comments at the top of
+- The station buffers up to 30 readings on-device and, once per minute, posts each one
+  directly to the same Google Apps Script Web App the server's own Sheets relay uses —
+  no third-party service, no separate account. The buffer covers a ~60s outage in full;
+  a longer one degrades to the most recent 30 readings. See the comments in
+  [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) and
   [`google_apps_script.gs`](google_apps_script.gs).
 - On the server side, if the in-memory live buffer has a gap (the server restarted mid-window),
   `/history` falls back to Google Sheets for that window rather than showing a hole.
 
 More detail — wiring, the calibration math, the Google Sheets contract, the frontend's
-architecture — is in [`CLAUDE.md`](CLAUDE.md) and [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md).
+architecture — is in [`CLAUDE.md`](CLAUDE.md).
 
 ### Known gaps / where to improve it next
 
 Honest status, roughly in priority order:
 
-1. **The Google Apps Script webhook URL is committed** in [`webconfig.json`](webconfig.json),
-   and `POST /update` has no authentication. Anyone who can reach the server (or that URL)
-   can write readings. Move the URL to an environment variable and add a shared-secret
-   header on `/update`.
+1. **The Google Apps Script webhook URL is committed** in [`webconfig.json`](webconfig.json)
+   and hardcoded again in [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) (used for the
+   backend-outage fallback), and `POST /update` has no authentication. Anyone who can reach
+   the server (or that URL) can write readings. Move the URL to an environment variable and
+   add a shared-secret header on `/update`.
 2. ~~**Nothing restarts the server.**~~ **Fixed** — `scripts/install-service.ps1` installs the
    backend as a Windows service via NSSM (restart-on-failure, rotated logs in `logs/`). Run it
    from an elevated prompt. Autoreload is now off unless you set `HYDRO_DEV=1`, so a
@@ -119,14 +114,14 @@ Honest status, roughly in priority order:
    coefficients were not captured against certified reference solutions, so NTU and ppm are
    currently indicative rather than trustworthy. Recalibrate against known standards and
    record when/with what.
-5. ~~**Long history depends entirely on Google Sheets.**~~ **Fixed** — every reading is now
-   also written to a local SQLite database (`history.db`, see `storage.py`), so any time range
-   is answered straight off disk with no network. Google Sheets stays as the shareable copy
-   and still fills in any period the local database doesn't cover.
-6. **Wi-Fi credentials and the IFTTT key are hardcoded** in
-   [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino), so sharing the sketch means
-   sharing secrets, and moving networks means a reflash. A WiFiManager-style captive portal
-   would fix both.
+5. **Long history depends entirely on Google Sheets.** `/history` answers short windows from
+   the in-memory buffer, but anything the buffer doesn't cover falls back to a network round
+   trip to Google Sheets — no local database backs reading history. Deliberate: SQLite is
+   reserved for push subscriptions and daily water usage only.
+6. ~~**Wi-Fi credentials are hardcoded, so moving networks means a reflash.**~~ **Fixed** —
+   the dashboard's WiFi panel provisions the board over USB via the Web Serial API; credentials
+   persist to NVS flash and survive reflashing. `defaultSsid`/`defaultPassword` in the sketch
+   are now only the fallback for a never-provisioned board.
 7. ~~**Docs drift.**~~ **Fixed** — `CLAUDE.md` no longer describes the deleted `server.js`
    relay or the `/classic` dashboard, and the dead `NoStoreStaticFiles` class documenting the
    removed `web-react/` bundle is gone from `main.py`.
@@ -176,11 +171,6 @@ python main.py
 เมื่อเข้าใช้งานครั้งแรกจะมี **ทัวร์แนะนำการใช้งาน** พาดูแถบเมนู, ตารางพารามิเตอร์, การ์ด Quick View
 และแท็บปรับเทียบเซนเซอร์ และสามารถเปิดดูซ้ำได้จากปุ่มช่วยเหลือในแถบเมนู
 
-นอกจากนี้ยังมีหน้าเบา ๆ แยกต่างหากที่ **`/calibrate`** สำหรับปรับเทียบเซนเซอร์ในไฟล์ HTML เดียวจบ
-เหมาะสำหรับปรับเทียบจากมือถือหรือเครื่องที่ไม่จำเป็นต้องเปิดแดชบอร์ดเต็มรูปแบบ
-
-![หน้าปรับเทียบเซนเซอร์](docs/calibrate.png?v=49b675d)
-
 ### หลักการทำงานโดยสรุป
 
 ```
@@ -203,10 +193,12 @@ python main.py
 
 **หากติดต่อเซิร์ฟเวอร์ไม่ได้** ข้อมูลจะไม่สูญหายไปเฉย ๆ:
 
-- สถานีจะเปลี่ยนไปส่งค่าไปยัง **IFTTT Maker Webhooks** แทน (นาทีละครั้ง เพื่อให้อยู่ในโควตาของแพ็กเกจฟรี)
-  ซึ่งจะพักข้อมูลไว้ในแท็บ `IFTTT_Buffer` ของสเปรดชีตเดียวกัน แล้วสคริปต์ตามเวลา (`migrateIftttBuffer`)
-  จะย้ายแถวเหล่านั้นกลับเข้าชีตหลักตามลำดับปกติ ทั้งหมดนี้ต้องตั้งค่าด้วยมือครั้งเดียวในหน้าเว็บของ IFTTT
-  และ Apps Script — ดูคำอธิบายด้านบนของไฟล์ [`google_apps_script.gs`](google_apps_script.gs)
+- สถานีจะเก็บค่าที่อ่านได้ไว้ในบัฟเฟอร์สูงสุด 30 ค่า แล้วนาทีละครั้งจะส่งแต่ละค่าตรงไปยัง
+  Google Apps Script Web App ตัวเดียวกับที่เซิร์ฟเวอร์ใช้ส่งข้อมูลเข้าชีต — ไม่ต้องพึ่งบริการอื่น
+  ไม่ต้องมีบัญชีแยก บัฟเฟอร์นี้รองรับช่วงที่ติดต่อเซิร์ฟเวอร์ไม่ได้นาน ~60 วินาทีได้เต็มจำนวน
+  หากนานกว่านั้นจะเหลือแค่ 30 ค่าล่าสุด ดูคำอธิบายในไฟล์
+  [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) และ
+  [`google_apps_script.gs`](google_apps_script.gs)
 - ฝั่งเซิร์ฟเวอร์ หากบัฟเฟอร์ข้อมูลสดในหน่วยความจำมีช่วงที่ขาดหาย (เช่น เซิร์ฟเวอร์รีสตาร์ทกลางคัน)
   `/history` จะดึงข้อมูลช่วงนั้นจาก Google Sheets แทน แทนที่จะแสดงกราฟที่มีช่องว่าง
 
@@ -214,7 +206,8 @@ python main.py
 
 สถานะตามความเป็นจริง เรียงตามความสำคัญคร่าว ๆ:
 
-1. **URL ของ Google Apps Script ถูกคอมมิตไว้ในโค้ด** ([`webconfig.json`](webconfig.json)) และ
+1. **URL ของ Google Apps Script ถูกคอมมิตไว้ในโค้ด** ([`webconfig.json`](webconfig.json))
+   และฝังซ้ำอีกครั้งใน [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) (ใช้ตอนเซิร์ฟเวอร์ล่ม) และ
    `POST /update` ไม่มีการยืนยันตัวตน ใครที่เข้าถึงเซิร์ฟเวอร์หรือ URL นั้นได้ก็เขียนข้อมูลได้
    ควรย้าย URL ไปไว้ใน environment variable และเพิ่ม shared secret ที่ `/update`
 2. ~~**ไม่มีตัวคอยรีสตาร์ทเซิร์ฟเวอร์**~~ **แก้ไขแล้ว** — สคริปต์ `scripts/install-service.ps1` ติดตั้งเซิร์ฟเวอร์
@@ -225,14 +218,16 @@ python main.py
    ยังไม่มีเทสต์ครอบคลุม และสัญญาข้อมูล JSON ระหว่าง ESP32 กับเซิร์ฟเวอร์ตรวจสอบด้วยมือล้วน ๆ
 4. **ยังยืนยันที่มาของค่าปรับเทียบไม่ได้** ไฟล์ `calibration.json` ไม่ถูกเก็บใน git และค่าที่ใช้อยู่ไม่ได้เทียบกับ
    สารละลายมาตรฐานที่รับรองแล้ว ค่า NTU และ ppm จึงยังเป็นค่าบ่งชี้ ไม่ใช่ค่าที่เชื่อถือได้เต็มที่
-5. ~~**ประวัติย้อนหลังพึ่ง Google Sheets ทั้งหมด**~~ **แก้ไขแล้ว** — ทุกค่าที่อ่านได้จะถูกบันทึกลงฐานข้อมูล SQLite
-   ในเครื่องด้วย (`history.db` ดู `storage.py`) ทุกช่วงเวลาจึงอ่านจากดิสก์ได้ทันทีโดยไม่ต้องใช้เครือข่าย
-   ส่วน Google Sheets ยังคงเป็นสำเนาสำหรับแชร์ และใช้เติมช่วงข้อมูลที่ฐานข้อมูลในเครื่องยังไม่มี
-6. **รหัส Wi-Fi และคีย์ IFTTT ฝังอยู่ในเฟิร์มแวร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino))
-   การแชร์โค้ดจึงเท่ากับแชร์รหัส และการย้ายเครือข่ายต้องอัปโหลดเฟิร์มแวร์ใหม่ ควรใช้ WiFiManager แบบ captive portal
+5. **ประวัติย้อนหลังพึ่ง Google Sheets ทั้งหมด** `/history` ตอบช่วงเวลาสั้น ๆ จากบัฟเฟอร์ในหน่วยความจำ
+   แต่ช่วงที่บัฟเฟอร์ไม่ครอบคลุมต้องย้อนไปขอ Google Sheets ผ่านเครือข่ายทุกครั้ง — ไม่มีฐานข้อมูลในเครื่อง
+   รองรับประวัติการอ่านค่า (ตั้งใจให้ SQLite เก็บเฉพาะการสมัครรับ push notification และปริมาณการใช้น้ำรายวันเท่านั้น)
+6. ~~**รหัส Wi-Fi ฝังอยู่ในเฟิร์มแวร์ ย้ายเครือข่ายต้องอัปโหลดเฟิร์มแวร์ใหม่**~~ **แก้ไขแล้ว** —
+   แผงตั้งค่า WiFi บนแดชบอร์ดตั้งค่าให้บอร์ดผ่าน USB ด้วย Web Serial API รหัสผ่านจะถูกบันทึกลง NVS flash
+   และคงอยู่แม้อัปโหลดเฟิร์มแวร์ใหม่ ค่า `defaultSsid`/`defaultPassword` ในสเก็ตช์เหลือไว้เป็นค่าสำรอง
+   สำหรับบอร์ดที่ยังไม่เคยตั้งค่าเท่านั้น
 7. ~~**เอกสารบางส่วนล้าสมัย**~~ **แก้ไขแล้ว** — `CLAUDE.md` ไม่กล่าวถึง `server.js` และหน้า `/classic`
    ที่ถูกลบไปแล้วอีกต่อไป และคลาส `NoStoreStaticFiles` ที่ไม่ได้ใช้งาน (อธิบายถึง `web-react/` ที่ถูกลบไปแล้ว)
    ก็ถูกนำออกจาก `main.py` ด้วย
 
 รายละเอียดเพิ่มเติม — การเดินสาย, สูตรการปรับเทียบ, รูปแบบข้อมูลของ Google Sheets, สถาปัตยกรรมของฝั่งหน้าเว็บ —
-อยู่ใน [`CLAUDE.md`](CLAUDE.md) และ [`AQUA_MONITOR_PLAN.md`](AQUA_MONITOR_PLAN.md)
+อยู่ใน [`CLAUDE.md`](CLAUDE.md)

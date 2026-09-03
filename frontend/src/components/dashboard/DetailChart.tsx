@@ -20,8 +20,13 @@ import {
 } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useT } from '@/lib/i18n'
+import type { ParamKey } from '@/lib/paramMeta'
 import { RANGE_BANDS, STATUS_COLOR, type RangeParam } from '@/lib/thresholds'
 import type { HistoryWindow } from '@/lib/types'
+
+function isRangeParam(param: ParamKey): param is RangeParam {
+  return param in RANGE_BANDS
+}
 
 const LONG_WINDOWS: HistoryWindow[] = ['3h', '12h', '24h']
 /** Cap on visible point labels — beyond this we thin to every Nth point (plus first/last). */
@@ -41,7 +46,9 @@ interface ChartPoint {
 }
 
 interface DetailChartProps {
-  param: RangeParam
+  /** Params with no RANGE_BANDS entry (e.g. flow) render with no threshold lines/Y-domain
+   * clamping, same code path as `scorable={false}` for an uncalibrated param. */
+  param: ParamKey
   rows: ChartPoint[]
   unit: string
   precision: number
@@ -62,7 +69,7 @@ export function DetailChart({
   isError = false,
 }: DetailChartProps) {
   const { t } = useT()
-  const band = RANGE_BANDS[param]
+  const band = isRangeParam(param) ? RANGE_BANDS[param] : undefined
 
   const chartData = useMemo(
     () => rows.map((r) => ({ ...r, label: formatTime(r.timestamp, window) })),
@@ -92,7 +99,7 @@ export function DetailChart({
    * line and hides the variation the chart exists to show.
    */
   const yDomain = useMemo<[number, number] | undefined>(() => {
-    if (!scorable) return undefined
+    if (!scorable || !band) return undefined
     const values = chartData
       .map((r) => r.value)
       .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
@@ -155,7 +162,7 @@ export function DetailChart({
                 return typeof ts === 'number' ? new Date(ts).toLocaleString() : ''
               }}
             />
-            {scorable && band.goodMax != null && (
+            {scorable && band && band.goodMax != null && (
               <ReferenceLine
                 y={band.goodMax}
                 stroke={STATUS_COLOR.warn}
@@ -168,7 +175,7 @@ export function DetailChart({
                 }}
               />
             )}
-            {scorable && band.dangerMax != null && (
+            {scorable && band && band.dangerMax != null && (
               <ReferenceLine
                 y={band.dangerMax}
                 stroke={STATUS_COLOR.danger}
@@ -181,7 +188,7 @@ export function DetailChart({
                 }}
               />
             )}
-            {scorable && band.goodMin != null && (
+            {scorable && band && band.goodMin != null && (
               <ReferenceLine
                 y={band.goodMin}
                 stroke={STATUS_COLOR.warn}
@@ -194,7 +201,7 @@ export function DetailChart({
                 }}
               />
             )}
-            {scorable && band.dangerMin != null && (
+            {scorable && band && band.dangerMin != null && (
               <ReferenceLine
                 y={band.dangerMin}
                 stroke={STATUS_COLOR.danger}

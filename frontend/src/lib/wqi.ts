@@ -1,7 +1,7 @@
 /**
  * Frontend-derived Water Quality Index (WQI).
  *
- * Per AQUA_MONITOR_PLAN.md: "WQI: frontend-derived from live params (no backend WQI)".
+ * Frontend-derived from live params — deliberately no backend WQI.
  * This is a simplified weighted sub-index model (not the full NSF-WQI with 9 parameters,
  * since we only have temperature/turbidity/tds/ec sensors — pH and DO are not yet installed).
  *

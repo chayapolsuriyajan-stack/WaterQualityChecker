@@ -13,25 +13,16 @@
 // beneath the insert point; doGet only ever looks at the top of the sheet, so that legacy
 // tail is invisible to it and does not need migrating.
 //
-// -- IFTTT fallback (backend-outage recovery path) ---------------------------------------
-// firmware/esp32/esp32.ino POSTs straight to this Web App on every reading; if the backend PC
-// (main.py) can't be reached, the firmware instead POSTs the same reading to an IFTTT Maker
-// Webhooks event so it isn't silently dropped. To make that path work, set up (one-time,
-// manual, in the IFTTT and Apps Script UIs -- none of this is configurable from code):
-//   1. An IFTTT applet: trigger = Webhooks "Receive a web request", event name = whatever
-//      the firmware's `iftttEventName` constant is set to (they must match exactly).
-//   2. That applet's action = Google Sheets "Add row to spreadsheet", targeting a separate
-//      tab in this same spreadsheet named IFTTT_Buffer, with columns
-//      `Timestamp | value1 | value2 | value3` (IFTTT's own fixed Maker Webhooks schema --
-//      value1=temperature, value2=turbidity raw ADC, value3=TDS voltage, matching the order
-//      the firmware sends). IFTTT's Sheets action always appends at the bottom, which is why
-//      it needs its own tab instead of writing straight into the main sheet (which is
-//      newest-first via insertRowBefore -- see doPost below).
-//   3. A time-driven trigger on migrateIftttBuffer() (Apps Script editor -> Triggers ->
-//      Add Trigger -> time-driven -> every 5-10 minutes), which folds any buffered rows into
-//      the main sheet at row 2, in the same shape doPost produces, then clears them from
-//      IFTTT_Buffer. Until that trigger is configured, buffered rows just sit in IFTTT_Buffer
-//      unread -- harmless, but they won't reach the dashboard.
+// -- Backend-outage fallback path ---------------------------------------------------------
+// main.py's own Sheets relay (webconfig.json's googleSheetsWebhookUrl) POSTs here on every
+// reading normally. When the backend PC can't be reached, firmware/esp32/esp32.ino instead
+// buffers readings on-device and POSTs each one straight to THIS SAME Web App once it's able
+// to (see esp32.ino's "Google Sheets fallback" section) -- same JSON shape doPost already
+// accepts below, so no separate buffer tab or migration trigger is needed: a fallback reading
+// lands in the sheet exactly like a normal one, just later and via a different sender. One
+// difference worth knowing: the firmware doesn't have the backend's calibration.json, so a
+// fallback reading's `tds` field is the sensor's raw voltage, not calibrated ppm (matching
+// how `turbidity` is already always raw ADC regardless of source -- see below).
 function doPost(e) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var data = JSON.parse(e.postData.contents);
@@ -41,58 +32,31 @@ function doPost(e) {
     new Date(),
     data.temperature !== undefined ? data.temperature : "",
     data.turbidity !== undefined ? data.turbidity : "",
-    data.tds !== undefined ? data.tds : ""
+    data.tds !== undefined ? data.tds : "",
+    data.flowRate !== undefined ? data.flowRate : ""
   );
 
   return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-// Shared "insert one reading at row 2" logic, used by both doPost (live readings posted
-// directly by the firmware) and migrateIftttBuffer (readings recovered from the IFTTT
-// fallback buffer after a backend outage) so both paths produce identically-shaped rows on
-// the main sheet. Creates the header row on first use, same as doPost always did.
-function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds) {
+// Shared "insert one reading at row 2" logic, used by doPost for both a normal live reading
+// (relayed by main.py) and a recovered one (posted directly by esp32.ino's fallback once the
+// backend's been unreachable) -- both go through the exact same code path here, so there's
+// nothing else to migrate or reconcile later. Creates the header row on first use.
+//
+// flowRate is instantaneous L/min (not the daily cumulative usage total -- that's a separate
+// daily-bucketed aggregate in storage.py's daily_usage table, a different shape/cadence that
+// doesn't fit this per-reading log; see CLAUDE.md's Flow sensor section). Older rows written
+// before this column existed simply have a blank cell here -- doGet treats a blank the same
+// as any other missing value (see below).
+function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds, flowRate) {
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)"]);
+    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)", "Flow Rate (L/min)"]);
   }
 
   sheet.insertRowBefore(2);
-  sheet.getRange(2, 1, 1, 4).setValues([[timestamp, temperature, turbidity, tds]]);
-}
-
-// Time-driven (manually configured, see the setup comment at the top of this file): folds
-// any rows IFTTT has buffered into IFTTT_Buffer (while the backend PC was unreachable) into
-// the main sheet, using the same insert-at-row-2 logic doPost uses, then clears the buffer
-// tab. Safe to run on a schedule whether or not IFTTT is actually configured yet -- if the
-// IFTTT_Buffer tab doesn't exist, this just logs and returns.
-function migrateIftttBuffer() {
-  var buffer = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("IFTTT_Buffer");
-  if (!buffer) {
-    Logger.log("migrateIftttBuffer: no IFTTT_Buffer tab found, skipping (IFTTT not set up yet?).");
-    return;
-  }
-
-  var lastRow = buffer.getLastRow();
-  if (lastRow < 2) {
-    return; // header only (or empty) -- nothing buffered
-  }
-
-  var numRows = lastRow - 1;
-  var values = buffer.getRange(2, 1, numRows, 4).getValues();
-  var mainSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-
-  for (var i = 0; i < values.length; i++) {
-    var row = values[i];
-    // value1=temperature, value2=turbidity (raw ADC), value3=tds -- same order the firmware
-    // sends to the IFTTT Maker Webhooks event.
-    insertReadingAtTop_(mainSheet, row[0], row[1], row[2], row[3]);
-  }
-
-  // Buffer is small (just readings accumulated during a backend outage until this trigger
-  // next runs), so clearing it wholesale is fine -- unlike the main sheet, there's no
-  // history/downsampling contract riding on IFTTT_Buffer's row positions.
-  buffer.deleteRows(2, numRows);
+  sheet.getRange(2, 1, 1, 5).setValues([[timestamp, temperature, turbidity, tds, flowRate]]);
 }
 
 // Serves recent rows back as JSON so the dashboard's history graph can read a chosen window
@@ -126,7 +90,9 @@ function doGet(e) {
   // Leading slice: row 2 is the newest reading, row (2 + numRows - 1) is the oldest one
   // still inside our read budget. This is correct regardless of how much older, previously
   // bottom-appended data sits further down the sheet -- we simply never read that far.
-  var values = sheet.getRange(2, 1, numRows, 4).getValues();
+  // 5 columns even though older rows (written before the Flow Rate column existed) only have
+  // 4 -- getRange on a short row just returns "" for the missing cell, handled below.
+  var values = sheet.getRange(2, 1, numRows, 5).getValues();
   values.reverse(); // newest-first -> chronological ascending (oldest first)
 
   // Keep only rows inside the window.
@@ -135,7 +101,16 @@ function doGet(e) {
   for (var i = 0; i < values.length; i++) {
     var ts = (values[i][0] && values[i][0].getTime) ? values[i][0].getTime() : null;
     if (ts !== null && ts >= cutoffMs) {
-      filtered.push({ timestamp: ts, temperature: values[i][1], turbidity: values[i][2], tds: values[i][3] });
+      // "" (blank cell, either an unset flowRate or a pre-Flow-Rate-column row) -> null,
+      // matching how the backend represents "no flow reading" everywhere else.
+      var flowRate = values[i][4];
+      filtered.push({
+        timestamp: ts,
+        temperature: values[i][1],
+        turbidity: values[i][2],
+        tds: values[i][3],
+        flowRate: flowRate === "" ? null : flowRate,
+      });
     }
   }
 
