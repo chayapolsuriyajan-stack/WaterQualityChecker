@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
+import { useSensorData } from '@/lib/SensorProvider'
+import { StationSwitcher, stationLabel } from '@/components/shell/StationSwitcher'
 import type { MessageKey } from '@/lib/strings'
 import type { HistoryRow, HistoryWindow } from '@/lib/types'
 import { HistoryTable } from './HistoryTable'
@@ -34,6 +36,7 @@ function csvEscape(value: string | number | null): string {
 function buildCsv(rows: HistoryRow[]): string {
   const header = [
     'Timestamp (ISO)',
+    'Station',
     'Temperature (C)',
     'Turbidity',
     'Turbidity Unit',
@@ -47,6 +50,7 @@ function buildCsv(rows: HistoryRow[]): string {
     lines.push(
       [
         new Date(row.timestamp).toISOString(),
+        row.station,
         row.temperature,
         turbidity,
         turbidityUnit,
@@ -60,13 +64,13 @@ function buildCsv(rows: HistoryRow[]): string {
   return lines.join('\n')
 }
 
-function downloadCsv(rows: HistoryRow[], window: HistoryWindow) {
+function downloadCsv(rows: HistoryRow[], window: HistoryWindow, station: string) {
   const csv = buildCsv(rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `aqua-monitor-history-${window}-${Date.now()}.csv`
+  a.download = `aqua-monitor-history-${station}-${window}-${Date.now()}.csv`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
@@ -75,11 +79,12 @@ function downloadCsv(rows: HistoryRow[], window: HistoryWindow) {
 
 export function HistoryView() {
   const { t } = useT()
+  const { selectedStation } = useSensorData()
   const [historyWindow, setHistoryWindow] = useState<HistoryWindow>('15m')
 
   const { data, isLoading, isFetching, isError } = useQuery({
-    queryKey: ['history-table', historyWindow],
-    queryFn: () => getHistory(historyWindow),
+    queryKey: ['history-table', selectedStation, historyWindow],
+    queryFn: () => getHistory(historyWindow, selectedStation),
     refetchInterval: LIVE_WINDOWS.includes(historyWindow) ? REFETCH_MS : false,
   })
 
@@ -87,9 +92,12 @@ export function HistoryView() {
 
   return (
     <div className="flex flex-col gap-4">
+      <StationSwitcher />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">{t('history.title')}</h1>
+          <h1 className="text-xl font-semibold text-foreground">
+            {t('history.title')} · {stationLabel(selectedStation, t)}
+          </h1>
           <p className="text-sm text-muted-foreground">
             {isLoading
               ? t('history.loading')
@@ -129,7 +137,7 @@ export function HistoryView() {
             variant="outline"
             className="min-h-11"
             disabled={rows.length === 0}
-            onClick={() => downloadCsv(rows, historyWindow)}
+            onClick={() => downloadCsv(rows, historyWindow, selectedStation)}
           >
             <Download className="size-4" />
             {t('history.exportCsv')}

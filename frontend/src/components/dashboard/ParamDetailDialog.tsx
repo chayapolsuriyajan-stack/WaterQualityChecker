@@ -54,6 +54,8 @@ interface ParamDetailDialogProps {
   /** Shared history window -- see DashboardView. */
   window: HistoryWindow
   onWindowChange: (window: HistoryWindow) => void
+  /** Selected station -- see DashboardView/StationSwitcher. */
+  station: string
 }
 
 export function ParamDetailDialog({
@@ -64,6 +66,7 @@ export function ParamDetailDialog({
   scorable = true,
   window,
   onWindowChange,
+  station,
 }: ParamDetailDialogProps) {
   const { t } = useT()
 
@@ -71,8 +74,8 @@ export function ParamDetailDialog({
   const unit = liveUnit ?? meta?.unit ?? ''
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['history', window],
-    queryFn: () => getHistory(window),
+    queryKey: ['history', station, window],
+    queryFn: () => getHistory(window, station),
     enabled: param !== null,
   })
 

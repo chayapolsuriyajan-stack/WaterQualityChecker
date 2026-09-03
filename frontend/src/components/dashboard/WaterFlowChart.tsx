@@ -31,16 +31,18 @@ interface WaterFlowChartProps {
   /** Shared with every other graph on the dashboard -- see DashboardView. */
   window: HistoryWindow
   onWindowChange: (window: HistoryWindow) => void
+  /** Selected station -- see DashboardView/StationSwitcher. */
+  station: string
 }
 
-export function WaterFlowChart({ window, onWindowChange }: WaterFlowChartProps) {
+export function WaterFlowChart({ window, onWindowChange, station }: WaterFlowChartProps) {
   const { t } = useT()
   const { visible } = useDashboardPrefs()
   const isShort = SHORT_WINDOWS.includes(window)
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['history', window],
-    queryFn: () => getHistory(window),
+    queryKey: ['history', station, window],
+    queryFn: () => getHistory(window, station),
     refetchInterval: isShort ? REFRESH_INTERVAL_MS : false,
     enabled: visible.flow,
   })

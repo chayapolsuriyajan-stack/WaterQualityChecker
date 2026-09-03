@@ -28,6 +28,7 @@ import * as webSerial from '@/lib/webSerial'
 
 const STATUS_QUERY_KEY = ['wifi-status'] as const
 const BACKEND_QUERY_KEY = ['wifi-backend'] as const
+const STATION_QUERY_KEY = ['wifi-station'] as const
 
 function signalIcon(rssi: number) {
   if (rssi >= -50) return SignalHigh
@@ -46,6 +47,7 @@ export function WifiPanel() {
   const [backendHost, setBackendHost] = useState('')
   const [backendApiKey, setBackendApiKey] = useState('')
   const [backendUseHttps, setBackendUseHttps] = useState(true)
+  const [stationName, setStationName] = useState('')
 
   const supported = webSerial.isSupported()
 
@@ -55,6 +57,7 @@ export function WifiPanel() {
       toast.error(t('wifi.deviceDisconnected'))
       void queryClient.resetQueries({ queryKey: STATUS_QUERY_KEY })
       void queryClient.resetQueries({ queryKey: BACKEND_QUERY_KEY })
+      void queryClient.resetQueries({ queryKey: STATION_QUERY_KEY })
     })
   }, [queryClient, t])
 
@@ -66,6 +69,7 @@ export function WifiPanel() {
       setConnected(true)
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
       void queryClient.invalidateQueries({ queryKey: BACKEND_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: STATION_QUERY_KEY })
     } else {
       toast.error(t('wifi.deviceConnectFailed'), { description: result.error })
     }
@@ -86,6 +90,13 @@ export function WifiPanel() {
   const { data: backendStatus } = useQuery({
     queryKey: BACKEND_QUERY_KEY,
     queryFn: () => webSerial.getBackendStatus(),
+    enabled: connected,
+    refetchInterval: connected ? 10_000 : false,
+  })
+
+  const { data: stationStatus } = useQuery({
+    queryKey: STATION_QUERY_KEY,
+    queryFn: () => webSerial.getStationStatus(),
     enabled: connected,
     refetchInterval: connected ? 10_000 : false,
   })
@@ -124,6 +135,20 @@ export function WifiPanel() {
       }
     },
     onError: () => toast.error(t('wifi.backendSaveFailed')),
+  })
+
+  const stationMutation = useMutation({
+    mutationFn: (name: string) => (name.trim().length === 0 ? webSerial.clearStationName() : webSerial.setStationName(name.trim())),
+    onSuccess: (result) => {
+      if (result.ok) {
+        toast.success(t('wifi.stationSaveSuccess'))
+        setStationName('')
+        void queryClient.invalidateQueries({ queryKey: STATION_QUERY_KEY })
+      } else {
+        toast.error(t('wifi.stationSaveFailed'), { description: result.error })
+      }
+    },
+    onError: () => toast.error(t('wifi.stationSaveFailed')),
   })
 
   const testMutation = useMutation({
@@ -374,6 +399,57 @@ export function WifiPanel() {
             >
               {testMutation.isPending ? t('wifi.backendTesting') : t('wifi.backendTest')}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('wifi.stationTitle')}</CardTitle>
+          <CardDescription>{t('wifi.stationDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {stationStatus?.ok && (
+            <div className="rounded-md bg-secondary/40 px-3 py-2 text-sm">
+              {stationStatus.name.length > 0 ? (
+                <span className="text-foreground">
+                  {t('wifi.stationCurrentSet', { name: stationStatus.name })}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{t('wifi.stationCurrentUnset')}</span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="wifi-station-name">{t('wifi.stationLabel')}</Label>
+            <Input
+              id="wifi-station-name"
+              value={stationName}
+              onChange={(e) => setStationName(e.target.value)}
+              placeholder={t('wifi.stationPlaceholder')}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              disabled={stationMutation.isPending || stationName.trim().length === 0}
+              onClick={() => stationMutation.mutate(stationName)}
+            >
+              {stationMutation.isPending ? t('wifi.stationSaving') : t('wifi.stationSave')}
+            </Button>
+
+            {stationStatus?.ok && stationStatus.name.length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={stationMutation.isPending}
+                onClick={() => stationMutation.mutate('')}
+              >
+                {t('wifi.stationClear')}
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>

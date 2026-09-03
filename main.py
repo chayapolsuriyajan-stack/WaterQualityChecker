@@ -170,67 +170,106 @@ async def start_discovery_listener():
 ui_clients = set()
 ui_clients_lock = asyncio.Lock()
 
-# Running min/max per parameter, tracked since server start (reset on restart).
-# Living on the backend (not per-browser) so every connected dashboard shows the
-# same range and it survives page refreshes. Mutated only from the event loop in
-# update_sensor, so no lock is needed.
+# --- Multi-station identity ---------------------------------------------------
+# Each ESP32 board is a "station", identified by a human-readable name it carries in every
+# /update POST (set via USB provisioning -- see the STATION_* serial commands in esp32.ino
+# and CLAUDE.md's WiFi provisioning section). A board that never had a name set (old
+# firmware, or unprovisioned) omits the field entirely, which normalizes to DEFAULT_STATION
+# below -- so a single-board deployment behaves exactly as before with zero configuration.
+DEFAULT_STATION = "default"
+MAX_STATION_NAME_LEN = 40
+
+
+def _normalize_station(raw) -> str:
+    if not isinstance(raw, str):
+        return DEFAULT_STATION
+    name = raw.strip()
+    if not name:
+        return DEFAULT_STATION
+    return name[:MAX_STATION_NAME_LEN]
+
+
+# Running min/max per parameter, tracked since server start (reset on restart), keyed by
+# station so two boards' ranges never blend into one. Living on the backend (not
+# per-browser) so every connected dashboard shows the same range and it survives page
+# refreshes. Mutated only from the event loop in update_sensor, so no lock is needed.
 STAT_KEYS = ("temperature", "turbidity", "tds", "flowRate")
-sensor_stats: dict = {}
+sensor_stats: dict[str, dict] = {}
 
-# Edge-detection state for push notifications: last known severity per param, so a push
-# fires only on the good->warn/danger transition (see _check_breaches_and_dispatch below).
-last_severity: dict = {}
+# Edge-detection state for push notifications: last known severity per (station, param), so
+# a push fires only on that station's good->warn/danger transition (see
+# _check_breaches_and_dispatch below) without one station's recovery masking another's.
+last_severity: dict[str, dict] = {}
 
-# In-memory rolling history of recent readings so the dashboard's short-window graph works
-# live off the sensor stream -- no Google Sheets round-trip. Holds the same fields the sheet
-# logs (raw ADC turbidity). Resets on restart; long windows still read from the sheet.
+# In-memory rolling history of recent readings per station so the dashboard's short-window
+# graph works live off the sensor stream -- no Google Sheets round-trip. Holds the same
+# fields the sheet logs (raw ADC turbidity). Resets on restart; long windows still read from
+# the sheet. Created lazily per station on first reading (see _station_history).
 HISTORY_BUFFER_MAX = 2000  # ~66 min at a 2s cadence; covers the 5m/15m/1h live windows
-history_buffer = deque(maxlen=HISTORY_BUFFER_MAX)
+history_buffer: dict[str, deque] = {}
 
-# Today's cumulative water usage. Kept in-memory as the hot-path value (so the quick-view
-# doesn't need a DB round-trip on every 2s reading) and persisted to storage.daily_usage
-# fire-and-forget for durability + the Water Usage chart. Reseeded from storage at startup
-# so a restart mid-day doesn't visibly reset usage to 0. A date rollover just starts a fresh
-# in-memory total at 0 -- same "new day, new row" reasoning as the storage.py table itself.
+
+def _station_history(station: str) -> deque:
+    buf = history_buffer.get(station)
+    if buf is None:
+        buf = deque(maxlen=HISTORY_BUFFER_MAX)
+        history_buffer[station] = buf
+    return buf
+
+
+# Today's cumulative water usage, per station. Kept in-memory as the hot-path value (so the
+# quick-view doesn't need a DB round-trip on every 2s reading) and persisted to
+# storage.daily_usage fire-and-forget for durability + the Water Usage chart. Seeded from
+# storage lazily, the first time each station is seen after a date rollover (including at
+# startup), so a restart mid-day doesn't visibly reset usage to 0 -- same "new day, new row"
+# reasoning as the storage.py table itself.
 def _local_date() -> str:
     return datetime.date.today().isoformat()
 
 _daily_usage_date = _local_date()
-_daily_usage_total = storage.get_daily_usage(_daily_usage_date) if storage.enabled() else 0.0
+_daily_usage_totals: dict[str, float] = {}
+_daily_usage_seeded: set[str] = set()
 
 
-def _add_daily_usage(liters: float) -> float:
-    """Adds `liters` to today's running total (rolling the in-memory total over to a fresh
-    day first if the date has changed since the last reading), persists async, and returns
-    the new total."""
-    global _daily_usage_date, _daily_usage_total
+def _add_daily_usage(station: str, liters: float) -> float:
+    """Adds `liters` to `station`'s running total for today (rolling every station's
+    in-memory total over to a fresh day first if the date has changed since the last
+    reading), persists async, and returns the new total."""
+    global _daily_usage_date
     today = _local_date()
     if today != _daily_usage_date:
         _daily_usage_date = today
-        _daily_usage_total = 0.0
-    _daily_usage_total += liters
+        _daily_usage_totals.clear()
+        _daily_usage_seeded.clear()
+    if station not in _daily_usage_seeded:
+        _daily_usage_totals[station] = storage.get_daily_usage(today, station) if storage.enabled() else 0.0
+        _daily_usage_seeded.add(station)
+    total = _daily_usage_totals.get(station, 0.0) + liters
+    _daily_usage_totals[station] = total
     if storage.enabled():
-        asyncio.create_task(asyncio.to_thread(storage.add_daily_usage, today, liters))
-    return _daily_usage_total
+        asyncio.create_task(asyncio.to_thread(storage.add_daily_usage, today, station, liters))
+    return total
 
 
-def _update_stats(payload: dict) -> None:
+def _update_stats(station: str, payload: dict) -> None:
+    stats = sensor_stats.setdefault(station, {})
     for key in STAT_KEYS:
         if key not in payload:
             continue
         value = payload[key]
-        current = sensor_stats.get(key)
+        current = stats.get(key)
         if current is None:
-            sensor_stats[key] = {"min": value, "max": value}
+            stats[key] = {"min": value, "max": value}
         else:
             current["min"] = min(current["min"], value)
             current["max"] = max(current["max"], value)
 
 
-def _stats_snapshot() -> dict:
+def _stats_snapshot(station: str) -> dict:
     # Deep-ish copy so a snapshot handed to a coroutine/broadcast can't be mutated
     # underneath it by a later reading.
-    return {key: dict(stat) for key, stat in sensor_stats.items()}
+    stats = sensor_stats.get(station, {})
+    return {key: dict(stat) for key, stat in stats.items()}
 
 
 async def broadcast_sensor_update(payload: dict) -> None:
@@ -300,36 +339,105 @@ def _default_calibration() -> dict:
     }
 
 
-def _load_calibration() -> dict:
-    calib = _default_calibration()
+def _initial_calibration_mode(calib: dict) -> bool:
+    # Defaults ON when a real calibration already exists, so a calibrated station keeps
+    # applying after a restart; otherwise OFF.
+    return bool(
+        calib["turbidity"]["coefficients"]
+        or (calib["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
+        or (calib["flow"]["coefficients"] or {}).get("k", 450.0) != 450.0
+    )
+
+
+def _load_calibration() -> dict[str, dict]:
+    """Returns {station: calibration_dict}. calibration.json used to be a single flat
+    {turbidity:{...}, tds:{...}, flow:{...}} for one implicit station; this migrates that
+    old shape (detected by the top-level keys being sensor names directly) by wrapping it
+    once under DEFAULT_STATION and writing a one-time backup, since this file is git-ignored
+    production data that must never be silently discarded."""
     try:
         with open(CALIBRATION_PATH, encoding="utf-8") as f:
             stored = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return calib
-    for sensor in CALIBRATED_SENSORS:
-        if isinstance(stored.get(sensor), dict):
-            calib[sensor].update(stored[sensor])
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+
+    if any(key in stored for key in CALIBRATED_SENSORS):
+        backup_path = CALIBRATION_PATH + ".bak-premigration"
+        if not os.path.exists(backup_path):
+            try:
+                with open(backup_path, "w", encoding="utf-8") as bf:
+                    json.dump(stored, bf, indent=2)
+            except OSError as exc:
+                print(f"⚠️ Failed to write calibration pre-migration backup: {exc}")
+        stored = {DEFAULT_STATION: stored}
+        # Persist the migrated shape immediately, not just in memory -- otherwise every
+        # restart re-detects the (untouched) old-shape file on disk and re-derives the same
+        # migration from scratch, which is harmless but pointless once we already know the
+        # answer.
+        try:
+            with open(CALIBRATION_PATH, "w", encoding="utf-8") as f:
+                json.dump(stored, f, indent=2)
+            print(f"📦 Migrated {CALIBRATION_PATH} to multi-station shape (backup: {backup_path})")
+        except OSError as exc:
+            print(f"⚠️ Failed to write migrated {CALIBRATION_PATH}: {exc}")
+
+    result: dict[str, dict] = {}
+    for station, raw in stored.items():
+        if not isinstance(raw, dict):
+            continue
+        calib = _default_calibration()
+        for sensor in CALIBRATED_SENSORS:
+            if isinstance(raw.get(sensor), dict):
+                calib[sensor].update(raw[sensor])
+        result[station] = calib
+    return result
+
+
+# {station: {turbidity: {...}, tds: {...}, flow: {...}}}. A station not yet in this dict
+# (never captured/loaded) is created lazily on first access via _station_calibration.
+calibration: dict[str, dict] = _load_calibration()
+# {station: bool} -- see _initial_calibration_mode for the ON/OFF default; a not-yet-seen
+# station defaults to OFF (matches a brand-new, uncalibrated _default_calibration()).
+calibration_mode: dict[str, bool] = {
+    station: _initial_calibration_mode(calib) for station, calib in calibration.items()
+}
+
+
+def _station_calibration(station: str) -> dict:
+    calib = calibration.get(station)
+    if calib is None:
+        calib = _default_calibration()
+        calibration[station] = calib
     return calib
 
 
-calibration = _load_calibration()
-# Whether saved calibrations are APPLIED to the live stream. Toggled by the on/off button
-# on the frontend's Calibration tab. When OFF, the dashboard shows raw values (turbidity as ADC, TDS
-# as uncalibrated DFRobot ppm); when ON, saved coefficients are applied (NTU + calibrated
-# ppm). Defaults ON when a real calibration already exists on disk, so a calibrated rig
-# keeps applying after a restart; otherwise OFF. Held in memory (resets to this default on
-# restart), matching the other in-memory state here.
-calibration_mode = bool(
-    calibration["turbidity"]["coefficients"]
-    or (calibration["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
-    or (calibration["flow"]["coefficients"] or {}).get("k", 450.0) != 450.0
-)
+def _station_calibration_mode(station: str) -> bool:
+    return calibration_mode.get(station, False)
 
-# Latest raw reading per sensor plus a short rolling buffer, so a calibration "capture"
-# can average out electrical noise instead of grabbing a single instant.
-latest_raw: dict = {"turbidity": None, "tdsVoltage": None, "temperature": None, "flowRaw": None}
-_raw_buffers = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
+
+# Latest raw reading per station per sensor, plus a short rolling buffer, so a calibration
+# "capture" can average out electrical noise instead of grabbing a single instant. Created
+# lazily per station on first reading.
+latest_raw: dict[str, dict] = {}
+_raw_buffers: dict[str, dict] = {}
+
+
+def _station_latest_raw(station: str) -> dict:
+    raw = latest_raw.get(station)
+    if raw is None:
+        raw = {"turbidity": None, "tdsVoltage": None, "temperature": None, "flowRaw": None}
+        latest_raw[station] = raw
+    return raw
+
+
+def _station_raw_buffers(station: str) -> dict:
+    bufs = _raw_buffers.get(station)
+    if bufs is None:
+        bufs = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
+        _raw_buffers[station] = bufs
+    return bufs
 
 
 def _save_calibration() -> None:
@@ -341,21 +449,22 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _recompute_turbidity() -> None:
+def _recompute_turbidity(station: str) -> None:
     # 2-point linear fit. With >2 points, use the first and last by raw ADC so the line
     # spans the full captured range; a single point can't define a slope.
-    points = calibration["turbidity"]["points"]
+    calib = _station_calibration(station)
+    points = calib["turbidity"]["points"]
     if len(points) < 2:
-        calibration["turbidity"]["coefficients"] = None
+        calib["turbidity"]["coefficients"] = None
         return
     ordered = sorted(points, key=lambda p: p["raw"])
     p1, p2 = ordered[0], ordered[-1]
     if p2["raw"] == p1["raw"]:
-        calibration["turbidity"]["coefficients"] = None
+        calib["turbidity"]["coefficients"] = None
         return
     slope = (p2["reference"] - p1["reference"]) / (p2["raw"] - p1["raw"])
     intercept = p1["reference"] - slope * p1["raw"]
-    calibration["turbidity"]["coefficients"] = {"slope": slope, "intercept": intercept}
+    calib["turbidity"]["coefficients"] = {"slope": slope, "intercept": intercept}
 
 
 def _dfrobot_ppm(voltage: float, temperature_c) -> float:
@@ -368,28 +477,29 @@ def _dfrobot_ppm(voltage: float, temperature_c) -> float:
     return max(0.0, ppm)
 
 
-def _recompute_tds() -> None:
+def _recompute_tds(station: str) -> None:
     # Single-point k-factor: k = known_ppm / dfrobot_ppm at the captured voltage/temp.
-    points = calibration["tds"]["points"]
+    calib = _station_calibration(station)
+    points = calib["tds"]["points"]
     if not points:
-        calibration["tds"]["coefficients"] = {"k": 1.0}
+        calib["tds"]["coefficients"] = {"k": 1.0}
         return
     p = points[-1]
     base = _dfrobot_ppm(p["rawVoltage"], p.get("temperature", 25.0))
     k = (p["reference"] / base) if base > 0 else 1.0
-    calibration["tds"]["coefficients"] = {"k": k}
+    calib["tds"]["coefficients"] = {"k": k}
 
 
-def apply_turbidity(adc: float):
-    coeffs = calibration["turbidity"]["coefficients"]
+def apply_turbidity(station: str, adc: float):
+    coeffs = _station_calibration(station)["turbidity"]["coefficients"]
     if not coeffs:
         return None
     ntu = coeffs["slope"] * adc + coeffs["intercept"]
     return round(max(0.0, ntu), 1)
 
 
-def apply_tds(voltage: float, temperature_c) -> float:
-    k = (calibration["tds"]["coefficients"] or {}).get("k", 1.0)
+def apply_tds(station: str, voltage: float, temperature_c) -> float:
+    k = (_station_calibration(station)["tds"]["coefficients"] or {}).get("k", 1.0)
     return round(k * _dfrobot_ppm(voltage, temperature_c), 1)
 
 
@@ -406,18 +516,19 @@ def ppm_to_ec(ppm) -> float | None:
     return round(ppm / TDS_TO_EC_FACTOR, 1)
 
 
-def _recompute_flow() -> None:
+def _recompute_flow(station: str) -> None:
     # Single-point k-factor, same shape as _recompute_tds: k = counted_pulses / measured
     # liters (pulses per liter), from a "pour a known volume through, capture the pulse
     # count" calibration point.
-    points = calibration["flow"]["points"]
+    calib = _station_calibration(station)
+    points = calib["flow"]["points"]
     if not points:
-        calibration["flow"]["coefficients"] = {"k": 450.0}
+        calib["flow"]["coefficients"] = {"k": 450.0}
         return
     p = points[-1]
     liters = p.get("reference", 0)
     k = (p["rawPulses"] / liters) if liters > 0 else 450.0
-    calibration["flow"]["coefficients"] = {"k": k}
+    calib["flow"]["coefficients"] = {"k": k}
 
 
 # Matches the firmware's 2s broadcastInterval -- flowPulses arrives as a raw count over that
@@ -425,11 +536,12 @@ def _recompute_flow() -> None:
 FLOW_INTERVAL_SECONDS = 2.0
 
 
-def apply_flow(pulses: float) -> tuple[float, float]:
+def apply_flow(station: str, pulses: float) -> tuple[float, float]:
     """Returns (litersThisInterval, flowRateLpm) from a raw pulse count. Only applies the
     saved k-factor when calibration mode is ON (mirrors apply_tds); OFF uses the nominal
     YF-S201 default so an unconfigured/miscalibrated k can't silently skew the live reading."""
-    k = (calibration["flow"]["coefficients"] or {}).get("k", 450.0) if calibration_mode else 450.0
+    mode = _station_calibration_mode(station)
+    k = (_station_calibration(station)["flow"]["coefficients"] or {}).get("k", 450.0) if mode else 450.0
     if not k:
         return 0.0, 0.0
     liters = pulses / k
@@ -456,8 +568,9 @@ PARAM_DISPLAY = {
 }
 
 
-def _check_breaches_and_dispatch(payload: dict) -> list:
+def _check_breaches_and_dispatch(station: str, payload: dict) -> list:
     breaches = []
+    station_severity = last_severity.setdefault(station, {})
     for param in PUSH_PARAMS:
         value = payload.get(param)
         if not isinstance(value, (int, float)):
@@ -465,10 +578,10 @@ def _check_breaches_and_dispatch(payload: dict) -> list:
         if thresholds.is_sensor_fault(param, value):
             continue
         status = thresholds.range_status_for(param, value)
-        prev = last_severity.get(param, "good")
+        prev = station_severity.get(param, "good")
         if status in ("warn", "danger") and prev == "good":
             breaches.append((param, status))
-        last_severity[param] = status
+        station_severity[param] = status
     return breaches
 
 
@@ -559,9 +672,14 @@ async def update_sensor(request: Request):
         return JSONResponse({"error": "invalid or missing X-API-Key"}, status_code=401)
     try:
         data = await request.json()
+        # See DEFAULT_STATION above: a board that never had a name provisioned (old
+        # firmware, or a fresh unprovisioned board) omits `station` entirely, and normalizes
+        # to the same single implicit station every prior version of this app had.
+        station = _normalize_station(data.get("station"))
         payload = {
             "source": "arduino",
             "timestamp": int(time.time()),
+            "station": station,
         }
 
         if "temperature" in data and "turbidity" in data:
@@ -570,9 +688,10 @@ async def update_sensor(request: Request):
             # dashboards read that key). The calibrated NTU rides along in `turbidityNtu`
             # when a turbidity calibration is active (else None).
             turbidity_adc = float(data["turbidity"])
-            # Only apply the saved calibration when calibration mode is ON (the Calibration
-            # tab's on/off button). OFF => ntu stays None => the dashboard shows raw ADC.
-            ntu = apply_turbidity(turbidity_adc) if calibration_mode else None
+            # Only apply this station's saved calibration when calibration mode is ON (the
+            # Calibration tab's on/off button). OFF => ntu stays None => dashboard shows raw ADC.
+            station_mode = _station_calibration_mode(station)
+            ntu = apply_turbidity(station, turbidity_adc) if station_mode else None
             # `turbidityRaw` always carries the raw averaged ADC (for the calibration page +
             # honest Google Sheets logging). The primary `turbidity` field carries calibrated
             # NTU once a calibration exists, else falls back to raw ADC -- the React SPA (a
@@ -586,10 +705,11 @@ async def update_sensor(request: Request):
             else:
                 payload["turbidity"] = turbidity_adc
                 payload["turbidityUnit"] = "ADC"
-            latest_raw["turbidity"] = turbidity_adc
-            _raw_buffers["turbidity"].append(turbidity_adc)
+            raw = _station_latest_raw(station)
+            raw["turbidity"] = turbidity_adc
+            _station_raw_buffers(station)["turbidity"].append(turbidity_adc)
 
-            latest_raw["temperature"] = payload["temperature"]
+            raw["temperature"] = payload["temperature"]
 
             # TDS: prefer the raw voltage from current firmware (backend computes ppm via
             # calibration). Fall back to a legacy pre-computed `tds` ppm from an un-reflashed
@@ -600,12 +720,12 @@ async def update_sensor(request: Request):
                 # Apply the k-factor only when calibration mode is ON; OFF => uncalibrated
                 # DFRobot ppm (k = 1.0).
                 payload["tds"] = (
-                    apply_tds(tds_voltage, payload["temperature"])
-                    if calibration_mode
+                    apply_tds(station, tds_voltage, payload["temperature"])
+                    if station_mode
                     else round(_dfrobot_ppm(tds_voltage, payload["temperature"]), 1)
                 )
-                latest_raw["tdsVoltage"] = tds_voltage
-                _raw_buffers["tdsVoltage"].append(tds_voltage)
+                raw["tdsVoltage"] = tds_voltage
+                _station_raw_buffers(station)["tdsVoltage"].append(tds_voltage)
             elif "tds" in data:
                 payload["tds"] = float(data["tds"])
 
@@ -621,11 +741,11 @@ async def update_sensor(request: Request):
             # gating -- flow rate/usage are plain quantities, not water-quality judgments.
             if "flowPulses" in data:
                 flow_pulses = float(data["flowPulses"])
-                liters, flow_rate = apply_flow(flow_pulses)
+                liters, flow_rate = apply_flow(station, flow_pulses)
                 payload["flowRate"] = flow_rate
-                payload["waterUsageToday"] = round(_add_daily_usage(liters), 4)
-                latest_raw["flowRaw"] = flow_pulses
-                _raw_buffers["flowRaw"].append(flow_pulses)
+                payload["waterUsageToday"] = round(_add_daily_usage(station, liters), 4)
+                raw["flowRaw"] = flow_pulses
+                _station_raw_buffers(station)["flowRaw"].append(flow_pulses)
         else:
             text = await request.body()
             if not text:
@@ -638,29 +758,31 @@ async def update_sensor(request: Request):
 
             payload["water_level"] = int(float(water_level))
 
-        _update_stats(payload)
-        payload["stats"] = _stats_snapshot()
+        _update_stats(station, payload)
+        payload["stats"] = _stats_snapshot(station)
 
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
         if "temperature" in payload:
-            # Record into the in-memory rolling history for the live short-window graph
-            # (same raw ADC turbidity the sheet logs; timestamp in epoch ms to match it).
+            # Record into this station's in-memory rolling history for the live short-window
+            # graph (same raw ADC turbidity the sheet logs; timestamp in epoch ms to match it).
             history_row = {
                 "timestamp": payload["timestamp"] * 1000,
+                "station": station,
                 "temperature": payload["temperature"],
                 "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
                 "tds": payload.get("tds"),
                 "ec": payload.get("ec"),
                 "flowRate": payload.get("flowRate"),
             }
-            history_buffer.append(history_row)
+            _station_history(station).append(history_row)
 
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
             sheet_payload = {
                 "source": payload["source"],
                 "timestamp": payload["timestamp"],
+                "station": station,
                 "temperature": payload["temperature"],
                 "turbidity": payload.get("turbidityRaw", payload["turbidity"]),
             }
@@ -677,7 +799,7 @@ async def update_sensor(request: Request):
             # Threshold-breach push notifications: detection is synchronous/inline (must
             # observe every reading in order to edge-detect correctly), the actual sends
             # are deferred like the two tasks above.
-            breaches = _check_breaches_and_dispatch(payload)
+            breaches = _check_breaches_and_dispatch(station, payload)
             if breaches:
                 asyncio.create_task(dispatch_push_breaches(breaches, payload))
         return JSONResponse({"ok": True, "payload": payload})
@@ -710,14 +832,14 @@ def _downsample(rows: list, max_points: int) -> list:
     return rows[::stride]
 
 
-def _with_ntu(rows: list) -> list:
+def _with_ntu(station: str, rows: list) -> list:
     # Each row's `turbidity` is raw ADC (matching the sheet). Add `turbidityNtu` = calibrated
     # NTU (or None if uncalibrated) so the dashboard stays consistent with the live WS value,
     # while `turbidity` keeps carrying the raw ADC.
     out = []
     for r in rows:
         adc = r.get("turbidity")
-        ntu = apply_turbidity(adc) if isinstance(adc, (int, float)) else None
+        ntu = apply_turbidity(station, adc) if isinstance(adc, (int, float)) else None
         # Sheet-backed rows (long windows) have no `ec` column -- derive it from tds so the
         # EC graph works across every window, not just the live in-memory ones.
         ec = r.get("ec")
@@ -727,15 +849,22 @@ def _with_ntu(rows: list) -> list:
         # Flow Rate column (see CLAUDE.md); rows logged before that redeploy, or buffer rows
         # where a reading simply had no flow data, fall back to None here uniformly.
         flow_rate = r.get("flowRate")
-        out.append({**r, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
+        out.append({**r, "station": station, "turbidityNtu": ntu, "ec": ec, "flowRate": flow_rate})
     return out
 
 
-async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> tuple[list, str | None]:
+async def _fetch_sheet_rows(
+    seconds: int, cutoff_ms: float, max_points: int, station: str
+) -> tuple[list, str | None]:
     # Ask the Apps Script for this window + a downsample cap (it strides rows to fit).
     # Shared by the long-window path and the short-window buffer-gap fallback below.
+    # `station` is forwarded so doGet can filter by it once google_apps_script.gs's Station
+    # column lands (see CLAUDE.md) -- until then the Apps Script side just ignores the param
+    # and returns every station's rows undifferentiated, same as before this field existed.
     sep = "&" if "?" in GOOGLE_SHEETS_WEBHOOK_URL else "?"
-    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode({"seconds": seconds, "maxPoints": max_points})
+    url = GOOGLE_SHEETS_WEBHOOK_URL + sep + urlencode(
+        {"seconds": seconds, "maxPoints": max_points, "station": station}
+    )
 
     def fetch() -> str:
         req = urllib.request.Request(url, method="GET")
@@ -758,8 +887,9 @@ async def _fetch_sheet_rows(seconds: int, cutoff_ms: float, max_points: int) -> 
 
 
 @app.get("/history")
-async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
-    """Readings for the requested window, newest-last, from the cheapest source that covers it.
+async def get_history(window: str = HISTORY_DEFAULT_WINDOW, station: str = DEFAULT_STATION):
+    """Readings for the requested station+window, newest-last, from the cheapest source
+    that covers it.
 
     Two tiers, in order:
       1. the in-memory buffer -- answers instantly for anything still in the rolling window;
@@ -767,6 +897,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
          (a fresh restart, or a window longer than the buffer holds). Proxied here so the
          dashboard's fetch stays same-origin.
     """
+    station = _normalize_station(station)
     seconds = HISTORY_WINDOWS.get(window)
     if seconds is None:
         return JSONResponse(
@@ -778,7 +909,8 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     sources: list[str] = []
 
     # Tier 1 -- in-memory buffer, the whole live path (wiped on restart).
-    rows = [r for r in history_buffer if r["timestamp"] >= cutoff_ms]
+    buffer = history_buffer.get(station, ())
+    rows = [r for r in buffer if r["timestamp"] >= cutoff_ms]
     if rows:
         sources.append("live")
 
@@ -789,7 +921,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
     coverage_gap = (not rows) or (local_floor_ms > cutoff_ms + HISTORY_GAP_TOLERANCE_MS)
 
     if coverage_gap and GOOGLE_SHEETS_WEBHOOK_URL:
-        sheet_rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS)
+        sheet_rows, err = await _fetch_sheet_rows(seconds, cutoff_ms, HISTORY_MAX_POINTS, station)
         # Keep only rows strictly older than what the buffer already covers, so the merge
         # has no duplicate/overlapping rows at the seam.
         sheet_rows = [r for r in sheet_rows if r["timestamp"] < local_floor_ms]
@@ -802,7 +934,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
             )
 
     return JSONResponse({
-        "rows": _with_ntu(_downsample(rows, HISTORY_MAX_POINTS)),
+        "rows": _with_ntu(station, _downsample(rows, HISTORY_MAX_POINTS)),
         "windowSeconds": seconds,
         "source": "+".join(sources) if sources else "none",
     })
@@ -814,37 +946,40 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW):
 # (and discarded) before they take effect on the live stream.
 
 
-def _avg_raw(key: str):
-    buf = _raw_buffers.get(key)
+def _avg_raw(station: str, key: str):
+    buf = _station_raw_buffers(station).get(key)
     if buf:
         return sum(buf) / len(buf)
-    return latest_raw.get(key)
+    return _station_latest_raw(station).get(key)
 
 
 @app.get("/calibration")
-async def get_calibration():
+async def get_calibration(station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
+    calib = _station_calibration(station)
+    raw = _station_latest_raw(station)
     return JSONResponse(
         {
-            "mode": calibration_mode,
-            "turbidity": calibration["turbidity"],
-            "tds": calibration["tds"],
-            "flow": calibration["flow"],
+            "mode": _station_calibration_mode(station),
+            "turbidity": calib["turbidity"],
+            "tds": calib["tds"],
+            "flow": calib["flow"],
             "latestRaw": {
-                "turbidity": latest_raw["turbidity"],
-                "tdsVoltage": latest_raw["tdsVoltage"],
-                "temperature": latest_raw["temperature"],
-                "flowRaw": latest_raw["flowRaw"],
+                "turbidity": raw["turbidity"],
+                "tdsVoltage": raw["tdsVoltage"],
+                "temperature": raw["temperature"],
+                "flowRaw": raw["flowRaw"],
             },
         }
     )
 
 
 @app.post("/calibration/mode")
-async def set_calibration_mode(request: Request):
-    global calibration_mode
+async def set_calibration_mode(request: Request, station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
     body = await request.json()
-    calibration_mode = bool(body.get("enabled"))
-    return JSONResponse({"mode": calibration_mode})
+    calibration_mode[station] = bool(body.get("enabled"))
+    return JSONResponse({"mode": calibration_mode[station]})
 
 
 _RECOMPUTE_FNS = {
@@ -855,7 +990,8 @@ _RECOMPUTE_FNS = {
 
 
 @app.post("/calibration/capture")
-async def capture_calibration_point(request: Request):
+async def capture_calibration_point(request: Request, station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
     body = await request.json()
     sensor = body.get("sensor")
     if sensor not in CALIBRATED_SENSORS:
@@ -879,7 +1015,7 @@ async def capture_calibration_point(request: Request):
         except (TypeError, ValueError):
             return JSONResponse({"error": "raw must be numeric"}, status_code=400)
     else:
-        raw = _avg_raw(raw_key)
+        raw = _avg_raw(station, raw_key)
         if raw is None:
             unit = {"turbidity": "Raw ADC", "tds": "Raw V", "flow": "pulse count"}[sensor]
             return JSONResponse(
@@ -887,64 +1023,72 @@ async def capture_calibration_point(request: Request):
                 status_code=409,
             )
 
+    calib = _station_calibration(station)
+    latest = _station_latest_raw(station)
     if sensor == "turbidity":
-        calibration["turbidity"]["points"].append(
+        calib["turbidity"]["points"].append(
             {"raw": round(raw, 1), "reference": reference, "label": label}
         )
     elif sensor == "tds":
-        calibration["tds"]["points"].append(
+        calib["tds"]["points"].append(
             {
                 "rawVoltage": round(raw, 4),
                 "reference": reference,
                 "label": label,
-                "temperature": latest_raw["temperature"] if latest_raw["temperature"] is not None else 25.0,
+                "temperature": latest["temperature"] if latest["temperature"] is not None else 25.0,
             }
         )
     else:
-        calibration["flow"]["points"].append(
+        calib["flow"]["points"].append(
             {"rawPulses": round(raw, 1), "reference": reference, "label": label}
         )
-    _RECOMPUTE_FNS[sensor]()
+    _RECOMPUTE_FNS[sensor](station)
 
-    return JSONResponse({sensor: calibration[sensor]})
+    return JSONResponse({sensor: calib[sensor]})
 
 
 @app.delete("/calibration/point")
-async def delete_calibration_point(request: Request):
+async def delete_calibration_point(request: Request, station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
     body = await request.json()
     sensor = body.get("sensor")
     if sensor not in CALIBRATED_SENSORS:
         return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
+    calib = _station_calibration(station)
     try:
         index = int(body["index"])
-        calibration[sensor]["points"].pop(index)
+        calib[sensor]["points"].pop(index)
     except (KeyError, TypeError, ValueError, IndexError):
         return JSONResponse({"error": "valid point index required"}, status_code=400)
-    _RECOMPUTE_FNS[sensor]()
-    return JSONResponse({sensor: calibration[sensor]})
+    _RECOMPUTE_FNS[sensor](station)
+    return JSONResponse({sensor: calib[sensor]})
 
 
 @app.post("/calibration/save")
-async def save_calibration():
+async def save_calibration(station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
+    calib = _station_calibration(station)
     now = _now_iso()
     for sensor in CALIBRATED_SENSORS:
-        calibration[sensor]["updated"] = now
+        calib[sensor]["updated"] = now
     try:
         _save_calibration()
     except OSError as exc:
         return JSONResponse({"error": f"failed to write {CALIBRATION_PATH}: {exc}"}, status_code=500)
-    print(f"💾 Calibration saved to {CALIBRATION_PATH}")
-    return JSONResponse({"ok": True, **{s: calibration[s] for s in CALIBRATED_SENSORS}})
+    print(f"💾 Calibration saved to {CALIBRATION_PATH} (station={station!r})")
+    return JSONResponse({"ok": True, **{s: calib[s] for s in CALIBRATED_SENSORS}})
 
 
 @app.post("/calibration/reset")
-async def reset_calibration(request: Request):
+async def reset_calibration(request: Request, station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
     body = await request.json()
     sensor = body.get("sensor")
     if sensor not in CALIBRATED_SENSORS:
         return JSONResponse({"error": "sensor must be 'turbidity', 'tds', or 'flow'"}, status_code=400)
-    calibration[sensor] = _default_calibration()[sensor]
-    return JSONResponse({sensor: calibration[sensor]})
+    calib = _station_calibration(station)
+    calib[sensor] = _default_calibration()[sensor]
+    return JSONResponse({sensor: calib[sensor]})
 
 
 # --- Flow sensor API ----------------------------------------------------------
@@ -954,20 +1098,28 @@ async def reset_calibration(request: Request):
 
 
 @app.get("/flow/usage")
-async def get_flow_usage(days: int = 14):
+async def get_flow_usage(days: int = 14, station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
+    today = _local_date()
     if not storage.enabled():
-        return JSONResponse({"today": round(_daily_usage_total, 4), "days": []})
+        return JSONResponse({"today": round(_daily_usage_totals.get(station, 0.0), 4), "days": []})
     days = max(1, min(days, 365))
-    rows = await asyncio.to_thread(storage.get_recent_daily_usage, days)
-    return JSONResponse({"today": round(_daily_usage_total, 4), "days": rows})
+    rows = await asyncio.to_thread(storage.get_recent_daily_usage, station, days)
+    # Seed lazily the same way _add_daily_usage does, so a station that's never posted a
+    # flow reading this run (but has stored history) still reports today's real total.
+    if station not in _daily_usage_seeded:
+        _daily_usage_totals[station] = await asyncio.to_thread(storage.get_daily_usage, today, station)
+        _daily_usage_seeded.add(station)
+    return JSONResponse({"today": round(_daily_usage_totals.get(station, 0.0), 4), "days": rows})
 
 
 @app.post("/flow/reset-today")
-async def reset_flow_usage_today():
-    global _daily_usage_total
-    _daily_usage_total = 0.0
+async def reset_flow_usage_today(station: str = DEFAULT_STATION):
+    station = _normalize_station(station)
+    _daily_usage_totals[station] = 0.0
+    _daily_usage_seeded.add(station)
     if storage.enabled():
-        await asyncio.to_thread(storage.reset_daily_usage, _local_date())
+        await asyncio.to_thread(storage.reset_daily_usage, _local_date(), station)
     return JSONResponse({"ok": True, "today": 0.0})
 
 
@@ -1179,45 +1331,57 @@ async def websocket_app(websocket: WebSocket):
     # from a hung socket. The prime always carries `hasData`, so the UI can render an
     # explicit empty state instead of fabricating numbers.
     #
-    # If a reading does exist, replay the latest one so a dashboard connecting mid-run
-    # shows real values immediately rather than "--" until the next push (~2s, or never
-    # if the sensor has gone offline). Sourced from history_buffer -- no extra state.
-    prime_payload = {
-        "stats": _stats_snapshot() if sensor_stats else None,
-        "hasData": bool(history_buffer),
-        # SECONDS (epoch), matching the WS `timestamp` convention used by /update.
-        # NOTE: history_buffer rows store epoch MILLISECONDS (to match the /history
-        # / Google Sheets rows), hence the // 1000 below.
-        "lastTimestamp": (history_buffer[-1]["timestamp"] // 1000) if history_buffer else None,
-    }
-    if history_buffer:
-        last = history_buffer[-1]
-        # history_buffer always stores turbidity as the RAW averaged ADC. Re-derive the
-        # displayed value/unit exactly the way /update does so the prime and the live
-        # broadcasts agree.
-        turbidity_adc = last.get("turbidity")
-        ntu = (
-            apply_turbidity(turbidity_adc)
-            if (calibration_mode and turbidity_adc is not None)
-            else None
-        )
-        prime_payload.update({
-            "source": "prime",
-            "timestamp": last["timestamp"] // 1000,
-            "temperature": last.get("temperature"),
-            "turbidityRaw": turbidity_adc,
-            "turbidityNtu": ntu,
-            "turbidity": ntu if ntu is not None else turbidity_adc,
-            "turbidityUnit": "NTU" if ntu is not None else "ADC",
-            "tds": last.get("tds"),
-        })
+    # Multi-station: one prime frame is sent PER known station that has data, each carrying
+    # its own `station` field, so a dashboard connecting mid-run sees every station's latest
+    # reading immediately rather than only whichever one posted last. If no station has any
+    # data yet, a single hasData:false frame is sent instead (same shape as before stations
+    # existed), so a completely fresh system still gets an explicit empty state.
+    stations_with_data = [s for s, buf in history_buffer.items() if buf]
 
-    try:
-        await websocket.send_text(
-            json.dumps({"type": "sensor_update", "payload": prime_payload})
-        )
-    except Exception:
-        pass
+    if not stations_with_data:
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "sensor_update",
+                "payload": {"stats": None, "hasData": False, "lastTimestamp": None},
+            }))
+        except Exception:
+            pass
+    else:
+        for station in stations_with_data:
+            last = history_buffer[station][-1]
+            # history_buffer always stores turbidity as the RAW averaged ADC. Re-derive the
+            # displayed value/unit exactly the way /update does so the prime and the live
+            # broadcasts agree.
+            turbidity_adc = last.get("turbidity")
+            station_mode = _station_calibration_mode(station)
+            ntu = (
+                apply_turbidity(station, turbidity_adc)
+                if (station_mode and turbidity_adc is not None)
+                else None
+            )
+            prime_payload = {
+                "stats": _stats_snapshot(station) or None,
+                "hasData": True,
+                # SECONDS (epoch), matching the WS `timestamp` convention used by /update.
+                # NOTE: history_buffer rows store epoch MILLISECONDS (to match the /history
+                # / Google Sheets rows), hence the // 1000 below.
+                "lastTimestamp": last["timestamp"] // 1000,
+                "source": "prime",
+                "station": station,
+                "timestamp": last["timestamp"] // 1000,
+                "temperature": last.get("temperature"),
+                "turbidityRaw": turbidity_adc,
+                "turbidityNtu": ntu,
+                "turbidity": ntu if ntu is not None else turbidity_adc,
+                "turbidityUnit": "NTU" if ntu is not None else "ADC",
+                "tds": last.get("tds"),
+            }
+            try:
+                await websocket.send_text(
+                    json.dumps({"type": "sensor_update", "payload": prime_payload})
+                )
+            except Exception:
+                break
 
     try:
         while True:

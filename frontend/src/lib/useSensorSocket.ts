@@ -24,14 +24,30 @@ export type SeriesPoint = { t: number; v: number }
 
 export type SensorSeries = Record<SeriesParam, SeriesPoint[]>
 
-export interface UseSensorSocketResult {
+/** One station's live state: its latest reading plus its own rolling sparkline series.
+ * Two stations never share a series -- a turbidity spike on one board must never bleed
+ * into another board's sparkline. */
+export interface StationSensorState {
   reading: SensorReading | null
-  connected: boolean
   series: SensorSeries
 }
 
-function emptySeries(): SensorSeries {
+export interface UseSensorSocketResult {
+  /** Every station seen so far this session, keyed by SensorReading.station. A station
+   * only appears here once its first reading (live or primed) has arrived -- there is no
+   * pre-registration. */
+  stations: Record<string, StationSensorState>
+  /** Whether the shared /ws/app socket itself is up -- this is connection health, not
+   * per-station; a station can simply have gone quiet while the socket stays connected. */
+  connected: boolean
+}
+
+export function emptySeries(): SensorSeries {
   return { temperature: [], turbidity: [], tds: [], ec: [], flow: [] }
+}
+
+function emptyStationState(): StationSensorState {
+  return { reading: null, series: emptySeries() }
 }
 
 function pushSample(series: SensorSeries, reading: SensorReading, now: number): SensorSeries {
@@ -129,7 +145,12 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
   // both onto milliseconds.
   const rawTimestamp = typeof obj.timestamp === 'number' ? obj.timestamp : Date.now()
   const timestamp = rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp
+  // Mirrors the backend's own DEFAULT_STATION sentinel (main.py) -- a board with no
+  // station name provisioned yet, or a pre-multi-station /update payload, omits the
+  // field entirely, and this normalizes to the exact same single implicit station.
+  const station = typeof obj.station === 'string' && obj.station.trim() ? obj.station : 'default'
   return {
+    station,
     temperature: num(obj.temperature),
     turbidity: num(obj.turbidity),
     turbidityNtu: numOrNull(obj.turbidityNtu),
@@ -145,9 +166,8 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
 }
 
 export function useSensorSocket(): UseSensorSocketResult {
-  const [reading, setReading] = useState<SensorReading | null>(null)
+  const [stations, setStations] = useState<Record<string, StationSensorState>>({})
   const [connected, setConnected] = useState(false)
-  const [series, setSeries] = useState<SensorSeries>(emptySeries())
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -155,19 +175,55 @@ export function useSensorSocket(): UseSensorSocketResult {
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageAtRef = useRef<number>(0)
   const unmountedRef = useRef(false)
+  // Stations we've already fired a history-seed request for, so a station reporting every
+  // 2s doesn't refetch its own recent history on every single message.
+  const seededStationsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     unmountedRef.current = false
+    seededStationsRef.current = new Set()
+
+    // Seed one station's sparklines from recent history so a reload shows the last few
+    // minutes immediately instead of a blank chart that only fills back in as new live
+    // readings trickle in over ~30s. Lazy per station (fired the first time each station's
+    // first reading arrives, live or primed) since which stations exist isn't known up
+    // front -- mirrors the original single-station seed, just one per station instead of one
+    // total. Runs alongside the live stream, not before it -- a live point that lands first
+    // is safe, mergeSeries de-dupes by timestamp either way.
+    const seedStationHistory = (station: string) => {
+      if (seededStationsRef.current.has(station)) return
+      seededStationsRef.current.add(station)
+      getHistory('5m', station)
+        .then(({ rows }) => {
+          if (unmountedRef.current) return
+          const now = Date.now()
+          setStations((prev) => {
+            const existing = prev[station] ?? emptyStationState()
+            return {
+              ...prev,
+              [station]: { ...existing, series: mergeSeries(existing.series, seriesFromHistory(rows, now), now) },
+            }
+          })
+        })
+        .catch(() => {
+          // No history yet for this station (fresh server, or its live buffer is still
+          // empty) -- its sparklines just start empty and fill in live.
+        })
+    }
 
     const applyReading = (r: SensorReading) => {
       const now = Date.now()
-      setReading(r)
-      setSeries((prev) => pushSample(prev, r, now))
+      setStations((prev) => {
+        const existing = prev[r.station] ?? emptyStationState()
+        return { ...prev, [r.station]: { reading: r, series: pushSample(existing.series, r, now) } }
+      })
+      seedStationHistory(r.station)
     }
 
-    // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch `reading` or
-    // `series`: the last real values stay on screen (frozen) rather than being replaced with
-    // fabricated numbers, so a genuine sensor outage reads as "stale", not as new data.
+    // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch any
+    // station's `reading`/`series`: the last real values stay on screen (frozen) rather
+    // than being replaced with fabricated numbers, so a genuine outage reads as "stale",
+    // not as new data.
     const armStaleTimer = () => {
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
       staleTimerRef.current = setTimeout(() => {
@@ -225,21 +281,6 @@ export function useSensorSocket(): UseSensorSocketResult {
       }, delay)
     }
 
-    // Seed the sparklines from recent history so a reload shows the last few minutes
-    // immediately instead of a blank chart that only fills back in as new live readings
-    // trickle in over the next ~30s. Runs alongside connect(), not before it -- a live
-    // point that lands first is safe, mergeSeries de-dupes by timestamp either way.
-    getHistory('5m')
-      .then(({ rows }) => {
-        if (unmountedRef.current) return
-        const now = Date.now()
-        setSeries((prev) => mergeSeries(prev, seriesFromHistory(rows, now), now))
-      })
-      .catch(() => {
-        // No history yet (fresh server, or the short window's live buffer is still empty)
-        // -- sparklines just start empty and fill in live, same as before this seeding existed.
-      })
-
     connect()
 
     return () => {
@@ -251,5 +292,5 @@ export function useSensorSocket(): UseSensorSocketResult {
     }
   }, [])
 
-  return { reading, connected, series }
+  return { stations, connected }
 }

@@ -32,14 +32,37 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     updated_ms  INTEGER NOT NULL
 );
 
--- One row per local calendar day (YYYY-MM-DD), total_liters accumulated as readings arrive.
--- A day rollover just starts a new row -- that alone gives the flow sensor's "daily usage"
--- an automatic reset with no scheduler needed. Kept indefinitely.
+-- One row per (local calendar day, station), total_liters accumulated as readings arrive.
+-- A day rollover just starts fresh rows -- that alone gives the flow sensor's "daily usage"
+-- an automatic per-station reset with no scheduler needed. Kept indefinitely.
 CREATE TABLE IF NOT EXISTS daily_usage (
-    date         TEXT PRIMARY KEY,
-    total_liters REAL NOT NULL DEFAULT 0
+    date         TEXT NOT NULL,
+    station      TEXT NOT NULL DEFAULT 'default',
+    total_liters REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (date, station)
 );
 """
+
+
+def _migrate_daily_usage_schema(conn: sqlite3.Connection) -> None:
+    """`daily_usage` used to be keyed by `date` alone (one implicit station). If an
+    existing database still has that shape (no `station` column), rebuild the table with
+    the new composite (date, station) key, attributing every existing row to 'default' --
+    a plain ALTER TABLE ADD COLUMN can't fix the primary key, so this needs a real rebuild.
+    A fresh database already gets the new shape from _SCHEMA above, so this is a no-op then.
+    """
+    cols = [row["name"] for row in conn.execute("PRAGMA table_info(daily_usage)").fetchall()]
+    if not cols or "station" in cols:
+        return
+    conn.execute("ALTER TABLE daily_usage RENAME TO daily_usage_premigration")
+    conn.executescript(_SCHEMA)  # recreates daily_usage in the new shape
+    conn.execute(
+        "INSERT INTO daily_usage (date, station, total_liters)"
+        " SELECT date, 'default', total_liters FROM daily_usage_premigration"
+    )
+    conn.execute("DROP TABLE daily_usage_premigration")
+    conn.commit()
+    print("📦 Migrated daily_usage to per-station schema (existing rows attributed to 'default').")
 
 
 def init(path: str) -> bool:
@@ -62,6 +85,7 @@ def init(path: str) -> bool:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SCHEMA)
         conn.commit()
+        _migrate_daily_usage_schema(conn)
         _conn = conn
         return True
     except Exception as exc:  # sqlite3.Error, OSError, permissions...
@@ -135,32 +159,32 @@ def get_all_push_subscriptions() -> list[dict]:
     return out
 
 
-def add_daily_usage(date: str, liters: float) -> None:
-    """Adds `liters` to `date`'s running total (creating the row if this is its first reading
-    of the day). `date` is a local YYYY-MM-DD string, caller-supplied so this module doesn't
-    need to know about timezones."""
+def add_daily_usage(date: str, station: str, liters: float) -> None:
+    """Adds `liters` to `station`'s running total for `date` (creating the row if this is
+    its first reading of the day). `date` is a local YYYY-MM-DD string, caller-supplied so
+    this module doesn't need to know about timezones."""
     if _conn is None or liters is None:
         return
     try:
         with _lock:
             _conn.execute(
-                "INSERT INTO daily_usage (date, total_liters) VALUES (?, ?)"
-                " ON CONFLICT(date) DO UPDATE SET total_liters = total_liters + excluded.total_liters",
-                (date, liters),
+                "INSERT INTO daily_usage (date, station, total_liters) VALUES (?, ?, ?)"
+                " ON CONFLICT(date, station) DO UPDATE SET total_liters = total_liters + excluded.total_liters",
+                (date, station, liters),
             )
             _conn.commit()
     except Exception as exc:
         print(f"⚠️ Daily usage write failed: {exc}")
 
 
-def get_daily_usage(date: str) -> float:
-    """Today's (or any given date's) total, 0 if no reading has landed yet."""
+def get_daily_usage(date: str, station: str) -> float:
+    """`station`'s total for today (or any given date), 0 if no reading has landed yet."""
     if _conn is None:
         return 0.0
     try:
         with _lock:
             row = _conn.execute(
-                "SELECT total_liters FROM daily_usage WHERE date = ?", (date,)
+                "SELECT total_liters FROM daily_usage WHERE date = ? AND station = ?", (date, station)
             ).fetchone()
     except Exception as exc:
         print(f"⚠️ Daily usage read failed: {exc}")
@@ -168,17 +192,17 @@ def get_daily_usage(date: str) -> float:
     return row["total_liters"] if row else 0.0
 
 
-def get_recent_daily_usage(days: int) -> list[dict]:
-    """Last `days` calendar days with a recorded row, chronological ascending -- for the
-    Water Usage bar chart. Days with no readings simply have no row (no zero-filling here;
-    the frontend can decide how to render gaps)."""
+def get_recent_daily_usage(station: str, days: int) -> list[dict]:
+    """`station`'s last `days` calendar days with a recorded row, chronological ascending --
+    for the Water Usage bar chart. Days with no readings simply have no row (no zero-filling
+    here; the frontend can decide how to render gaps)."""
     if _conn is None:
         return []
     try:
         with _lock:
             rows = _conn.execute(
-                "SELECT date, total_liters FROM daily_usage ORDER BY date DESC LIMIT ?",
-                (days,),
+                "SELECT date, total_liters FROM daily_usage WHERE station = ? ORDER BY date DESC LIMIT ?",
+                (station, days),
             ).fetchall()
     except Exception as exc:
         print(f"⚠️ Daily usage read failed: {exc}")
@@ -186,17 +210,18 @@ def get_recent_daily_usage(days: int) -> list[dict]:
     return [{"date": r["date"], "totalLiters": r["total_liters"]} for r in reversed(rows)]
 
 
-def reset_daily_usage(date: str) -> None:
-    """Zeroes `date`'s total (manual reset) -- upserts rather than deletes so a reset before
-    any reading has landed today still leaves a 0 row instead of erroring on a missing one."""
+def reset_daily_usage(date: str, station: str) -> None:
+    """Zeroes `station`'s total for `date` (manual reset) -- upserts rather than deletes so
+    a reset before any reading has landed today still leaves a 0 row instead of erroring on
+    a missing one."""
     if _conn is None:
         return
     try:
         with _lock:
             _conn.execute(
-                "INSERT INTO daily_usage (date, total_liters) VALUES (?, 0)"
-                " ON CONFLICT(date) DO UPDATE SET total_liters = 0",
-                (date,),
+                "INSERT INTO daily_usage (date, station, total_liters) VALUES (?, ?, 0)"
+                " ON CONFLICT(date, station) DO UPDATE SET total_liters = 0",
+                (date, station),
             )
             _conn.commit()
     except Exception as exc:

@@ -40,15 +40,17 @@ interface WqiHistoryChartProps {
   /** Shared with every other graph on the dashboard -- see DashboardView. */
   window: HistoryWindow
   onWindowChange: (window: HistoryWindow) => void
+  /** Selected station -- see DashboardView/StationSwitcher. */
+  station: string
 }
 
-export function WqiHistoryChart({ window, onWindowChange }: WqiHistoryChartProps) {
+export function WqiHistoryChart({ window, onWindowChange, station }: WqiHistoryChartProps) {
   const { t } = useT()
   const isShort = SHORT_WINDOWS.includes(window)
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['history', window],
-    queryFn: () => getHistory(window),
+    queryKey: ['history', station, window],
+    queryFn: () => getHistory(window, station),
     refetchInterval: isShort ? REFRESH_INTERVAL_MS : false,
   })
 

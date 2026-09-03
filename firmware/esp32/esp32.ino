@@ -205,6 +205,56 @@ void saveBackendHost(const String& host, const String& apiKey, bool useHttps) {
   currentUseHttps = useHttps;
 }
 
+// Multi-station identity: a human-readable name (e.g. "Inlet") this board tags every /update
+// POST with, letting one backend distinguish several boards at different physical locations
+// (main.py's DEFAULT_STATION/_normalize_station). Separate NVS namespace from "wifi"/"backend"
+// so clearing one never touches the others. Empty (never provisioned) means "omit the station
+// field entirely" -- the backend's own "default" sentinel applies, so an unprovisioned board's
+// payload is byte-for-byte unchanged from before multi-station support existed.
+Preferences stationPrefs;
+String currentStationName;
+const int maxStationNameLen = 40; // mirrors main.py's MAX_STATION_NAME_LEN
+
+void loadStationName() {
+  stationPrefs.begin("station", true); // read-only
+  currentStationName = stationPrefs.getString("name", "");
+  stationPrefs.end();
+}
+
+void saveStationName(const String& name) {
+  stationPrefs.begin("station", false); // read-write
+  stationPrefs.putString("name", name);
+  stationPrefs.end();
+  currentStationName = name;
+}
+
+// line looks like "STATION_SET|<name>". Trims and caps length the same way main.py does
+// server-side, so a name that would get silently truncated on arrival is rejected here
+// instead, with a clear reason back over serial.
+void handleStationSet(const String& args) {
+  String name = args;
+  name.trim();
+  if (name.length() == 0) {
+    Serial.println("STATION_SET_FAILED|empty_name");
+    return;
+  }
+  if (name.length() > maxStationNameLen) {
+    Serial.println("STATION_SET_FAILED|name_too_long");
+    return;
+  }
+  saveStationName(name);
+  Serial.printf("STATION_SET_OK|%s\n", name.c_str());
+}
+
+void handleStationClear() {
+  saveStationName("");
+  Serial.println("STATION_SET_OK|");
+}
+
+void handleStationStatus() {
+  Serial.printf("STATION_STATUS|%s\n", currentStationName.c_str());
+}
+
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 String backendUrl;
@@ -452,6 +502,12 @@ void handleSerialLine(String line) {
     handleBackendStatus();
   } else if (line == "BACKEND_TEST") {
     handleBackendTest();
+  } else if (line.startsWith("STATION_SET|")) {
+    handleStationSet(line.substring(12));
+  } else if (line == "STATION_CLEAR") {
+    handleStationClear();
+  } else if (line == "STATION_STATUS") {
+    handleStationStatus();
   }
   // Unrecognized lines are silently ignored -- could be stray input from a human typing in
   // the Serial Monitor rather than the backend's parser.
@@ -520,6 +576,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   loadWifiCredentials(); // NVS if previously provisioned via USB, else the @JumboPlus enterprise fallback
   loadBackendHost(); // NVS if a fixed backend was set via USB, else "" (same-LAN auto-discovery)
+  loadStationName(); // NVS if this board was given a station name via USB, else "" (backend's "default")
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
   connectWifi(); // enterprise (@JumboPlus) or plain PSK, whichever loadWifiCredentials() picked; DHCP either way
@@ -636,11 +693,17 @@ void loop() {
     portEXIT_CRITICAL(&flowMux);
     Serial.printf("Flow pulses=%lu\n", flowPulses);
 
-    StaticJsonDocument<256> jsonDoc;
+    StaticJsonDocument<320> jsonDoc; // was <256> -- station (up to 40 chars, see maxStationNameLen) needs the headroom
     jsonDoc["temperature"] = temperatureC;
     jsonDoc["turbidity"] = turbidityADC;
     jsonDoc["tdsVoltage"] = tdsVoltage;
     jsonDoc["flowPulses"] = flowPulses;
+    if (currentStationName.length() > 0) {
+      // Omitted entirely (not even an empty string) when unprovisioned, so an unprovisioned
+      // board's payload is byte-for-byte identical to before multi-station support existed --
+      // the backend's own DEFAULT_STATION sentinel applies on its end.
+      jsonDoc["station"] = currentStationName;
+    }
 
     String outputPayload;
     serializeJson(jsonDoc, outputPayload);
@@ -721,10 +784,13 @@ void loop() {
           // TDS: uncalibrated ppm (see dfrobotUncalibratedPpm's header comment above), not the
           // raw sensor voltage -- the sheet's TDS column is always ppm-shaped with no separate
           // raw-voltage column to backfill from later, unlike turbidity's raw ADC.
-          StaticJsonDocument<192> sheetsDoc;
+          StaticJsonDocument<240> sheetsDoc; // was <192> -- station (up to 40 chars) needs the headroom
           sheetsDoc["temperature"] = sheetsFallbackTempBuffer[idx];
           sheetsDoc["turbidity"] = sheetsFallbackTurbBuffer[idx];
           sheetsDoc["tds"] = dfrobotUncalibratedPpm(sheetsFallbackTdsVoltageBuffer[idx], sheetsFallbackTempBuffer[idx]);
+          if (currentStationName.length() > 0) {
+            sheetsDoc["station"] = currentStationName;
+          }
 
           String sheetsPayload;
           serializeJson(sheetsDoc, sheetsPayload);

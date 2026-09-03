@@ -36,12 +36,14 @@ export interface HistoryResponse {
   source: string
 }
 
-export function getHistory(window: HistoryWindow): Promise<HistoryResponse> {
-  return request<HistoryResponse>(`/history?window=${encodeURIComponent(window)}`)
+export function getHistory(window: HistoryWindow, station: string): Promise<HistoryResponse> {
+  return request<HistoryResponse>(
+    `/history?window=${encodeURIComponent(window)}&station=${encodeURIComponent(station)}`,
+  )
 }
 
-export function getCalibration(): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration')
+export function getCalibration(station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration?station=${encodeURIComponent(station)}`)
 }
 
 export type CalibrationSensor = 'turbidity' | 'tds' | 'flow'
@@ -53,8 +55,8 @@ export interface CapturePointArgs {
   raw?: number
 }
 
-export function capturePoint(args: CapturePointArgs): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration/capture', {
+export function capturePoint(args: CapturePointArgs, station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration/capture?station=${encodeURIComponent(station)}`, {
     method: 'POST',
     body: JSON.stringify(args),
   })
@@ -65,37 +67,39 @@ export interface DeletePointArgs {
   index: number
 }
 
-export function deletePoint(args: DeletePointArgs): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration/point', {
+export function deletePoint(args: DeletePointArgs, station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration/point?station=${encodeURIComponent(station)}`, {
     method: 'DELETE',
     body: JSON.stringify(args),
   })
 }
 
-export function saveCalibration(): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration/save', { method: 'POST' })
+export function saveCalibration(station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration/save?station=${encodeURIComponent(station)}`, { method: 'POST' })
 }
 
-export function resetCalibration(sensor: CalibrationSensor): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration/reset', {
+export function resetCalibration(sensor: CalibrationSensor, station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration/reset?station=${encodeURIComponent(station)}`, {
     method: 'POST',
     body: JSON.stringify({ sensor }),
   })
 }
 
-export function setCalibrationMode(enabled: boolean): Promise<CalibrationState> {
-  return request<CalibrationState>('/calibration/mode', {
+export function setCalibrationMode(enabled: boolean, station: string): Promise<CalibrationState> {
+  return request<CalibrationState>(`/calibration/mode?station=${encodeURIComponent(station)}`, {
     method: 'POST',
     body: JSON.stringify({ enabled }),
   })
 }
 
-export function getFlowUsage(days = 14): Promise<FlowUsageResponse> {
-  return request<FlowUsageResponse>(`/flow/usage?days=${encodeURIComponent(String(days))}`)
+export function getFlowUsage(station: string, days = 14): Promise<FlowUsageResponse> {
+  return request<FlowUsageResponse>(
+    `/flow/usage?days=${encodeURIComponent(String(days))}&station=${encodeURIComponent(station)}`,
+  )
 }
 
-export function resetFlowUsageToday(): Promise<{ ok: boolean; today: number }> {
-  return request('/flow/reset-today', { method: 'POST' })
+export function resetFlowUsageToday(station: string): Promise<{ ok: boolean; today: number }> {
+  return request(`/flow/reset-today?station=${encodeURIComponent(station)}`, { method: 'POST' })
 }
 
 /**

@@ -1,6 +1,7 @@
 .venv
 __pycache__
 calibration.json
+calibration.json.bak-premigration
 
 # VAPID keypair for Web Push notifications (main.py/thresholds.py) -- a secret signing key,
 # not project code. Generate your own with `vapid --gen` (py-vapid, pulled in by pywebpush).

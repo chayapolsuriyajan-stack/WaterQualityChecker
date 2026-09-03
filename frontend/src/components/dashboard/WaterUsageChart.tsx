@@ -23,15 +23,20 @@ function formatDay(date: string): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
-export function WaterUsageChart() {
+interface WaterUsageChartProps {
+  /** Selected station -- see DashboardView/StationSwitcher. */
+  station: string
+}
+
+export function WaterUsageChart({ station }: WaterUsageChartProps) {
   const { t } = useT()
   const { visible } = useDashboardPrefs()
   const queryClient = useQueryClient()
   const [resetting, setResetting] = useState(false)
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['flow-usage', DAYS],
-    queryFn: () => getFlowUsage(DAYS),
+    queryKey: ['flow-usage', station, DAYS],
+    queryFn: () => getFlowUsage(station, DAYS),
     refetchInterval: REFRESH_INTERVAL_MS,
     enabled: visible.waterUsage,
   })
@@ -45,9 +50,9 @@ export function WaterUsageChart() {
   const handleResetToday = async () => {
     setResetting(true)
     try {
-      await resetFlowUsageToday()
+      await resetFlowUsageToday(station)
       toast.success(t('chart.usage.resetSuccess'))
-      await queryClient.invalidateQueries({ queryKey: ['flow-usage', DAYS] })
+      await queryClient.invalidateQueries({ queryKey: ['flow-usage', station, DAYS] })
     } catch {
       toast.error(t('chart.usage.resetFailed'))
     } finally {

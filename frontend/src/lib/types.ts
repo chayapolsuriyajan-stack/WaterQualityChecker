@@ -5,6 +5,9 @@
 
 /** A single live sensor reading pushed over `/ws/app` (sensor_update payload). */
 export interface SensorReading {
+  /** Which ESP32 board this reading came from. `"default"` for a board with no station
+   * name provisioned (see CLAUDE.md's WiFi provisioning section, STATION_SET). */
+  station: string
   temperature: number
   /** Turbidity in whatever unit `turbidityUnit` says (NTU once calibrated, else raw ADC). */
   turbidity: number
@@ -30,6 +33,8 @@ export interface SensorReading {
 export interface HistoryRow {
   /** Epoch milliseconds. */
   timestamp: number
+  /** Which station this row belongs to -- see SensorReading.station. */
+  station: string
   temperature: number | null
   /** Raw ADC turbidity value, as logged historically. */
   turbidity: number | null
@@ -128,4 +133,14 @@ export interface WifiBackendStatus {
   url: string
   hasApiKey: boolean
   https: boolean
+}
+
+/**
+ * `STATION_STATUS`'s reply shape (esp32.ino's STATION_SET/STATION_CLEAR/STATION_STATUS) --
+ * the multi-station identity a board tags every `/update` POST with (main.py's
+ * DEFAULT_STATION/`station` query param). `name` is empty when never provisioned, meaning
+ * the board omits `station` from its payload and the backend's own "default" sentinel applies.
+ */
+export interface WifiStationStatus {
+  name: string
 }

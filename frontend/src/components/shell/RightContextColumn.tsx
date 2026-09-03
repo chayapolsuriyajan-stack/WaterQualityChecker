@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { MapPin, Radio, Wifi, WifiOff } from 'lucide-react'
+import { Radio, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { useSensorData } from '@/lib/SensorProvider'
+import { stationLabel } from './StationSwitcher'
 import { QuickViewSummary } from './QuickViewSummary'
 
 function useClock() {
@@ -18,9 +19,9 @@ interface RightContextColumnProps {
   className?: string
 }
 
-/** Dashboard-only right column: station identity/GPS/connectivity/clock card, plus the Quick View summary card below it. */
+/** Dashboard-only right column: station identity/connectivity/clock card, plus the Quick View summary card below it. */
 export function RightContextColumn({ className }: RightContextColumnProps) {
-  const { connected } = useSensorData()
+  const { connected, selectedStation } = useSensorData()
   const { t } = useT()
   const now = useClock()
 
@@ -39,14 +40,14 @@ export function RightContextColumn({ className }: RightContextColumnProps) {
             <h3 className="truncate text-sm font-semibold text-foreground">{t('app.siteName')}</h3>
             <p className="truncate text-xs text-muted-foreground">{t('app.subtitle')}</p>
           </div>
-          <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-            AK-001
+          {/* The currently selected board (see StationSwitcher above ParamGrid) -- was a
+              hardcoded "AK-001" placeholder before multi-station support existed. */}
+          <span
+            className="shrink-0 truncate rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+            title={stationLabel(selectedStation, t)}
+          >
+            {stationLabel(selectedStation, t)}
           </span>
-        </div>
-
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MapPin className="h-3.5 w-3.5 shrink-0" />
-          <span>18.80°N, 98.95°E</span>
         </div>
 
         <div className="my-3 h-px bg-border" />

@@ -28,6 +28,12 @@ const en = {
   'app.siteNameShort': 'Ang Kaew',
   'app.subtitle': 'Chiang Mai University',
 
+  // --- stations --------------------------------------------------------------
+  /** Friendly label for the "default" station sentinel -- shown instead of the
+   * literal word "default" whenever a board has no custom station name set. */
+  'station.defaultLabel': 'Main Station',
+  'station.switcherLabel': 'Station',
+
   // --- user ----------------------------------------------------------------
   'user.guest': 'Guest',
   'user.role': 'View only',
@@ -345,6 +351,18 @@ const en = {
   'wifi.backendTestSuccess': 'Connected ({detail})',
   'wifi.backendTestUnreachable': "Couldn't reach the backend",
   'wifi.backendTestFailed': "Couldn't run the test",
+  'wifi.stationTitle': 'Station name',
+  'wifi.stationDescription':
+    'A short label for this board (e.g. "Inlet" or "Outlet") so the dashboard can tell several boards apart. Leave unset for a single-board setup.',
+  'wifi.stationCurrentSet': 'This board is named: {name}',
+  'wifi.stationCurrentUnset': 'No station name set (reports as the main station).',
+  'wifi.stationLabel': 'Station name',
+  'wifi.stationPlaceholder': 'e.g. Inlet',
+  'wifi.stationSave': 'Save',
+  'wifi.stationSaving': 'Saving...',
+  'wifi.stationClear': 'Clear',
+  'wifi.stationSaveSuccess': 'Station name updated',
+  'wifi.stationSaveFailed': "Couldn't update the station name",
 } as const
 
 export const messages = {
@@ -359,6 +377,9 @@ export const messages = {
     'app.siteName': 'อ่างเก็บน้ำอ่างแก้ว',
     'app.siteNameShort': 'อ่างแก้ว',
     'app.subtitle': 'มหาวิทยาลัยเชียงใหม่',
+
+    'station.defaultLabel': 'สถานีหลัก',
+    'station.switcherLabel': 'สถานี',
 
     'user.guest': 'ผู้เยี่ยมชม',
     'user.role': 'ดูอย่างเดียว',
@@ -658,6 +679,18 @@ export const messages = {
     'wifi.backendTestSuccess': 'เชื่อมต่อสำเร็จ ({detail})',
     'wifi.backendTestUnreachable': 'เชื่อมต่อแบ็กเอนด์ไม่ได้',
     'wifi.backendTestFailed': 'ทดสอบไม่สำเร็จ',
+    'wifi.stationTitle': 'ชื่อสถานี',
+    'wifi.stationDescription':
+      'ป้ายชื่อสั้น ๆ สำหรับบอร์ดนี้ (เช่น "ทางเข้า" หรือ "ทางออก") เพื่อให้แดชบอร์ดแยกแยะหลายบอร์ดได้ หากมีบอร์ดเดียวไม่จำเป็นต้องตั้งค่า',
+    'wifi.stationCurrentSet': 'บอร์ดนี้ตั้งชื่อว่า: {name}',
+    'wifi.stationCurrentUnset': 'ยังไม่ได้ตั้งชื่อสถานี (จะรายงานเป็นสถานีหลัก)',
+    'wifi.stationLabel': 'ชื่อสถานี',
+    'wifi.stationPlaceholder': 'เช่น ทางเข้า',
+    'wifi.stationSave': 'บันทึก',
+    'wifi.stationSaving': 'กำลังบันทึก...',
+    'wifi.stationClear': 'ล้างค่า',
+    'wifi.stationSaveSuccess': 'อัปเดตชื่อสถานีแล้ว',
+    'wifi.stationSaveFailed': 'อัปเดตชื่อสถานีไม่สำเร็จ',
   } satisfies Record<keyof typeof en, string>,
 } as const
 

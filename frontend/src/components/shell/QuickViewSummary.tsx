@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { PARAM_META, PARAM_ORDER, type ParamKey } from '@/lib/paramMeta'
-import { useSensorData } from '@/lib/SensorProvider'
+import { useSelectedStationData } from '@/lib/SensorProvider'
 import { colorFor, isSensorFault, rangeStatusFor, type RangeParam } from '@/lib/thresholds'
 import { wqiFromReading, type WqiBand } from '@/lib/wqi'
 import type { MessageKey } from '@/lib/strings'
@@ -186,7 +186,7 @@ interface QuickViewSummaryProps {
 }
 
 export function QuickViewSummary({ className }: QuickViewSummaryProps) {
-  const { reading } = useSensorData()
+  const { reading } = useSelectedStationData()
   const { t } = useT()
   const wqi = reading ? wqiFromReading(reading) : { score: null, band: 'unknown' as WqiBand }
 

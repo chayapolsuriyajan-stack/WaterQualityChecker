@@ -16,9 +16,10 @@
  *
  * Speaks the exact same line-based protocol as wifi_serial.py / esp32.ino's "USB WiFi
  * provisioning" section (WIFI_SCAN/WIFI_SET/WIFI_STATUS, BACKEND_SET/BACKEND_CLEAR/
- * BACKEND_STATUS/BACKEND_TEST) -- see esp32.ino for the authoritative protocol definition.
+ * BACKEND_STATUS/BACKEND_TEST, STATION_SET/STATION_CLEAR/STATION_STATUS) -- see esp32.ino
+ * for the authoritative protocol definition.
  */
-import type { WifiBackendStatus, WifiNetwork, WifiStatus } from './types'
+import type { WifiBackendStatus, WifiNetwork, WifiStationStatus, WifiStatus } from './types'
 
 const BAUD_RATE = 115200
 // Mirrors wifi_serial.py's _BOOT_SETTLE_SECONDS: opening a fresh connection resets most ESP32
@@ -268,6 +269,53 @@ export async function testBackendConnection(
       if (line.startsWith('BACKEND_TEST_FAILED|')) {
         return { ok: true, reachable: false, httpCode: 0, detail: line.slice('BACKEND_TEST_FAILED|'.length) }
       }
+    }
+    return { ok: false, error: "timed out waiting for the ESP32's response" }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function setStationName(name: string, timeoutMs = 5000): Promise<SerialResult<{ name: string }>> {
+  if (!port) return { ok: false, error: 'not connected' }
+  if (name.includes('|') || name.includes('\n')) {
+    return { ok: false, error: "station name cannot contain '|' or a newline" }
+  }
+  try {
+    await sendLine(`STATION_SET|${name}`)
+    const lines = await readLinesUntil(['STATION_SET_OK|', 'STATION_SET_FAILED|'], timeoutMs)
+    for (const line of lines) {
+      if (line.startsWith('STATION_SET_OK|')) return { ok: true, name: line.slice('STATION_SET_OK|'.length) }
+      if (line.startsWith('STATION_SET_FAILED|')) return { ok: false, error: line.slice('STATION_SET_FAILED|'.length) }
+    }
+    return { ok: false, error: "timed out waiting for the ESP32's response" }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function clearStationName(timeoutMs = 5000): Promise<SerialResult<{ name: string }>> {
+  if (!port) return { ok: false, error: 'not connected' }
+  try {
+    await sendLine('STATION_CLEAR')
+    const lines = await readLinesUntil(['STATION_SET_OK|'], timeoutMs)
+    for (const line of lines) {
+      if (line.startsWith('STATION_SET_OK|')) return { ok: true, name: line.slice('STATION_SET_OK|'.length) }
+    }
+    return { ok: false, error: "timed out waiting for the ESP32's response" }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function getStationStatus(timeoutMs = 5000): Promise<SerialResult<WifiStationStatus>> {
+  if (!port) return { ok: false, error: 'not connected' }
+  try {
+    await sendLine('STATION_STATUS')
+    const lines = await readLinesUntil(['STATION_STATUS|'], timeoutMs)
+    for (const line of lines) {
+      if (!line.startsWith('STATION_STATUS|')) continue
+      return { ok: true, name: line.slice('STATION_STATUS|'.length) }
     }
     return { ok: false, error: "timed out waiting for the ESP32's response" }
   } catch (err) {

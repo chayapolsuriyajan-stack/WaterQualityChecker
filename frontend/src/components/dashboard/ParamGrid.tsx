@@ -26,6 +26,8 @@ interface ParamGridProps {
   /** Shared history window -- see DashboardView. */
   window: HistoryWindow
   onWindowChange: (window: HistoryWindow) => void
+  /** Selected station -- see DashboardView/StationSwitcher. */
+  station: string
 }
 
 /** Sparkline threshold + label per param, kept out of paramMeta since it's dashboard-card-only.
@@ -41,7 +43,7 @@ const SPARKLINE_THRESHOLD: Partial<Record<ParamKey, { value: number; label: stri
 /** Params with no good/warn/danger judgment at all (see ParamMeta's impactKey comment). */
 const UNSCORABLE_PARAMS = new Set<ParamKey>(['flow'])
 
-export function ParamGrid({ reading, series, window, onWindowChange }: ParamGridProps) {
+export function ParamGrid({ reading, series, window, onWindowChange, station }: ParamGridProps) {
   const { t } = useT()
   const { visible } = useDashboardPrefs()
   const [openParam, setOpenParam] = useState<ParamKey | null>(null)
@@ -141,6 +143,7 @@ export function ParamGrid({ reading, series, window, onWindowChange }: ParamGrid
         scorable={openScorable}
         window={window}
         onWindowChange={onWindowChange}
+        station={station}
       />
     </>
   )

@@ -23,6 +23,8 @@ import {
 } from '@/lib/api'
 import type { CalibrationState } from '@/lib/types'
 import { useT } from '@/lib/i18n'
+import { useSensorData } from '@/lib/SensorProvider'
+import { StationSwitcher, stationLabel } from '@/components/shell/StationSwitcher'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -33,8 +35,6 @@ import type { TwoPointFormSubmitRow } from './TwoPointForm'
 import { CoefficientPreview } from './CoefficientPreview'
 import type { TdsCoefficients, TurbidityCoefficients } from './CoefficientPreview'
 import { WifiPanel } from './WifiPanel'
-
-const QUERY_KEY = ['calibration'] as const
 
 type CalibratableSensor = 'turbidity' | 'tds' | 'flow'
 
@@ -102,10 +102,15 @@ function applyOptimisticPatch(
 
 export function CalibrationView() {
   const { t } = useT()
+  const { selectedStation } = useSensorData()
   const [activeSensor, setActiveSensor] = useState<CalibrationSensorId>('turbidity')
   const [pendingSensor, setPendingSensor] = useState<CalibratableSensor | null>(null)
   const queryClient = useQueryClient()
   const reduceMotion = useReducedMotion()
+
+  // Calibration is per-station (see CLAUDE.md's Multi-station support) -- switching stations
+  // via the switcher below re-points every query/mutation at that station's own coefficients.
+  const QUERY_KEY = ['calibration', selectedStation] as const
 
   const applyMutation = useMutation({
     mutationFn: async ({ sensor, rows }: ApplyVariables) => {
@@ -117,13 +122,13 @@ export function CalibrationView() {
       const sendsRaw = sensor === 'turbidity' || sensor === 'flow'
       for (const row of rows) {
         if (sendsRaw) {
-          await capturePoint({ sensor, reference: row.reference, raw: row.raw })
+          await capturePoint({ sensor, reference: row.reference, raw: row.raw }, selectedStation)
         } else {
-          await capturePoint({ sensor, reference: row.reference })
+          await capturePoint({ sensor, reference: row.reference }, selectedStation)
         }
       }
-      await saveCalibration()
-      return setCalibrationMode(true)
+      await saveCalibration(selectedStation)
+      return setCalibrationMode(true, selectedStation)
     },
     onMutate: async ({ sensor, rows }: ApplyVariables) => {
       await queryClient.cancelQueries({ queryKey: QUERY_KEY })
@@ -171,17 +176,17 @@ export function CalibrationView() {
   // mutation's own onSettled refetch has a chance to reconcile.
   const { data, isLoading } = useQuery({
     queryKey: QUERY_KEY,
-    queryFn: getCalibration,
+    queryFn: () => getCalibration(selectedStation),
     refetchInterval: applyMutation.isPending ? false : 1500,
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (args: { sensor: CalibratableSensor; index: number }) => deletePoint(args),
+    mutationFn: (args: { sensor: CalibratableSensor; index: number }) => deletePoint(args, selectedStation),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
   })
 
   const resetMutation = useMutation({
-    mutationFn: (sensor: CalibratableSensor) => resetCalibration(sensor),
+    mutationFn: (sensor: CalibratableSensor) => resetCalibration(sensor, selectedStation),
     onSuccess: () => {
       toast.success(t('calib.resetSuccess'))
     },
@@ -192,7 +197,7 @@ export function CalibrationView() {
   })
 
   const modeMutation = useMutation({
-    mutationFn: (enabled: boolean) => setCalibrationMode(enabled),
+    mutationFn: (enabled: boolean) => setCalibrationMode(enabled, selectedStation),
     onMutate: async (enabled: boolean) => {
       await queryClient.cancelQueries({ queryKey: QUERY_KEY })
       const previous = queryClient.getQueryData<CalibrationState>(QUERY_KEY)
@@ -210,9 +215,12 @@ export function CalibrationView() {
 
   return (
     <div className="flex h-full flex-col gap-4 p-4 sm:p-6">
+      <StationSwitcher />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">{t('calib.title')}</h1>
+          <h1 className="text-lg font-semibold text-foreground">
+            {t('calib.title')} · {stationLabel(selectedStation, t)}
+          </h1>
           <p className="text-sm text-muted-foreground">{t('calib.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">

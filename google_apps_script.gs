@@ -33,7 +33,8 @@ function doPost(e) {
     data.temperature !== undefined ? data.temperature : "",
     data.turbidity !== undefined ? data.turbidity : "",
     data.tds !== undefined ? data.tds : "",
-    data.flowRate !== undefined ? data.flowRate : ""
+    data.flowRate !== undefined ? data.flowRate : "",
+    data.station !== undefined && data.station !== "" ? data.station : "default"
   );
 
   return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
@@ -50,13 +51,20 @@ function doPost(e) {
 // doesn't fit this per-reading log; see CLAUDE.md's Flow sensor section). Older rows written
 // before this column existed simply have a blank cell here -- doGet treats a blank the same
 // as any other missing value (see below).
-function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds, flowRate) {
+//
+// Station is APPENDED as the last column (not inserted after Timestamp, even though that
+// reads more naturally) so that rows written before multi-station support existed keep their
+// existing column meanings intact -- Temperature/Turbidity/TDS/Flow Rate stay in the same
+// columns they've always been in. An older row simply has a blank Station cell, which doGet
+// (below) treats the same as main.py's own DEFAULT_STATION sentinel: "default". No backfill
+// needed or attempted.
+function insertReadingAtTop_(sheet, timestamp, temperature, turbidity, tds, flowRate, station) {
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)", "Flow Rate (L/min)"]);
+    sheet.appendRow(["Timestamp", "Temperature (C)", "Turbidity (raw ADC)", "TDS (ppm)", "Flow Rate (L/min)", "Station"]);
   }
 
   sheet.insertRowBefore(2);
-  sheet.getRange(2, 1, 1, 5).setValues([[timestamp, temperature, turbidity, tds, flowRate]]);
+  sheet.getRange(2, 1, 1, 6).setValues([[timestamp, temperature, turbidity, tds, flowRate, station]]);
 }
 
 // Serves recent rows back as JSON so the dashboard's history graph can read a chosen window
@@ -77,6 +85,10 @@ function doGet(e) {
   if (isNaN(seconds) || seconds <= 0) seconds = 15 * 60; // default 15 min
   var maxPoints = parseInt(params.maxPoints, 10);
   if (isNaN(maxPoints) || maxPoints <= 0) maxPoints = 400;
+  // Optional station filter (main.py's GET /history?station= proxies this through) -- mirrors
+  // main.py's own DEFAULT_STATION sentinel: an unset/blank Station cell (rows written before
+  // multi-station support existed) is treated as "default", same as everywhere else.
+  var stationFilter = params.station && params.station !== "" ? params.station : null;
 
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var lastRow = sheet.getLastRow();
@@ -90,12 +102,12 @@ function doGet(e) {
   // Leading slice: row 2 is the newest reading, row (2 + numRows - 1) is the oldest one
   // still inside our read budget. This is correct regardless of how much older, previously
   // bottom-appended data sits further down the sheet -- we simply never read that far.
-  // 5 columns even though older rows (written before the Flow Rate column existed) only have
-  // 4 -- getRange on a short row just returns "" for the missing cell, handled below.
-  var values = sheet.getRange(2, 1, numRows, 5).getValues();
+  // 6 columns even though older rows (written before the Flow Rate / Station columns existed)
+  // only have 5 or 4 -- getRange on a short row just returns "" for the missing cell(s), handled below.
+  var values = sheet.getRange(2, 1, numRows, 6).getValues();
   values.reverse(); // newest-first -> chronological ascending (oldest first)
 
-  // Keep only rows inside the window.
+  // Keep only rows inside the window (and matching stationFilter, if given).
   var cutoffMs = Date.now() - seconds * 1000;
   var filtered = [];
   for (var i = 0; i < values.length; i++) {
@@ -104,12 +116,15 @@ function doGet(e) {
       // "" (blank cell, either an unset flowRate or a pre-Flow-Rate-column row) -> null,
       // matching how the backend represents "no flow reading" everywhere else.
       var flowRate = values[i][4];
+      var station = values[i][5] === "" ? "default" : values[i][5];
+      if (stationFilter !== null && station !== stationFilter) continue;
       filtered.push({
         timestamp: ts,
         temperature: values[i][1],
         turbidity: values[i][2],
         tds: values[i][3],
         flowRate: flowRate === "" ? null : flowRate,
+        station: station,
       });
     }
   }
