@@ -2,19 +2,20 @@
  * Station picker for the Dashboard tab: one tab per ESP32 board that has reported this
  * session (see useSensorSocket's `stations` map), switching which station's live data and
  * history the rest of the dashboard shows. Renders nothing for a single-station deployment
- * (the common case -- one board, never given a custom name) so it doesn't clutter the UI
- * with a switcher that has nothing to switch between.
+ * with no Admin viewing it (the common case -- one board, never given a custom name) so it
+ * doesn't clutter the UI with a switcher that has nothing to switch between; an Admin still
+ * sees it even with one station, since the rename UI needs to be reachable somewhere.
  *
  * Admin-only rename: a pencil icon next to each tab opens an inline rename input. See
  * docs/superpowers/specs/2026-09-04-guest-admin-roles-design.md for why this is a real
  * data migration (POST /station/rename), not a cosmetic label.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Pencil, Radio, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useT } from '@/lib/i18n'
-import { renameStation } from '@/lib/api'
+import { ApiError, renameStation } from '@/lib/api'
 import { useRole } from '@/lib/RoleProvider'
 import { useSensorData } from '@/lib/SensorProvider'
 
@@ -45,15 +46,21 @@ function RenameForm({ station, onDone }: RenameFormProps) {
     setSaving(true)
     try {
       const result = await renameStation(station, trimmed)
+      // Redundant with SensorProvider's own lastRename-driven effect (which handles every
+      // connected client, this one included, once the station_renamed WS message arrives) --
+      // kept as a harmless immediate optimistic update for the client that caused the rename,
+      // landing slightly earlier than the WS round-trip.
       if (selectedStation === station) setSelectedStation(result.new)
       toast.success(t('station.renameSuccess'))
       onDone()
     } catch (err) {
-      const message = err instanceof Error ? err.message : ''
-      if (message.includes('409')) {
+      if (err instanceof ApiError && err.status === 409) {
         toast.error(t('station.renameFailedCollision'))
-      } else if (message.includes('404')) {
+      } else if (err instanceof ApiError && err.status === 404) {
         toast.error(t('station.renameFailedNotFound'))
+        // The target station provably no longer exists -- leaving the form open inviting
+        // another save attempt against a name that's gone is pointless.
+        onDone()
       } else {
         toast.error(t('station.renameFailedGeneric'))
       }
@@ -75,6 +82,7 @@ function RenameForm({ station, onDone }: RenameFormProps) {
           }}
           autoFocus
           disabled={saving}
+          aria-label={t('station.renameLabel')}
           className="w-32 bg-transparent text-sm outline-none"
         />
         <button
@@ -109,17 +117,23 @@ export function StationSwitcher() {
   const { stationNames, selectedStation, setSelectedStation } = useSensorData()
   const [renaming, setRenaming] = useState<string | null>(null)
 
-  if (stationNames.length <= 1) return null
+  // Close the rename form if role switches away from Admin mid-edit (e.g. via UserBadge's
+  // Switch Account button) -- a Guest should never see an open rename input.
+  useEffect(() => {
+    if (role !== 'admin') setRenaming(null)
+  }, [role])
+
+  if (stationNames.length <= 1 && role !== 'admin') return null
 
   return (
     <div className="flex items-center gap-2">
       <Radio className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      {renaming ? (
-        <RenameForm station={renaming} onDone={() => setRenaming(null)} />
-      ) : (
-        <Tabs value={selectedStation} onValueChange={setSelectedStation}>
-          <TabsList>
-            {stationNames.map((station) => (
+      <Tabs value={selectedStation} onValueChange={setSelectedStation}>
+        <TabsList>
+          {stationNames.map((station) =>
+            station === renaming ? (
+              <RenameForm key={station} station={station} onDone={() => setRenaming(null)} />
+            ) : (
               <div key={station} className="flex items-center">
                 <TabsTrigger value={station}>{stationLabel(station, t)}</TabsTrigger>
                 {role === 'admin' && (
@@ -134,10 +148,10 @@ export function StationSwitcher() {
                   </button>
                 )}
               </div>
-            ))}
-          </TabsList>
-        </Tabs>
-      )}
+            ),
+          )}
+        </TabsList>
+      </Tabs>
     </div>
   )
 }

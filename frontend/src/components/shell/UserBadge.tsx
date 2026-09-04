@@ -1,4 +1,4 @@
-import { LogOut, ShieldCheck, User } from 'lucide-react'
+import { ArrowLeftRight, ShieldCheck, User } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { useRole } from '@/lib/RoleProvider'
@@ -28,7 +28,7 @@ export function UserBadge({ collapsed = false, className }: UserBadgeProps) {
       <button
         type="button"
         onClick={toggleRole}
-        title={`${roleLabel} — ${switchLabel}`}
+        title={`${roleLabel}. ${switchLabel}.`}
         aria-label={switchLabel}
         className={cn(
           'flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25',
@@ -61,7 +61,7 @@ export function UserBadge({ collapsed = false, className }: UserBadgeProps) {
         title={switchLabel}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
       >
-        <LogOut className="h-4 w-4" />
+        <ArrowLeftRight className="h-4 w-4" />
       </button>
     </div>
   )

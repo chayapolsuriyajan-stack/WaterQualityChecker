@@ -453,22 +453,36 @@ def _station_raw_buffers(station: str) -> dict:
     return bufs
 
 
+# Every in-memory dict keyed by station name. Single source of truth for
+# POST /station/rename's migration AND _station_known_in_memory's existence
+# check below -- if a future feature adds another per-station dict, add it
+# here and both consumers pick it up automatically instead of needing two
+# separate edits (which is exactly how this list itself started out of sync).
+PER_STATION_MAPS = (
+    history_buffer,
+    sensor_stats,
+    last_severity,
+    calibration,
+    calibration_mode,
+    latest_raw,
+    _raw_buffers,
+    _daily_usage_totals,
+)
+
+
 def _station_known_in_memory(station: str) -> bool:
     """True if `station` appears in any of the in-memory per-station structures.
     Deliberately checks raw dict membership, NOT the _station_*() accessor functions
     above -- those lazily CREATE an entry on first access, which would make every
     station "exist" the moment you asked about it."""
-    return (
-        station in history_buffer
-        or station in calibration
-        or station in sensor_stats
-        or station in latest_raw
-    )
+    return any(station in m for m in PER_STATION_MAPS)
 
 
 def _save_calibration() -> None:
-    with open(CALIBRATION_PATH, "w", encoding="utf-8") as f:
+    tmp_path = CALIBRATION_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(calibration, f, indent=2)
+    os.replace(tmp_path, CALIBRATION_PATH)
 
 
 def _now_iso() -> str:
@@ -1152,7 +1166,10 @@ async def reset_flow_usage_today(station: str = DEFAULT_STATION):
 @app.post("/station/rename")
 async def rename_station(request: Request):
     body = await request.json()
-    old = _normalize_station(body.get("old"))
+    old_raw = body.get("old")
+    if not isinstance(old_raw, str) or not old_raw.strip():
+        return JSONResponse({"error": "old station name is required"}, status_code=400)
+    old = _normalize_station(old_raw)
     new_raw = body.get("new")
     if not isinstance(new_raw, str) or not new_raw.strip():
         return JSONResponse({"error": "new station name is required"}, status_code=400)
@@ -1180,14 +1197,13 @@ async def rename_station(request: Request):
         if old_key in mapping:
             mapping[new_key] = mapping.pop(old_key)
 
-    move(history_buffer, old, new)
-    move(sensor_stats, old, new)
-    move(last_severity, old, new)
-    move(calibration, old, new)
-    move(calibration_mode, old, new)
-    move(latest_raw, old, new)
-    move(_raw_buffers, old, new)
-    move(_daily_usage_totals, old, new)
+    # Everything from here to the end of the daily_usage rename below is synchronous / one
+    # storage call each -- no await point exists where a concurrent request could observe a
+    # half-migrated state.
+    for m in PER_STATION_MAPS:
+        move(m, old, new)
+    # _daily_usage_seeded is a set, not a dict -- can't join PER_STATION_MAPS above, handled
+    # separately.
     if old in _daily_usage_seeded:
         _daily_usage_seeded.discard(old)
         _daily_usage_seeded.add(new)
@@ -1195,6 +1211,10 @@ async def rename_station(request: Request):
     if storage.enabled():
         await asyncio.to_thread(storage.rename_station_usage, old, new)
 
+    # NOTE: _save_calibration() dumps the ENTIRE calibration dict, not just this station --
+    # same behavior as POST /calibration/save, but a rename is a more surprising trigger for
+    # it. Any other station's uncommitted (unsaved) capture points get persisted too as a
+    # side effect.
     if new in calibration:
         try:
             _save_calibration()
@@ -1202,6 +1222,12 @@ async def rename_station(request: Request):
             print(f"⚠️ Failed to persist calibration.json after renaming station: {exc}")
 
     await broadcast_station_renamed(old, new)
+
+    # Google Sheets rows already logged under the old station name are NOT updated -- harmless
+    # today since _fetch_sheet_rows's station param isn't yet filtered by the deployed Apps
+    # Script (see CLAUDE.md), but once that script gains real per-station filtering, a renamed
+    # station's older Sheets-backed history will appear to vanish from /history's long-window
+    # results under the new name.
 
     print(f"✏️ Renamed station {old!r} -> {new!r}")
     return JSONResponse({"old": old, "new": new})

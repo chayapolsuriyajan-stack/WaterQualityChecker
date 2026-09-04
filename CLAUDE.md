@@ -61,6 +61,15 @@ provisioning above) — no separate slug/ID.
   created lazily on first use so `"default"` needs no pre-registration.
 - **REST API**: a `?station=<name>` query param, defaulting server-side to `"default"`, on
   `GET /history`, every `/calibration*` endpoint, `GET /flow/usage`, `POST /flow/reset-today`.
+- **`POST /station/rename`** — `{old, new}`, admin-only rename that migrates a station's identity
+  across every structure in `PER_STATION_MAPS` (in-memory) plus the `daily_usage` SQLite table
+  (`storage.rename_station_usage`), persists `calibration.json` immediately if the renamed
+  station had calibration data, and broadcasts `{"type": "station_renamed", "old": ..., "new":
+  ...}` over `/ws/app` so connected dashboards update the station's key live without waiting for
+  a new reading. Does **not** touch the physical board's own provisioned name — the board will
+  start a fresh station under its old name on its next reading unless separately reprovisioned
+  over USB. Adding a new per-station in-memory structure? Add it to `PER_STATION_MAPS` — it's the
+  single list both the rename migration and the station-existence check read from.
 - **`calibration.json`** is `{"<station>": {turbidity: {...}, tds: {...}, flow: {...}}, ...}`.
   An old flat-shaped file (top-level keys are `turbidity`/`tds`/`flow` directly) migrates once on
   load: wrapped as `{"default": <old content>}`, a `.bak-premigration` backup written alongside,

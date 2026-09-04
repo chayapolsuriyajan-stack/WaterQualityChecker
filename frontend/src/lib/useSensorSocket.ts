@@ -40,6 +40,12 @@ export interface UseSensorSocketResult {
   /** Whether the shared /ws/app socket itself is up -- this is connection health, not
    * per-station; a station can simply have gone quiet while the socket stays connected. */
   connected: boolean
+  /** The most recent station_renamed event seen over the socket, or null if none yet this
+   * session. `at` is a Date.now() timestamp so consumers can key off a fresh event even when
+   * `old`/`new` happen to repeat (e.g. a rename immediately followed by its reverse). Lets
+   * SensorProvider follow a live rename for every connected client, not just the one that
+   * initiated it. */
+  lastRename: { old: string; new: string; at: number } | null
 }
 
 export function emptySeries(): SensorSeries {
@@ -168,6 +174,7 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
 export function useSensorSocket(): UseSensorSocketResult {
   const [stations, setStations] = useState<Record<string, StationSensorState>>({})
   const [connected, setConnected] = useState(false)
+  const [lastRename, setLastRename] = useState<{ old: string; new: string; at: number } | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -231,6 +238,7 @@ export function useSensorSocket(): UseSensorSocketResult {
         const { [oldName]: moved, ...rest } = prev
         return { ...rest, [newName]: moved }
       })
+      setLastRename({ old: oldName, new: newName, at: Date.now() })
     }
 
     // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch any
@@ -315,5 +323,5 @@ export function useSensorSocket(): UseSensorSocketResult {
     }
   }, [])
 
-  return { stations, connected }
+  return { stations, connected, lastRename }
 }

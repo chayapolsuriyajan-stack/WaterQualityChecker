@@ -13,6 +13,15 @@ import type {
   WifiStatus,
 } from './types'
 
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
@@ -20,7 +29,7 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`${init?.method ?? 'GET'} ${input} failed: ${res.status} ${text}`)
+    throw new ApiError(res.status, `${init?.method ?? 'GET'} ${input} failed: ${res.status} ${text}`)
   }
   // Some endpoints (e.g. POST /calibration/mode) may return no body.
   const contentType = res.headers.get('content-type') ?? ''
