@@ -20,6 +20,7 @@ import './index.css'
 import App from './App'
 import { LanguageProvider, translateStandalone } from '@/lib/i18n'
 import { DashboardPrefsProvider } from '@/lib/DashboardPrefsProvider'
+import { RoleProvider } from '@/lib/RoleProvider'
 import { isPushSupported, registerServiceWorker } from '@/lib/push'
 
 // Registering the service worker doesn't itself prompt for permission or
@@ -87,12 +88,14 @@ createRoot(document.getElementById('root')!).render(
       >
         <LanguageProvider>
           <DashboardPrefsProvider>
-            <MotionConfig reducedMotion="user">
-              <QueryClientProvider client={queryClient}>
-                <App />
-                <Toaster richColors position="top-right" />
-              </QueryClientProvider>
-            </MotionConfig>
+            <RoleProvider>
+              <MotionConfig reducedMotion="user">
+                <QueryClientProvider client={queryClient}>
+                  <App />
+                  <Toaster richColors position="top-right" />
+                </QueryClientProvider>
+              </MotionConfig>
+            </RoleProvider>
           </DashboardPrefsProvider>
         </LanguageProvider>
       </ThemeProvider>
