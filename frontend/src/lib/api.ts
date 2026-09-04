@@ -46,6 +46,18 @@ export function getCalibration(station: string): Promise<CalibrationState> {
   return request<CalibrationState>(`/calibration?station=${encodeURIComponent(station)}`)
 }
 
+export interface RenameStationResponse {
+  old: string
+  new: string
+}
+
+export function renameStation(oldName: string, newName: string): Promise<RenameStationResponse> {
+  return request<RenameStationResponse>('/station/rename', {
+    method: 'POST',
+    body: JSON.stringify({ old: oldName, new: newName }),
+  })
+}
+
 export type CalibrationSensor = 'turbidity' | 'tds' | 'flow'
 
 export interface CapturePointArgs {

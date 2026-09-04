@@ -220,6 +220,19 @@ export function useSensorSocket(): UseSensorSocketResult {
       seedStationHistory(r.station)
     }
 
+    /** A station was renamed server-side (see main.py's POST /station/rename). Moves its
+     * live reading + sparkline series from the old key to the new one so the dashboard
+     * reflects the rename immediately, without waiting for the renamed board's next
+     * reading (which, per the rename UI's own warning, may still arrive under the OLD
+     * name until the board is separately reprovisioned over USB). */
+    const applyStationRenamed = (oldName: string, newName: string) => {
+      setStations((prev) => {
+        if (!(oldName in prev)) return prev
+        const { [oldName]: moved, ...rest } = prev
+        return { ...rest, [newName]: moved }
+      })
+    }
+
     // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch any
     // station's `reading`/`series`: the last real values stay on screen (frozen) rather
     // than being replaced with fabricated numbers, so a genuine outage reads as "stale",
@@ -252,6 +265,16 @@ export function useSensorSocket(): UseSensorSocketResult {
         armStaleTimer()
         try {
           const data = JSON.parse(event.data)
+          if (
+            data &&
+            typeof data === 'object' &&
+            data.type === 'station_renamed' &&
+            typeof data.old === 'string' &&
+            typeof data.new === 'string'
+          ) {
+            applyStationRenamed(data.old, data.new)
+            return
+          }
           const parsed = extractReading(data)
           if (parsed) applyReading(parsed)
         } catch {
