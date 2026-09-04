@@ -33,11 +33,24 @@ const en = {
    * literal word "default" whenever a board has no custom station name set. */
   'station.defaultLabel': 'Main Station',
   'station.switcherLabel': 'Station',
+  'station.rename': 'Rename station',
+  'station.renameLabel': 'Station name',
+  'station.renameWarning':
+    "This only renames it here. The board itself still reports the old name and will start a new, uncalibrated station under it next time it reports, unless you also reprovision the board's name over USB.",
+  'station.renameSuccess': 'Station renamed.',
+  'station.renameFailedCollision': 'A station with that name already exists.',
+  'station.renameFailedNotFound': 'That station no longer exists.',
+  'station.renameFailedGeneric': 'Failed to rename station.',
+  'station.renameCancel': 'Cancel',
+  'station.renameSave': 'Save',
 
   // --- user ----------------------------------------------------------------
   'user.guest': 'Guest',
   'user.role': 'View only',
-  'user.signOut': 'Sign out',
+  'user.admin': 'Admin',
+  'user.roleAdmin': 'Full access',
+  'user.switchToAdmin': 'Switch to Admin',
+  'user.switchToGuest': 'Switch to Guest',
 
   // --- status ----------------------------------------------------------------
   'status.good': 'Good',
@@ -380,10 +393,23 @@ export const messages = {
 
     'station.defaultLabel': 'สถานีหลัก',
     'station.switcherLabel': 'สถานี',
+    'station.rename': 'เปลี่ยนชื่อสถานี',
+    'station.renameLabel': 'ชื่อสถานี',
+    'station.renameWarning':
+      'การเปลี่ยนชื่อนี้มีผลเฉพาะที่นี่เท่านั้น บอร์ดยังคงรายงานชื่อเดิม และจะสร้างสถานีใหม่ที่ยังไม่ได้ปรับเทียบภายใต้ชื่อเดิมในครั้งถัดไปที่รายงาน เว้นแต่จะตั้งชื่อบอร์ดใหม่ผ่าน USB ด้วย',
+    'station.renameSuccess': 'เปลี่ยนชื่อสถานีแล้ว',
+    'station.renameFailedCollision': 'มีสถานีชื่อนี้อยู่แล้ว',
+    'station.renameFailedNotFound': 'ไม่พบสถานีนี้แล้ว',
+    'station.renameFailedGeneric': 'เปลี่ยนชื่อสถานีไม่สำเร็จ',
+    'station.renameCancel': 'ยกเลิก',
+    'station.renameSave': 'บันทึก',
 
     'user.guest': 'ผู้เยี่ยมชม',
     'user.role': 'ดูอย่างเดียว',
-    'user.signOut': 'ออกจากระบบ',
+    'user.admin': 'ผู้ดูแลระบบ',
+    'user.roleAdmin': 'สิทธิ์เต็ม',
+    'user.switchToAdmin': 'สลับเป็นผู้ดูแลระบบ',
+    'user.switchToGuest': 'สลับเป็นผู้เยี่ยมชม',
 
     'status.good': 'ดี',
     'status.caution': 'เฝ้าระวัง',
