@@ -42,8 +42,8 @@ export function UserBadge({ collapsed = false, className }: UserBadgeProps) {
       </div>
       <button
         type="button"
-        aria-label="Switch roles"
-        title="Switch roles"
+        aria-label={t('user.switchToAdmin')}
+        title={t('user.switchToAdmin')}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
       >
         <LogOut className="h-4 w-4" />
