@@ -288,6 +288,19 @@ async def broadcast_sensor_update(payload: dict) -> None:
             ui_clients.discard(client)
 
 
+async def broadcast_station_renamed(old: str, new: str) -> None:
+    disconnected_clients = []
+    message = json.dumps({"type": "station_renamed", "old": old, "new": new})
+    async with ui_clients_lock:
+        for client in list(ui_clients):
+            try:
+                await client.send_text(message)
+            except Exception:
+                disconnected_clients.append(client)
+        for client in disconnected_clients:
+            ui_clients.discard(client)
+
+
 def _post_to_google_sheets(payload: dict) -> None:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -438,6 +451,19 @@ def _station_raw_buffers(station: str) -> dict:
         bufs = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
         _raw_buffers[station] = bufs
     return bufs
+
+
+def _station_known_in_memory(station: str) -> bool:
+    """True if `station` appears in any of the in-memory per-station structures.
+    Deliberately checks raw dict membership, NOT the _station_*() accessor functions
+    above -- those lazily CREATE an entry on first access, which would make every
+    station "exist" the moment you asked about it."""
+    return (
+        station in history_buffer
+        or station in calibration
+        or station in sensor_stats
+        or station in latest_raw
+    )
 
 
 def _save_calibration() -> None:
@@ -1121,6 +1147,64 @@ async def reset_flow_usage_today(station: str = DEFAULT_STATION):
     if storage.enabled():
         await asyncio.to_thread(storage.reset_daily_usage, _local_date(), station)
     return JSONResponse({"ok": True, "today": 0.0})
+
+
+@app.post("/station/rename")
+async def rename_station(request: Request):
+    body = await request.json()
+    old = _normalize_station(body.get("old"))
+    new_raw = body.get("new")
+    if not isinstance(new_raw, str) or not new_raw.strip():
+        return JSONResponse({"error": "new station name is required"}, status_code=400)
+    new = _normalize_station(new_raw)
+    if new == DEFAULT_STATION and old != DEFAULT_STATION:
+        return JSONResponse(
+            {"error": f'cannot rename to the reserved name "{DEFAULT_STATION}"'}, status_code=400
+        )
+    if old == new:
+        return JSONResponse({"error": "new name must differ from the current name"}, status_code=400)
+
+    old_exists = _station_known_in_memory(old) or (
+        storage.enabled() and await asyncio.to_thread(storage.station_has_usage, old)
+    )
+    if not old_exists:
+        return JSONResponse({"error": f'station "{old}" not found'}, status_code=404)
+
+    new_exists = _station_known_in_memory(new) or (
+        storage.enabled() and await asyncio.to_thread(storage.station_has_usage, new)
+    )
+    if new_exists:
+        return JSONResponse({"error": f'station "{new}" already exists'}, status_code=409)
+
+    def move(mapping: dict, old_key: str, new_key: str) -> None:
+        if old_key in mapping:
+            mapping[new_key] = mapping.pop(old_key)
+
+    move(history_buffer, old, new)
+    move(sensor_stats, old, new)
+    move(last_severity, old, new)
+    move(calibration, old, new)
+    move(calibration_mode, old, new)
+    move(latest_raw, old, new)
+    move(_raw_buffers, old, new)
+    move(_daily_usage_totals, old, new)
+    if old in _daily_usage_seeded:
+        _daily_usage_seeded.discard(old)
+        _daily_usage_seeded.add(new)
+
+    if storage.enabled():
+        await asyncio.to_thread(storage.rename_station_usage, old, new)
+
+    if new in calibration:
+        try:
+            _save_calibration()
+        except OSError as exc:
+            print(f"⚠️ Failed to persist calibration.json after renaming station: {exc}")
+
+    await broadcast_station_renamed(old, new)
+
+    print(f"✏️ Renamed station {old!r} -> {new!r}")
+    return JSONResponse({"old": old, "new": new})
 
 
 # --- WiFi provisioning API -----------------------------------------------------
