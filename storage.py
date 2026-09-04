@@ -244,3 +244,35 @@ def update_push_prefs(endpoint: str, prefs: dict) -> bool:
     except Exception as exc:
         print(f"⚠️ Push preference update failed: {exc}")
         return False
+
+
+def station_has_usage(station: str) -> bool:
+    """True if `station` has any daily_usage row at all (any date) -- used by
+    main.py's /station/rename to detect a name collision even for a station whose
+    in-memory state was wiped by a restart but still has historical usage on disk."""
+    if _conn is None:
+        return False
+    try:
+        with _lock:
+            row = _conn.execute(
+                "SELECT 1 FROM daily_usage WHERE station = ? LIMIT 1", (station,)
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Daily usage existence check failed: {exc}")
+        return False
+    return row is not None
+
+
+def rename_station_usage(old: str, new: str) -> None:
+    """Moves every daily_usage row from `old` to `new`. Caller (main.py) must have
+    already confirmed `new` has zero existing rows (via station_has_usage) -- this
+    does a plain UPDATE, which would violate the (date, station) primary key if `new`
+    already had a row for some date `old` also has one for."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("UPDATE daily_usage SET station = ? WHERE station = ?", (new, old))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Daily usage rename failed: {exc}")
