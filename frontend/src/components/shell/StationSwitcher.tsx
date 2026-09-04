@@ -4,10 +4,18 @@
  * history the rest of the dashboard shows. Renders nothing for a single-station deployment
  * (the common case -- one board, never given a custom name) so it doesn't clutter the UI
  * with a switcher that has nothing to switch between.
+ *
+ * Admin-only rename: a pencil icon next to each tab opens an inline rename input. See
+ * docs/superpowers/specs/2026-09-04-guest-admin-roles-design.md for why this is a real
+ * data migration (POST /station/rename), not a cosmetic label.
  */
-import { Radio } from 'lucide-react'
+import { useState } from 'react'
+import { Check, Pencil, Radio, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useT } from '@/lib/i18n'
+import { renameStation } from '@/lib/api'
+import { useRole } from '@/lib/RoleProvider'
 import { useSensorData } from '@/lib/SensorProvider'
 
 /** "default" is the backend's sentinel for a board with no station name provisioned (see
@@ -16,24 +24,116 @@ export function stationLabel(station: string, t: ReturnType<typeof useT>['t']): 
   return station === 'default' ? t('station.defaultLabel') : station
 }
 
+interface RenameFormProps {
+  station: string
+  onDone: () => void
+}
+
+/** Inline rename input replacing a tab's label while editing. */
+function RenameForm({ station, onDone }: RenameFormProps) {
+  const { t } = useT()
+  const { setSelectedStation, selectedStation } = useSensorData()
+  const [value, setValue] = useState(station)
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    const trimmed = value.trim()
+    if (!trimmed || trimmed === station) {
+      onDone()
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await renameStation(station, trimmed)
+      if (selectedStation === station) setSelectedStation(result.new)
+      toast.success(t('station.renameSuccess'))
+      onDone()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : ''
+      if (message.includes('409')) {
+        toast.error(t('station.renameFailedCollision'))
+      } else if (message.includes('404')) {
+        toast.error(t('station.renameFailedNotFound'))
+      } else {
+        toast.error(t('station.renameFailedGeneric'))
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-1">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void save()
+          if (e.key === 'Escape') onDone()
+        }}
+        autoFocus
+        disabled={saving}
+        title={t('station.renameWarning')}
+        className="w-32 bg-transparent text-sm outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => void save()}
+        disabled={saving}
+        aria-label={t('station.renameSave')}
+        className="flex h-6 w-6 items-center justify-center rounded text-primary hover:bg-primary/10"
+      >
+        <Check className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={onDone}
+        disabled={saving}
+        aria-label={t('station.renameCancel')}
+        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-secondary"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
 export function StationSwitcher() {
   const { t } = useT()
+  const { role } = useRole()
   const { stationNames, selectedStation, setSelectedStation } = useSensorData()
+  const [renaming, setRenaming] = useState<string | null>(null)
 
   if (stationNames.length <= 1) return null
 
   return (
     <div className="flex items-center gap-2">
       <Radio className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <Tabs value={selectedStation} onValueChange={setSelectedStation}>
-        <TabsList>
-          {stationNames.map((station) => (
-            <TabsTrigger key={station} value={station}>
-              {stationLabel(station, t)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      {renaming ? (
+        <RenameForm station={renaming} onDone={() => setRenaming(null)} />
+      ) : (
+        <Tabs value={selectedStation} onValueChange={setSelectedStation}>
+          <TabsList>
+            {stationNames.map((station) => (
+              <div key={station} className="flex items-center">
+                <TabsTrigger value={station}>{stationLabel(station, t)}</TabsTrigger>
+                {role === 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => setRenaming(station)}
+                    aria-label={t('station.rename')}
+                    title={t('station.rename')}
+                    className="ml-1 flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
     </div>
   )
 }
