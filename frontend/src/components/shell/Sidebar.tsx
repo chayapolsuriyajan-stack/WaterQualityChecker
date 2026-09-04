@@ -5,6 +5,8 @@ import { motion } from 'motion/react'
 import { TourHelpButton } from '@/components/shell/TourHelpButton'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
+import type { Role } from '@/lib/RoleProvider'
+import { useRole } from '@/lib/RoleProvider'
 import type { MessageKey } from '@/lib/strings'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { SettingsDialog } from './SettingsDialog'
@@ -24,6 +26,12 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'calibration', labelKey: 'nav.calibration', icon: SlidersHorizontal },
   { id: 'history', labelKey: 'nav.history', icon: History },
 ]
+
+/** Guests never see the Calibration tab (hidden entirely, not disabled) -- see
+ * docs/superpowers/specs/2026-09-04-guest-admin-roles-design.md. */
+export function visibleNavItems(role: Role): NavItem[] {
+  return NAV_ITEMS.filter((item) => item.id !== 'calibration' || role === 'admin')
+}
 
 interface SidebarProps {
   view: ViewId
@@ -62,6 +70,7 @@ function RevealLabel({ collapsed, className, children }: { collapsed: boolean; c
 /** Fixed left navigation rail. `collapsed` drives an icon-only vs. full-width layout, transitioning smoothly between them (see `RailHoverPanel`, which hovers this between the two). */
 export function Sidebar({ view, onChange, collapsed = false, className }: SidebarProps) {
   const { t } = useT()
+  const { role } = useRole()
 
   return (
     <aside
@@ -87,7 +96,7 @@ export function Sidebar({ view, onChange, collapsed = false, className }: Sideba
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems(role).map((item) => {
           const Icon = item.icon
           const active = view === item.id
           const label = t(item.labelKey)

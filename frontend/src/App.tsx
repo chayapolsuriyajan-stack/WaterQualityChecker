@@ -10,6 +10,7 @@ import { RightContextColumn } from '@/components/shell/RightContextColumn'
 import type { ViewId } from '@/components/shell/Sidebar'
 import { TourOverlay } from '@/components/tour/TourOverlay'
 import { TourProvider } from '@/components/tour/TourProvider'
+import { useRole } from '@/lib/RoleProvider'
 import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
 
 /**
@@ -29,6 +30,16 @@ function TabTitleSync() {
 /** Aqua Monitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
 export default function App() {
   const [view, setView] = useState<ViewId>('dashboard')
+  const { role } = useRole()
+
+  // A guest session must never land on (or stay on) the Calibration view -- covers both
+  // an admin mid-session switching to guest, and (if view state is ever persisted in the
+  // future) a guest reload landing on a stale 'calibration' value.
+  useEffect(() => {
+    if (role === 'guest' && view === 'calibration') {
+      setView('dashboard')
+    }
+  }, [role, view])
   const reducedMotion = useReducedMotion()
 
   return (

@@ -2,6 +2,7 @@ import { Droplets, Menu } from 'lucide-react'
 import { TourHelpButton } from '@/components/shell/TourHelpButton'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
+import { useRole } from '@/lib/RoleProvider'
 import {
   Sheet,
   SheetClose,
@@ -12,7 +13,7 @@ import {
 } from '@/components/ui/sheet'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { SettingsDialog } from './SettingsDialog'
-import { NAV_ITEMS, type ViewId } from './Sidebar'
+import { visibleNavItems, type ViewId } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
 import { UserBadge } from './UserBadge'
 
@@ -24,6 +25,7 @@ interface MobileNavProps {
 /** Phone (<768px) top bar: hamburger opening a Sheet drawer with the full nav. */
 export function MobileTopBar({ view, onChange }: MobileNavProps) {
   const { t } = useT()
+  const { role } = useRole()
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border bg-sidebar/92 px-3 text-sidebar-foreground backdrop-blur-xl md:hidden">
@@ -58,7 +60,7 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
               <SheetTitle>{t('app.title')}</SheetTitle>
             </SheetHeader>
             <nav className="flex flex-1 flex-col gap-1">
-              {NAV_ITEMS.map((item) => {
+              {visibleNavItems(role).map((item) => {
                 const Icon = item.icon
                 const active = view === item.id
                 const label = t(item.labelKey)
@@ -100,13 +102,14 @@ export function MobileTopBar({ view, onChange }: MobileNavProps) {
 /** Phone (<768px) fixed bottom tab bar — the 3 primary views, ≥44px touch targets. */
 export function MobileBottomNav({ view, onChange }: MobileNavProps) {
   const { t } = useT()
+  const { role } = useRole()
 
   return (
     <nav
       className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-sidebar-border bg-sidebar/92 backdrop-blur-xl md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      {NAV_ITEMS.map((item) => {
+      {visibleNavItems(role).map((item) => {
         const Icon = item.icon
         const active = view === item.id
         return (
