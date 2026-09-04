@@ -63,38 +63,42 @@ function RenameForm({ station, onDone }: RenameFormProps) {
   }
 
   return (
-    <div className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-1">
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') void save()
-          if (e.key === 'Escape') onDone()
-        }}
-        autoFocus
-        disabled={saving}
-        title={t('station.renameWarning')}
-        className="w-32 bg-transparent text-sm outline-none"
-      />
-      <button
-        type="button"
-        onClick={() => void save()}
-        disabled={saving}
-        aria-label={t('station.renameSave')}
-        className="flex h-6 w-6 items-center justify-center rounded text-primary hover:bg-primary/10"
-      >
-        <Check className="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={onDone}
-        disabled={saving}
-        aria-label={t('station.renameCancel')}
-        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-secondary"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-1">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void save()
+            if (e.key === 'Escape') onDone()
+          }}
+          autoFocus
+          disabled={saving}
+          className="w-32 bg-transparent text-sm outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          aria-label={t('station.renameSave')}
+          className="flex h-6 w-6 items-center justify-center rounded text-primary hover:bg-primary/10"
+        >
+          <Check className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onDone}
+          disabled={saving}
+          aria-label={t('station.renameCancel')}
+          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-secondary"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <p className="max-w-[220px] text-[11px] leading-snug text-muted-foreground">
+        {t('station.renameWarning')}
+      </p>
     </div>
   )
 }
