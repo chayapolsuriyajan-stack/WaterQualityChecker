@@ -46,6 +46,11 @@ export interface UseSensorSocketResult {
    * SensorProvider follow a live rename for every connected client, not just the one that
    * initiated it. */
   lastRename: { old: string; new: string; at: number } | null
+  /** The most recent ai_report event seen over the socket (see main.py's broadcast_ai_report),
+   * or null if none yet this session. Lets every connected dashboard -- not just the one that
+   * clicked "Generate now" -- refresh its AI report card live, and lets the midnight scheduler's
+   * automatic generation show up without a page reload. */
+  lastAiReport: { station: string; date: string; report: string; at: number } | null
 }
 
 export function emptySeries(): SensorSeries {
@@ -175,6 +180,9 @@ export function useSensorSocket(): UseSensorSocketResult {
   const [stations, setStations] = useState<Record<string, StationSensorState>>({})
   const [connected, setConnected] = useState(false)
   const [lastRename, setLastRename] = useState<{ old: string; new: string; at: number } | null>(null)
+  const [lastAiReport, setLastAiReport] = useState<
+    { station: string; date: string; report: string; at: number } | null
+  >(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -283,6 +291,17 @@ export function useSensorSocket(): UseSensorSocketResult {
             applyStationRenamed(data.old, data.new)
             return
           }
+          if (
+            data &&
+            typeof data === 'object' &&
+            data.type === 'ai_report' &&
+            typeof data.station === 'string' &&
+            typeof data.date === 'string' &&
+            typeof data.report === 'string'
+          ) {
+            setLastAiReport({ station: data.station, date: data.date, report: data.report, at: Date.now() })
+            return
+          }
           const parsed = extractReading(data)
           if (parsed) applyReading(parsed)
         } catch {
@@ -323,5 +342,5 @@ export function useSensorSocket(): UseSensorSocketResult {
     }
   }, [])
 
-  return { stations, connected, lastRename }
+  return { stations, connected, lastRename, lastAiReport }
 }

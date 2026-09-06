@@ -4,8 +4,10 @@
  * proxied in dev (see vite.config.ts). Never hardcode a host here.
  */
 import type {
+  AiReportResponse,
   CalibrationState,
   FlowUsageResponse,
+  GenerateAiReportResponse,
   HistoryRow,
   HistoryWindow,
   WifiBackendStatus,
@@ -121,6 +123,22 @@ export function getFlowUsage(station: string, days = 14): Promise<FlowUsageRespo
 
 export function resetFlowUsageToday(station: string): Promise<{ ok: boolean; today: number }> {
   return request(`/flow/reset-today?station=${encodeURIComponent(station)}`, { method: 'POST' })
+}
+
+/** Latest stored AI daily report for `station` (see main.py's `_generate_ai_report` and the
+ * midnight scheduler). Throws a 503 ApiError if no Gemini API key is configured. */
+export function getAiReport(station: string): Promise<AiReportResponse> {
+  return request<AiReportResponse>(`/ai-report?station=${encodeURIComponent(station)}`)
+}
+
+/** Manually triggers report generation right now (the admin-only "Generate now" button) --
+ * bypasses the midnight scheduler so a demo doesn't have to wait for real midnight. May come
+ * back `cached: true` if the backend's per-station cooldown was still active (see
+ * GenerateAiReportResponse) -- the report is still valid, just not freshly generated. */
+export function generateAiReport(station: string): Promise<GenerateAiReportResponse> {
+  return request<GenerateAiReportResponse>(`/ai-report/generate?station=${encodeURIComponent(station)}`, {
+    method: 'POST',
+  })
 }
 
 /**

@@ -7,6 +7,10 @@ calibration.json.bak-premigration
 # not project code. Generate your own with `vapid --gen` (py-vapid, pulled in by pywebpush).
 vapid_private_key.pem
 
+# Gemini API key for the AI daily report (main.py's geminiApiKeyFile) -- a secret, not
+# project code. Get a free-tier key at https://aistudio.google.com/apikey.
+gemini_api_key.txt
+
 # Self-signed HTTPS cert/key (webconfig.json's httpsCertFile/httpsKeyFile) for LAN access --
 # machine-specific (bound to a particular LAN IP) and not meant to be shared/trusted beyond
 # this deployment. Regenerate per machine, e.g. via openssl req -x509 -nodes -newkey rsa:2048

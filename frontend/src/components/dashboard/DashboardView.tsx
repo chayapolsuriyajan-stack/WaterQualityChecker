@@ -13,6 +13,7 @@ import { WaterFlowChart } from './WaterFlowChart'
 import { WaterUsageChart } from './WaterUsageChart'
 import { ParamGrid } from './ParamGrid'
 import { GaugeRow } from './GaugeRow'
+import { AiReportCard } from './AiReportCard'
 
 export function DashboardView() {
   const { reading, series } = useSelectedStationData()
@@ -25,6 +26,7 @@ export function DashboardView() {
     <div className="flex flex-col gap-6">
       <StationSwitcher />
       <WqiHistoryChart window={window} onWindowChange={setWindow} station={selectedStation} />
+      <AiReportCard station={selectedStation} />
       <ParamGrid reading={reading} series={series} window={window} onWindowChange={setWindow} station={selectedStation} />
       <WaterFlowChart window={window} onWindowChange={setWindow} station={selectedStation} />
       <WaterUsageChart station={selectedStation} />
