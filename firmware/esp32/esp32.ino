@@ -404,9 +404,10 @@ void handleWifiClear() {
 }
 
 // Applies currentBackendHost/currentUseHttps immediately: fixed host -> build backendUrl from
-// it (https:// + httpsBackendPort, or http:// + backendPort) and mark known (no discovery
-// needed); cleared back to "" -> force rediscovery on the LAN, since the previously-fixed host
-// is no longer authoritative and the real one might be different.
+// it (https:// + httpsBackendPort, or http:// + backendPort) and mark known -- this is the
+// board's only way to acquire a backend address (Same-LAN UDP discovery note above); cleared
+// back to "" -> backendKnown drops to false and the board simply has no backend to post to
+// until BACKEND_SET is used again over USB. No fallback address is derived or guessed.
 void applyBackendHost() {
   if (currentBackendHost.length() > 0) {
     if (currentUseHttps) {
@@ -451,8 +452,9 @@ void handleBackendClear() {
 }
 
 void handleBackendStatus() {
-  // fixed=1 when a host override is active (currentBackendHost non-empty); backendUrl is
-  // whatever's currently in effect either way (fixed host, or the last-discovered LAN one).
+  // fixed=1 when a host override is active (currentBackendHost non-empty); backendUrl only
+  // ever reflects a configured fixed host -- it's built solely in applyBackendHost() from
+  // currentBackendHost, so it's empty/stale whenever fixed=0, never a "discovered" address.
   // The API key itself is never echoed back over serial, same as WIFI_STATUS never echoing
   // the WiFi password -- only whether one is set (hasKey).
   Serial.printf(
@@ -574,7 +576,7 @@ void setup() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   loadWifiCredentials(); // NVS if previously provisioned via USB, else the @JumboPlus enterprise fallback
-  loadBackendHost(); // NVS if a fixed backend was set via USB, else "" (same-LAN auto-discovery)
+  loadBackendHost(); // NVS if a fixed backend was set via USB, else "" -> unconfigured (BACKEND_SET required)
   loadStationName(); // NVS if this board was given a station name via USB, else "" (backend's "default")
   Serial.println();
   Serial.print("Connecting to Wi-Fi: ");
@@ -585,7 +587,8 @@ void setup() {
   // the board's ability to be reconfigured over USB -- readSerialCommands() below keeps
   // WIFI_SCAN/WIFI_SET usable the whole time, so a bad password is recoverable immediately
   // rather than requiring a re-flash. Falls through to loop() on timeout either way; loop()
-  // keeps retrying discovery/WiFi status independently.
+  // keeps retrying WiFi status independently (and re-applies the existing fixed backend host,
+  // if any, on the next failed-POST threshold -- there's no discovery to retry any more).
   unsigned long wifiWaitStart = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - wifiWaitStart < 20000) {
     readSerialCommands();
