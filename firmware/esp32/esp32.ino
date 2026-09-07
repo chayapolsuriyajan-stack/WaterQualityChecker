@@ -131,31 +131,65 @@ float dfrobotUncalibratedPpm(float voltage, float temperatureC) {
   return ppm > 0.0 ? ppm : 0.0;
 }
 
+// Uncalibrated flow rate (L/min) for the Sheets fallback path only -- mirrors
+// dfrobotUncalibratedPpm's reasoning for TDS just above: the real k-factor lives in
+// calibration.json on the backend PC, unreachable from here, so this uses the nominal
+// YF-S201 default (450 pulses/liter, matching main.py's _default_calibration()) rather than
+// omitting flow entirely. `pulses` is the raw count accumulated over `intervalSeconds` (the
+// same reading-to-reading gap flowPulses always represents elsewhere in this sketch).
+float nominalFlowRate(float pulses, float intervalSeconds) {
+  float liters = pulses / 450.0;
+  return liters / (intervalSeconds / 60.0);
+}
+
 // Sensors are read every broadcastInterval (2s), but each buffered reading becomes its own
 // Apps Script call once we're able to send (see the flush loop in loop() below) -- bursting
 // all of them at once is inconsiderate of Apps Script's per-call execution overhead, so sends
-// are throttled to one flush attempt per sheetsFallbackInterval. Readings taken between
-// flushes accumulate in a circular buffer (once full, the newest overwrites the oldest --
-// degrades to "most recent 30" instead of overflowing) so a 60s outage window is recovered
-// in full, not just its last instant.
-const int sheetsFallbackBufferSize = 30;
+// are throttled to at most sheetsFallbackMaxSendPerTick per sheetsFallbackInterval tick (a
+// trickle drain, not a burst -- see loop()'s flush block). Readings taken between flushes
+// accumulate in a circular buffer (once full, the newest overwrites the oldest -- degrades to
+// "most recent hour" instead of overflowing) so up to an hour-long outage (WiFi down, backend
+// down, or both) is recovered in full, not just its last instant.
+const int sheetsFallbackBufferSize = 1800; // ~1 hour at the 2s broadcastInterval cadence
 float sheetsFallbackTempBuffer[sheetsFallbackBufferSize];
 float sheetsFallbackTurbBuffer[sheetsFallbackBufferSize];
 float sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferSize];
-int sheetsFallbackBufferCount = 0; // how many valid entries (caps at sheetsFallbackBufferSize)
-int sheetsFallbackBufferNext = 0;  // next slot to write; wraps once the buffer is full
+float sheetsFallbackFlowBuffer[sheetsFallbackBufferSize]; // raw flowPulses count for that reading
+int sheetsFallbackBufferCount = 0;  // how many valid entries (caps at sheetsFallbackBufferSize)
+int sheetsFallbackBufferNext = 0;   // next slot to write; wraps once the buffer is full
+int sheetsFallbackBufferOldest = 0; // index of the oldest still-buffered (not yet sent) entry
 
-void sheetsFallbackBufferPush(float temperature, float turbidity, float tdsVoltage) {
+void sheetsFallbackBufferPush(float temperature, float turbidity, float tdsVoltage, float flowPulses) {
   sheetsFallbackTempBuffer[sheetsFallbackBufferNext] = temperature;
   sheetsFallbackTurbBuffer[sheetsFallbackBufferNext] = turbidity;
   sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferNext] = tdsVoltage;
+  sheetsFallbackFlowBuffer[sheetsFallbackBufferNext] = flowPulses;
+  bool wasFull = (sheetsFallbackBufferCount == sheetsFallbackBufferSize);
   sheetsFallbackBufferNext = (sheetsFallbackBufferNext + 1) % sheetsFallbackBufferSize;
-  if (sheetsFallbackBufferCount < sheetsFallbackBufferSize) sheetsFallbackBufferCount++;
+  if (wasFull) {
+    // Buffer was already full -- this push just overwrote the oldest entry, so the new
+    // oldest is the next slot over.
+    sheetsFallbackBufferOldest = (sheetsFallbackBufferOldest + 1) % sheetsFallbackBufferSize;
+  } else {
+    sheetsFallbackBufferCount++;
+  }
 }
 
 void sheetsFallbackBufferClear() {
   sheetsFallbackBufferCount = 0;
   sheetsFallbackBufferNext = 0;
+  sheetsFallbackBufferOldest = 0;
+}
+
+// Removes the `n` oldest entries after they've been sent (or at least attempted -- matches
+// this sketch's existing fire-and-forget posture elsewhere, not a retry queue). Used for a
+// PARTIAL drain (see loop()'s flush block, capped at sheetsFallbackMaxSendPerTick per tick) --
+// sheetsFallbackBufferClear() above is only for a FULL reset (fresh WIFI_SET, etc.), never
+// called from the trickle-flush path itself.
+void sheetsFallbackBufferAdvance(int n) {
+  sheetsFallbackBufferOldest = (sheetsFallbackBufferOldest + n) % sheetsFallbackBufferSize;
+  sheetsFallbackBufferCount -= n;
+  if (sheetsFallbackBufferCount < 0) sheetsFallbackBufferCount = 0;
 }
 
 // Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
@@ -267,6 +301,7 @@ const unsigned long broadcastInterval = 2000;
 
 unsigned long lastSheetsFallbackPostTime = 0;
 const unsigned long sheetsFallbackInterval = 60000; // 60s, independent of broadcastInterval -- see the buffer's header comment
+const int sheetsFallbackMaxSendPerTick = 10; // bounds one flush tick to 10 sequential Apps Script POSTs -- trickle, not a burst
 
 // Flow sensor: pulse-counted via interrupt (unlike the other sensors' synchronous
 // analogRead) since pulses can arrive at any time between broadcastInterval ticks, not just
@@ -741,10 +776,6 @@ void loop() {
             Serial.println(response);
           }
           consecutiveFailures = 0;
-          // The backend has caught up to the present again -- readings buffered for the
-          // Sheets fallback while it was down have served their purpose (or will on the next
-          // flush window); clear so a late-arriving flush doesn't resend now-stale readings.
-          sheetsFallbackBufferClear();
         } else {
           Serial.printf("HTTP POST failed: %s\n", http.errorToString(httpCode).c_str());
           consecutiveFailures++;
@@ -761,59 +792,70 @@ void loop() {
       }
     }
 
-    // Google Sheets fallback: buffers every reading taken while the backend is unreachable
-    // (never discovered, or this attempt's POST just failed) so readings aren't silently
-    // dropped during a backend outage, then flushes the whole buffer -- one Apps Script POST
-    // per buffered reading, matching google_apps_script.gs's doPost single-reading JSON shape
-    // -- no more than once per sheetsFallbackInterval so a long outage doesn't fire a burst of
-    // calls too often. Needs real internet (not just LAN) and sheetsWebhookUrl filled in above.
-    if ((!backendKnown || backendPostFailed) && WiFi.status() == WL_CONNECTED) {
-      sheetsFallbackBufferPush(temperatureC, turbidityADC, tdsVoltage);
+    // Google Sheets fallback: buffers every reading taken during ANY live-delivery failure --
+    // backend never discovered, this attempt's POST just failed, OR WiFi itself is down (a
+    // genuine WiFi outage, not just a backend outage) -- so readings aren't silently dropped
+    // either way. Pushing is unconditional on delivery failure; flushing is a SEPARATE
+    // condition gated only on WiFi actually being up right now, so the buffer keeps draining
+    // even after the backend has already recovered and live readings are flowing normally
+    // again (see the removed sheetsFallbackBufferClear() above -- backend recovery no longer
+    // touches this buffer at all, since /update has no way to accept backfilled historical
+    // readings; only this Sheets path can receive the backlog).
+    bool liveDeliveryFailed = (!backendKnown || backendPostFailed) || (WiFi.status() != WL_CONNECTED);
+    if (liveDeliveryFailed) {
+      sheetsFallbackBufferPush(temperatureC, turbidityADC, tdsVoltage, (float)flowPulses);
+    }
 
-      if (currentMillis - lastSheetsFallbackPostTime >= sheetsFallbackInterval && sheetsFallbackBufferCount > 0) {
-        lastSheetsFallbackPostTime = currentMillis;
+    // Flush is throttled to at most sheetsFallbackMaxSendPerTick buffered readings per
+    // sheetsFallbackInterval tick -- a TRICKLE drain, not a burst -- so a full ~1hr backlog
+    // (up to sheetsFallbackBufferSize entries) doesn't fire hundreds of blocking HTTP POSTs
+    // back-to-back and delay live readings. Needs real internet (not just LAN) and
+    // sheetsWebhookUrl filled in above. Runs independent of liveDeliveryFailed above, purely
+    // on "is WiFi up and is there a backlog" -- so it keeps draining post-recovery too.
+    if (WiFi.status() == WL_CONNECTED && currentMillis - lastSheetsFallbackPostTime >= sheetsFallbackInterval && sheetsFallbackBufferCount > 0) {
+      lastSheetsFallbackPostTime = currentMillis;
 
-        // Oldest entry is at sheetsFallbackBufferNext once the buffer has wrapped (that slot
-        // is next to be overwritten); while still filling up for the first time, oldest is
-        // just index 0.
-        int oldestIdx = (sheetsFallbackBufferCount < sheetsFallbackBufferSize) ? 0 : sheetsFallbackBufferNext;
-        int sent = 0;
-        for (int i = 0; i < sheetsFallbackBufferCount; i++) {
-          int idx = (oldestIdx + i) % sheetsFallbackBufferSize;
+      int toSend = min(sheetsFallbackMaxSendPerTick, sheetsFallbackBufferCount);
+      int sent = 0;
+      for (int i = 0; i < toSend; i++) {
+        int idx = (sheetsFallbackBufferOldest + i) % sheetsFallbackBufferSize;
 
-          // TDS: uncalibrated ppm (see dfrobotUncalibratedPpm's header comment above), not the
-          // raw sensor voltage -- the sheet's TDS column is always ppm-shaped with no separate
-          // raw-voltage column to backfill from later, unlike turbidity's raw ADC.
-          StaticJsonDocument<240> sheetsDoc; // was <192> -- station (up to 40 chars) needs the headroom
-          sheetsDoc["temperature"] = sheetsFallbackTempBuffer[idx];
-          sheetsDoc["turbidity"] = sheetsFallbackTurbBuffer[idx];
-          sheetsDoc["tds"] = dfrobotUncalibratedPpm(sheetsFallbackTdsVoltageBuffer[idx], sheetsFallbackTempBuffer[idx]);
-          if (currentStationName.length() > 0) {
-            sheetsDoc["station"] = currentStationName;
-          }
-
-          String sheetsPayload;
-          serializeJson(sheetsDoc, sheetsPayload);
-
-          WiFiClientSecure sheetsClient;
-          // Apps Script's cert is a real public CA in practice, but this board has no CA
-          // store to validate against -- same accepted tradeoff as the fixed-backend HTTPS
-          // path above (encrypts in transit, doesn't authenticate the server).
-          sheetsClient.setInsecure();
-          HTTPClient sheetsHttp;
-          sheetsHttp.begin(sheetsClient, sheetsWebhookUrl);
-          sheetsHttp.addHeader("Content-Type", "application/json");
-          int sheetsHttpCode = sheetsHttp.POST(sheetsPayload);
-          sheetsHttp.end();
-          if (sheetsHttpCode > 0) sent++;
+        // TDS: uncalibrated ppm (see dfrobotUncalibratedPpm's header comment above), not the
+        // raw sensor voltage -- the sheet's TDS column is always ppm-shaped with no separate
+        // raw-voltage column to backfill from later, unlike turbidity's raw ADC. Flow: same
+        // uncalibrated-nominal-k reasoning via nominalFlowRate (see its header comment) --
+        // sends data.flowRate (L/min), matching google_apps_script.gs's doPost contract and
+        // the live /update path's field name, never a raw pulse count.
+        StaticJsonDocument<240> sheetsDoc; // was <192> -- station (up to 40 chars) needs the headroom
+        sheetsDoc["temperature"] = sheetsFallbackTempBuffer[idx];
+        sheetsDoc["turbidity"] = sheetsFallbackTurbBuffer[idx];
+        sheetsDoc["tds"] = dfrobotUncalibratedPpm(sheetsFallbackTdsVoltageBuffer[idx], sheetsFallbackTempBuffer[idx]);
+        sheetsDoc["flowRate"] = nominalFlowRate(sheetsFallbackFlowBuffer[idx], broadcastInterval / 1000.0);
+        if (currentStationName.length() > 0) {
+          sheetsDoc["station"] = currentStationName;
         }
-        Serial.printf("Sheets fallback flush: %d/%d buffered readings sent\n", sent, sheetsFallbackBufferCount);
 
-        // Sent (or at least attempted) -- start the next window's buffer fresh regardless of
-        // per-reading success, matching the existing fire-and-forget posture elsewhere in this
-        // sketch (a lost reading here is already best-effort).
-        sheetsFallbackBufferClear();
+        String sheetsPayload;
+        serializeJson(sheetsDoc, sheetsPayload);
+
+        WiFiClientSecure sheetsClient;
+        // Apps Script's cert is a real public CA in practice, but this board has no CA
+        // store to validate against -- same accepted tradeoff as the fixed-backend HTTPS
+        // path above (encrypts in transit, doesn't authenticate the server).
+        sheetsClient.setInsecure();
+        HTTPClient sheetsHttp;
+        sheetsHttp.begin(sheetsClient, sheetsWebhookUrl);
+        sheetsHttp.addHeader("Content-Type", "application/json");
+        int sheetsHttpCode = sheetsHttp.POST(sheetsPayload);
+        sheetsHttp.end();
+        if (sheetsHttpCode > 0) sent++;
       }
+      Serial.printf("Sheets fallback flush: %d/%d sent this tick, %d remaining\n", sent, toSend, sheetsFallbackBufferCount - toSend);
+
+      // Advance past everything ATTEMPTED this tick (sent or not) -- matches this sketch's
+      // existing fire-and-forget posture, not a retry queue. A partial drain: whatever's left
+      // stays buffered for the next tick, 60s later.
+      sheetsFallbackBufferAdvance(toSend);
     }
   }
 }
