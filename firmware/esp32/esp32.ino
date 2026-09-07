@@ -2,7 +2,6 @@
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -192,22 +191,18 @@ void sheetsFallbackBufferAdvance(int n) {
   if (sheetsFallbackBufferCount < 0) sheetsFallbackBufferCount = 0;
 }
 
-// Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
-// instead of being hardcoded, so the sketch keeps working after the backend PC's
-// DHCP-assigned IP changes. main.py must be running its discovery listener on this port.
-// UDP broadcast never crosses networks though -- it only ever finds a backend sharing the
-// board's own subnet. When the board's WiFi network and the backend PC's network differ (see
-// BACKEND_SET below), a fixed host/IP set via USB overrides discovery entirely.
-const unsigned int discoveryPort = 8888;
-const char* discoveryRequest = "HYDRO_DISCOVER";
-const char* discoveryReply = "HYDRO_HERE";
-WiFiUDP discoveryUdp;
+// Same-LAN UDP broadcast discovery was removed on this branch (see
+// docs/superpowers/specs/2026-09-04-remove-udp-discovery-design.md) -- this board's backend
+// is never on its own LAN once it's a Vercel-hosted deployment, so discovery could never have
+// found it anyway. A fixed backend host, set once via BACKEND_SET over USB (or the dashboard's
+// WiFi panel), is now the only way this board learns where to POST readings -- see
+// applyBackendHost()/handleBackendSet() below.
 
 // Fixed backend host override, persisted in NVS (separate namespace from WiFi credentials so
 // clearing one never disturbs the other) and settable over USB the same way as WIFI_SET --
 // see the "USB WiFi provisioning" section below for why USB is the provisioning channel.
-// Empty string (the default) means "keep using same-LAN auto-discovery"; any other value is
-// used verbatim as the backend's hostname/IP, skipping discoverBackend() entirely.
+// Empty string (the default) means "backend not configured"; any other value is
+// used verbatim as the backend's hostname/IP, which applyBackendHost() applies on each boot and after WiFi changes.
 //
 // apiKey/useHttps travel with it because they only matter together: a fixed host usually means
 // the backend is reachable from beyond the LAN (see BACKEND_SET below), at which point sending
@@ -366,7 +361,8 @@ void handleWifiSet(const String& newSsid, const String& newPassword) {
     saveWifiCredentials(newSsid, newPassword);
     wifiIsEnterpriseFallback = false; // a real PSK network now exists -- don't fall back to
                                        // the enterprise default again until NVS is erased
-    backendKnown = false; // force UDP rediscovery -- the backend's IP may differ on this network
+    backendKnown = false; // force applyBackendHost() to re-run on the next tick -- relevant if a
+                           // fixed host is set and the board just moved to a different network
     Serial.printf("WIFI_CONNECTED|%s\n", WiFi.localIP().toString().c_str());
   } else {
     Serial.println("WIFI_FAILED|timeout");
@@ -562,38 +558,6 @@ void readSerialCommands() {
   }
 }
 
-// Broadcasts a discovery request and waits for the backend to reply. On success,
-// sets backendUrl from the reply's source IP. Returns false (and leaves backendUrl
-// untouched) if nothing answers within timeoutMs.
-bool discoverBackend(unsigned long timeoutMs = 3000) {
-  discoveryUdp.begin(discoveryPort);
-  discoveryUdp.beginPacket(IPAddress(255, 255, 255, 255), discoveryPort);
-  discoveryUdp.write((const uint8_t*)discoveryRequest, strlen(discoveryRequest));
-  discoveryUdp.endPacket();
-
-  bool found = false;
-  unsigned long start = millis();
-  while (millis() - start < timeoutMs) {
-    int packetSize = discoveryUdp.parsePacket();
-    if (packetSize > 0) {
-      char buf[32];
-      int len = discoveryUdp.read(buf, sizeof(buf) - 1);
-      buf[len] = 0;
-      if (strncmp(buf, discoveryReply, strlen(discoveryReply)) == 0) {
-        IPAddress backendIP = discoveryUdp.remoteIP();
-        backendUrl = String("http://") + backendIP.toString() + ":" + backendPort + "/update";
-        Serial.print("Discovered backend at: ");
-        Serial.println(backendUrl);
-        found = true;
-        break;
-      }
-    }
-    delay(20);
-  }
-  discoveryUdp.stop();
-  return found;
-}
-
 void setup() {
   Serial.begin(115200);
   sensors.begin();
@@ -643,31 +607,12 @@ void setup() {
     Serial.println("Error setting up MDNS responder!");
   }
 
-  if (currentBackendHost.length() > 0) {
-    // Fixed backend configured over USB (possibly on a different network) -- skip LAN
-    // discovery entirely.
-    applyBackendHost();
-  } else {
-    Serial.println("Searching for backend server...");
-    // Bounded (20s, not infinite -- same reasoning as the WiFi-connect wait above): a backend
-    // may never answer at all (no main.py running anywhere, e.g. Google Sheets fallback used
-    // as the only destination on purpose), and an unconditional wait here would hang setup()
-    // forever, which would keep loop() -- and therefore the Sheets fallback and every sensor
-    // read -- from ever running. Falls through to loop() either way; loop() keeps retrying
-    // discovery on its own timer, so a backend that shows up later is still picked up.
-    // backendKnown is set from `discovered` itself (not inferred from WiFi.status() afterward)
-    // since WiFi could in principle drop mid-retry without discovery ever having succeeded.
-    bool discovered = false;
-    unsigned long backendWaitStart = millis();
-    while (WiFi.status() == WL_CONNECTED && !discovered && millis() - backendWaitStart < 20000) {
-      readSerialCommands();
-      discovered = discoverBackend();
-      if (!discovered) Serial.println("Backend not found, retrying...");
-    }
-    backendKnown = discovered;
-    if (!discovered) {
-      Serial.println("No backend found after 20s -- continuing without one. Sensor reads/Sheets fallback (if configured) proceed regardless; backend discovery keeps retrying in the background.");
-    }
+  // No same-LAN discovery anymore -- applyBackendHost() is the only way this board acquires a
+  // backend URL: sets backendUrl + backendKnown=true if a fixed host is configured,
+  // or leaves backendKnown=false (sensor reads/Sheets fallback proceed regardless) if not.
+  applyBackendHost();
+  if (!backendKnown) {
+    Serial.println("No backend configured. Use BACKEND_SET over USB (or the dashboard's WiFi panel) to set one -- sensor reads/Sheets fallback (if configured) proceed regardless in the meantime.");
   }
 }
 
@@ -681,19 +626,14 @@ void loop() {
   if (currentMillis - lastBroadcastTime >= broadcastInterval) {
     lastBroadcastTime = currentMillis;
 
-    if (!backendKnown) {
-      if (currentBackendHost.length() > 0) {
-        // Fixed backend: nothing to rediscover, just resume posting to it. The failure
-        // was presumably transient Wi-Fi/routing, not the backend's IP changing.
-        applyBackendHost();
-        consecutiveFailures = 0;
-      } else if (discoverBackend()) {
-        backendKnown = true;
-        consecutiveFailures = 0;
-      } else {
-        Serial.println("Still searching for backend...");
-      }
+    if (!backendKnown && currentBackendHost.length() > 0) {
+      // Fixed backend: nothing to rediscover, just resume posting to it. The failure
+      // was presumably transient Wi-Fi/routing, not the backend's IP changing.
+      applyBackendHost();
+      consecutiveFailures = 0;
     }
+    // No fixed host at all: nothing to retry each tick (no discovery to fall back to
+    // anymore) -- sensor reads/Sheets fallback below proceed regardless, same as before.
 
     sensors.requestTemperatures();
     float temperatureC = sensors.getTempCByIndex(0);
@@ -781,7 +721,7 @@ void loop() {
           consecutiveFailures++;
           backendPostFailed = true;
           if (consecutiveFailures >= maxFailuresBeforeRediscover) {
-            Serial.println("Backend unreachable; will re-discover its IP.");
+            Serial.println("Backend unreachable; will retry applyBackendHost() on the next tick.");
             backendKnown = false;
             consecutiveFailures = 0;
           }
