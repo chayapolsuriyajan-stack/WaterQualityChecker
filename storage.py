@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS daily_usage (
     total_liters REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (date, station)
 );
+
+-- One row per (local calendar day, station): the Gemini-generated plain-language daily
+-- water-quality summary (main.py's `_generate_ai_report`), keyed the same way as
+-- daily_usage. Overwritten in place if the manual "Generate now" button re-runs the same
+-- day (see save_ai_report's ON CONFLICT below). Kept indefinitely -- it's a small text blob.
+CREATE TABLE IF NOT EXISTS ai_reports (
+    date         TEXT NOT NULL,
+    station      TEXT NOT NULL DEFAULT 'default',
+    report_text  TEXT NOT NULL,
+    created_ms   INTEGER NOT NULL,
+    PRIMARY KEY (date, station)
+);
 """
 
 
@@ -276,3 +288,59 @@ def rename_station_usage(old: str, new: str) -> None:
             _conn.commit()
     except Exception as exc:
         print(f"⚠️ Daily usage rename failed: {exc}")
+
+
+def rename_ai_reports(old: str, new: str) -> None:
+    """Moves every ai_reports row from `old` to `new` -- same precondition as
+    rename_station_usage: caller must have already confirmed `new` has no existing rows."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("UPDATE ai_reports SET station = ? WHERE station = ?", (new, old))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ AI report rename failed: {exc}")
+
+
+def save_ai_report(date: str, station: str, report_text: str) -> None:
+    """Insert or overwrite `station`'s AI daily report for `date` -- upsert so a manual
+    "Generate now" re-run on the same day replaces the earlier one rather than erroring."""
+    if _conn is None:
+        return
+    try:
+        now_ms = int(time.time() * 1000)
+        with _lock:
+            _conn.execute(
+                "INSERT INTO ai_reports (date, station, report_text, created_ms) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(date, station) DO UPDATE SET report_text = excluded.report_text,"
+                " created_ms = excluded.created_ms",
+                (date, station, report_text, now_ms),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ AI report write failed: {exc}")
+
+
+def get_latest_ai_report(station: str) -> dict | None:
+    """`station`'s most recently generated report (any date), or None if it has never had
+    one -- survives a backend restart since it's read from disk, not in-memory state.
+    `created_ms` (not just `date`) is included so main.py can enforce a cooldown between
+    Gemini calls at sub-day granularity -- `date` alone can't tell "5 minutes ago" from
+    "23 hours ago" on the same calendar day."""
+    if _conn is None:
+        return None
+    try:
+        with _lock:
+            row = _conn.execute(
+                "SELECT date, report_text, created_ms FROM ai_reports WHERE station = ? ORDER BY date DESC LIMIT 1",
+                (station,),
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ AI report read failed: {exc}")
+        return None
+    return (
+        {"date": row["date"], "report": row["report_text"], "created_ms": row["created_ms"]}
+        if row
+        else None
+    )

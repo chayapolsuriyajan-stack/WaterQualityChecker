@@ -56,6 +56,24 @@ VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
 HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
 HTTPS_KEY_FILE = webconfig.get("httpsKeyFile", "")
 HTTPS_PORT = int(webconfig.get("httpsPort", 8443))
+# AI daily report (see the "AI daily report" section below and CLAUDE.md). A plain-text
+# file, not an inline webconfig.json value, because webconfig.json itself is committed to
+# the repo (unlike calibration.json/vapid_private_key.pem) -- an inline key would leak.
+# Same degrade-not-crash shape as the VAPID key file: missing -> the feature 503s instead
+# of crashing startup.
+GEMINI_API_KEY_FILE = webconfig.get("geminiApiKeyFile", "gemini_api_key.txt")
+# "gemini-1.5-flash" (this feature's original default) is retired; "gemini-2.5-flash" (the
+# next thing tried) is listed by ListModels but rejected at generateContent time with "no
+# longer available to new users" -- both confirmed live against a real key during testing.
+# gemini-3.6-flash is the model Google's own 404 response recommended, and was verified
+# working end-to-end. Override via webconfig.json's "geminiModel" if this is retired too by
+# the time you read this -- check with a live ListModels call against your own key first.
+GEMINI_MODEL = webconfig.get("geminiModel", "gemini-3.6-flash")
+# Minimum time between actual Gemini calls for the same station, regardless of how many
+# different browsers/admins hit "Generate now" (or the frontend's own retry) in that window --
+# everyone gets back the same already-stored report instead of each click spending its own
+# free-tier request. See _generate_ai_report's cooldown check below.
+AI_REPORT_COOLDOWN_SECONDS = int(webconfig.get("aiReportCooldownSeconds", 1800))
 
 
 def https_enabled() -> bool:
@@ -79,6 +97,21 @@ UPDATE_API_KEY = webconfig.get("updateApiKey", "")
 
 def vapid_available() -> bool:
     return os.path.exists(VAPID_PRIVATE_KEY_FILE) and bool(VAPID_PUBLIC_KEY)
+
+
+def _load_gemini_api_key() -> str:
+    try:
+        with open(GEMINI_API_KEY_FILE, encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+GEMINI_API_KEY = _load_gemini_api_key()
+
+
+def gemini_available() -> bool:
+    return bool(GEMINI_API_KEY)
 
 class BrotliStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
@@ -134,6 +167,11 @@ if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
 else:
     print("⚠️ Local database disabled; push subscriptions and daily water usage won't persist.")
 
+if gemini_available():
+    print(f"✅ AI daily report enabled ({GEMINI_MODEL}) -- generates once per local midnight, per station.")
+else:
+    print(f"⚠️ {GEMINI_API_KEY_FILE} not found; AI daily report disabled (GET/POST /ai-report* return 503).")
+
 print("Starting FastAPI Backend Server...")
 
 DISCOVERY_PORT = 8888
@@ -166,6 +204,19 @@ async def start_discovery_listener():
         local_addr=("0.0.0.0", DISCOVERY_PORT),
     )
     print(f"📡 UDP discovery listener active on port {DISCOVERY_PORT} (firmware IP auto-discovery)")
+
+
+@app.on_event("startup")
+async def start_daily_report_scheduler():
+    # Same double-startup-event concern as start_discovery_listener above (HTTP:8080 and
+    # HTTPS:8443 are two uvicorn Server instances sharing one app, so "startup" fires
+    # twice) -- guard so only one _daily_report_scheduler loop ever runs, not two racing to
+    # generate/overwrite the same day's report.
+    global _daily_scheduler_started
+    if _daily_scheduler_started:
+        return
+    _daily_scheduler_started = True
+    asyncio.create_task(_daily_report_scheduler())
 
 ui_clients = set()
 ui_clients_lock = asyncio.Lock()
@@ -272,6 +323,49 @@ def _stats_snapshot(station: str) -> dict:
     return {key: dict(stat) for key, stat in stats.items()}
 
 
+# Rolling min/max/sum/count per parameter SINCE LOCAL MIDNIGHT, plus a tally of how many
+# readings landed in warn/danger -- the numbers the AI daily report (below) turns into a
+# prompt for Gemini. Deliberately separate from `sensor_stats` above (that one is since
+# SERVER START, not since midnight -- reusing it would silently mix the two meanings) and
+# from `last_severity` (edge-detection only, not a running count of how many times a
+# threshold was crossed). Same lazy date-rollover pattern as `_add_daily_usage` -- checked
+# on every reading rather than relying solely on the midnight scheduler below, so a server
+# outage spanning midnight can't leak yesterday's numbers into today's report.
+_daily_stats_date = _local_date()
+_daily_stats: dict[str, dict] = {}
+_daily_breach_counts: dict[str, dict] = {}
+
+
+def _update_daily_stats(station: str, payload: dict) -> None:
+    global _daily_stats_date
+    today = _local_date()
+    if today != _daily_stats_date:
+        _daily_stats_date = today
+        _daily_stats.clear()
+        _daily_breach_counts.clear()
+    stats = _daily_stats.setdefault(station, {})
+    breach_counts = _daily_breach_counts.setdefault(station, {})
+    # PUSH_PARAMS (defined further down, alongside the push-notification breach detection
+    # it's shared with) is resolved at call time, not definition time -- fine, since this
+    # function is never actually called until the whole module has finished loading.
+    for param in PUSH_PARAMS:
+        value = payload.get(param)
+        if not isinstance(value, (int, float)):
+            continue
+        current = stats.get(param)
+        if current is None:
+            stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
+        else:
+            current["min"] = min(current["min"], value)
+            current["max"] = max(current["max"], value)
+            current["sum"] += value
+            current["count"] += 1
+        if thresholds.is_sensor_fault(param, value):
+            continue
+        if thresholds.range_status_for(param, value) in ("warn", "danger"):
+            breach_counts[param] = breach_counts.get(param, 0) + 1
+
+
 async def broadcast_sensor_update(payload: dict) -> None:
     disconnected_clients = []
     message = json.dumps({"type": "sensor_update", "payload": payload})
@@ -291,6 +385,19 @@ async def broadcast_sensor_update(payload: dict) -> None:
 async def broadcast_station_renamed(old: str, new: str) -> None:
     disconnected_clients = []
     message = json.dumps({"type": "station_renamed", "old": old, "new": new})
+    async with ui_clients_lock:
+        for client in list(ui_clients):
+            try:
+                await client.send_text(message)
+            except Exception:
+                disconnected_clients.append(client)
+        for client in disconnected_clients:
+            ui_clients.discard(client)
+
+
+async def broadcast_ai_report(station: str, date: str, report: str) -> None:
+    disconnected_clients = []
+    message = json.dumps({"type": "ai_report", "station": station, "date": date, "report": report})
     async with ui_clients_lock:
         for client in list(ui_clients):
             try:
@@ -467,6 +574,8 @@ PER_STATION_MAPS = (
     latest_raw,
     _raw_buffers,
     _daily_usage_totals,
+    _daily_stats,
+    _daily_breach_counts,
 )
 
 
@@ -685,6 +794,108 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
 
 
+# --- AI daily report (Gemini) -------------------------------------------------
+# A once-a-day, per-station plain-language summary of the day's water-quality stats,
+# turning the numbers in `_daily_stats`/`_daily_breach_counts` above into a short analysis a
+# non-technical school administrator can read at a glance -- generated by Gemini's free-tier
+# API, called directly via urllib (same fire-and-forget-safe REST style as
+# `_post_to_google_sheets` above; no new pip dependency). Fires automatically at local
+# midnight (see `_daily_report_scheduler` near the bottom of this file) and on-demand via
+# `POST /ai-report/generate` (the dashboard's admin-only "Generate now" button, for demoing
+# without waiting for real midnight).
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+def _build_daily_report_prompt(station: str) -> str:
+    stats = _daily_stats.get(station, {})
+    breach_counts = _daily_breach_counts.get(station, {})
+    lines = [
+        "สรุปสถานการณ์คุณภาพน้ำวันนี้ให้สั้น กระชับ เข้าใจง่าย เป็นภาษาไทย 3-5 ประโยค "
+        "สำหรับผู้บริหารสถานศึกษาที่ไม่ใช่สายเทคนิค โดยเน้นว่าค่าที่วัดได้ปกติดีหรือมีจุดที่ควรเฝ้าระวัง:"
+    ]
+    for param in PUSH_PARAMS:
+        stat = stats.get(param)
+        if not stat or not stat.get("count"):
+            continue
+        _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
+        avg = stat["sum"] / stat["count"]
+        breaches = breach_counts.get(param, 0)
+        lines.append(
+            f"- {label}: ต่ำสุด {stat['min']:.1f}, สูงสุด {stat['max']:.1f}, "
+            f"เฉลี่ย {avg:.1f} {unit}, เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
+        )
+    return "\n".join(lines)
+
+
+def _call_gemini(prompt: str) -> str | None:
+    url = GEMINI_ENDPOINT.format(model=GEMINI_MODEL) + f"?key={GEMINI_API_KEY}"
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as exc:
+        print(f"⚠️ Gemini AI report generation failed: {exc}")
+        return None
+
+
+async def _generate_ai_report(station: str) -> tuple[str | None, bool]:
+    """Builds and persists one AI daily report for `station` right now (used by both the
+    midnight scheduler and the manual admin "Generate now" endpoint). Never raises -- a
+    failure (missing key, network error, rate limit, malformed response) is logged and
+    returns (None, False), leaving whatever report was already stored untouched, same
+    fail-soft philosophy as the Google Sheets relay.
+
+    Returns (text, cached): `cached=True` means no Gemini call was made at all -- an
+    existing report for this station is still within AI_REPORT_COOLDOWN_SECONDS, so the
+    already-stored text is returned as-is. This is the anti-exploit guard: however many
+    different browsers/admins hit "Generate now" (or however fast one browser retries) in
+    that window, they all see the exact same text and only the FIRST one actually spent a
+    free-tier request -- without this, a spammed button (accidentally or deliberately) could
+    burn through the daily/per-minute quota in seconds."""
+    if not gemini_available():
+        return None, False
+    if storage.enabled():
+        latest = await asyncio.to_thread(storage.get_latest_ai_report, station)
+        if latest and latest.get("created_ms") is not None:
+            age_seconds = (time.time() * 1000 - latest["created_ms"]) / 1000
+            if age_seconds < AI_REPORT_COOLDOWN_SECONDS:
+                return latest["report"], True
+    prompt = _build_daily_report_prompt(station)
+    text = await asyncio.to_thread(_call_gemini, prompt)
+    if text is None:
+        return None, False
+    today = _local_date()
+    if storage.enabled():
+        await asyncio.to_thread(storage.save_ai_report, today, station, text)
+    await broadcast_ai_report(station, today, text)
+    return text, False
+
+
+_daily_scheduler_started = False
+
+
+async def _seconds_until_next_midnight() -> float:
+    now = datetime.datetime.now()
+    tomorrow = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (tomorrow - now).total_seconds()
+
+
+async def _daily_report_scheduler() -> None:
+    while True:
+        await asyncio.sleep(await _seconds_until_next_midnight())
+        # Every station that currently has any live data -- same expression websocket_app
+        # already uses (below) to decide which stations to prime a connecting dashboard with.
+        stations_to_report = [s for s, buf in history_buffer.items() if buf]
+        for station in stations_to_report:
+            await _generate_ai_report(station)
+            _daily_stats.pop(station, None)
+            _daily_breach_counts.pop(station, None)
+
+
 # Same auth as /update (see its check below), factored out so both routes enforce it
 # identically -- a health check that skipped auth would "pass" against a backend whose real
 # /update then rejects the board, which is exactly the failure this endpoint exists to catch.
@@ -799,6 +1010,7 @@ async def update_sensor(request: Request):
             payload["water_level"] = int(float(water_level))
 
         _update_stats(station, payload)
+        _update_daily_stats(station, payload)
         payload["stats"] = _stats_snapshot(station)
 
         print(f"Received sensor update: {payload}")
@@ -1163,6 +1375,34 @@ async def reset_flow_usage_today(station: str = DEFAULT_STATION):
     return JSONResponse({"ok": True, "today": 0.0})
 
 
+@app.get("/ai-report")
+async def get_ai_report(station: str = DEFAULT_STATION):
+    if not gemini_available():
+        return JSONResponse({"error": "AI daily report is not configured"}, status_code=503)
+    station = _normalize_station(station)
+    if not storage.enabled():
+        return JSONResponse({"station": station, "date": None, "report": None})
+    latest = await asyncio.to_thread(storage.get_latest_ai_report, station)
+    if latest is None:
+        return JSONResponse({"station": station, "date": None, "report": None})
+    return JSONResponse({"station": station, "date": latest["date"], "report": latest["report"]})
+
+
+@app.post("/ai-report/generate")
+async def generate_ai_report_now(station: str = DEFAULT_STATION):
+    # Manual override for the dashboard's admin-only "Generate now" button, so a demo
+    # doesn't have to wait for the real midnight scheduler. NOT backend-auth-gated -- same
+    # precedent as /station/rename: "admin" is a frontend-only UI role (see
+    # RoleProvider.tsx's own header comment), not real authentication.
+    if not gemini_available():
+        return JSONResponse({"error": "AI daily report is not configured"}, status_code=503)
+    station = _normalize_station(station)
+    text, cached = await _generate_ai_report(station)
+    if text is None:
+        return JSONResponse({"error": "AI report generation failed"}, status_code=502)
+    return JSONResponse({"station": station, "date": _local_date(), "report": text, "cached": cached})
+
+
 @app.post("/station/rename")
 async def rename_station(request: Request):
     body = await request.json()
@@ -1210,6 +1450,7 @@ async def rename_station(request: Request):
 
     if storage.enabled():
         await asyncio.to_thread(storage.rename_station_usage, old, new)
+        await asyncio.to_thread(storage.rename_ai_reports, old, new)
 
     # NOTE: _save_calibration() dumps the ENTIRE calibration dict, not just this station --
     # same behavior as POST /calibration/save, but a rename is a more surprising trigger for

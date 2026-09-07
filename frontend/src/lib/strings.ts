@@ -152,6 +152,18 @@ const en = {
   'chart.usage.resetSuccess': "Today's usage reset",
   'chart.usage.resetFailed': "Couldn't reset today's usage",
 
+  // --- AI daily report (dashboard) ------------------------------------------
+  'aiReport.title': 'AI daily report',
+  'aiReport.generateNow': 'Generate now',
+  'aiReport.generating': 'Generating...',
+  'aiReport.generateSuccess': 'Report generated',
+  'aiReport.generateCached': 'Showing the latest report (generated recently)',
+  'aiReport.generateFailed': "Couldn't generate the report",
+  'aiReport.notConfigured': 'AI daily report is not set up on this backend yet.',
+  'aiReport.loadFailed': "Couldn't load today's report.",
+  'aiReport.empty': 'No report yet for this station. It generates automatically at midnight.',
+  'aiReport.lastGenerated': 'Generated {date}',
+
   // --- quick view (dashboard right column) ----------------------------------
   'quickview.title': 'Quick view',
   'quickview.sensorFault': 'Not connected',
@@ -512,6 +524,17 @@ export const messages = {
     'chart.usage.resetToday': 'รีเซ็ตของวันนี้',
     'chart.usage.resetSuccess': 'รีเซ็ตปริมาณการใช้น้ำวันนี้แล้ว',
     'chart.usage.resetFailed': 'รีเซ็ตปริมาณการใช้น้ำวันนี้ไม่สำเร็จ',
+
+    'aiReport.title': 'รายงานสรุปด้วย AI',
+    'aiReport.generateNow': 'สร้างรายงานตอนนี้',
+    'aiReport.generating': 'กำลังสร้าง...',
+    'aiReport.generateSuccess': 'สร้างรายงานแล้ว',
+    'aiReport.generateCached': 'แสดงรายงานล่าสุด (เพิ่งสร้างไปเมื่อสักครู่)',
+    'aiReport.generateFailed': 'สร้างรายงานไม่สำเร็จ',
+    'aiReport.notConfigured': 'ยังไม่ได้ตั้งค่ารายงาน AI บนแบ็กเอนด์นี้',
+    'aiReport.loadFailed': 'โหลดรายงานวันนี้ไม่สำเร็จ',
+    'aiReport.empty': 'ยังไม่มีรายงานสำหรับสถานีนี้ ระบบจะสร้างให้อัตโนมัติทุกเที่ยงคืน',
+    'aiReport.lastGenerated': 'สร้างเมื่อ {date}',
 
     'calib.title': 'ปรับเทียบเซนเซอร์',
     'calib.subtitle': 'ปรับเทียบได้ขณะเซนเซอร์ทำงานอยู่ โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',
