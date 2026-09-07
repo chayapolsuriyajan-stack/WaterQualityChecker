@@ -131,31 +131,65 @@ float dfrobotUncalibratedPpm(float voltage, float temperatureC) {
   return ppm > 0.0 ? ppm : 0.0;
 }
 
+// Uncalibrated flow rate (L/min) for the Sheets fallback path only -- mirrors
+// dfrobotUncalibratedPpm's reasoning for TDS just above: the real k-factor lives in
+// calibration.json on the backend PC, unreachable from here, so this uses the nominal
+// YF-S201 default (450 pulses/liter, matching main.py's _default_calibration()) rather than
+// omitting flow entirely. `pulses` is the raw count accumulated over `intervalSeconds` (the
+// same reading-to-reading gap flowPulses always represents elsewhere in this sketch).
+float nominalFlowRate(float pulses, float intervalSeconds) {
+  float liters = pulses / 450.0;
+  return liters / (intervalSeconds / 60.0);
+}
+
 // Sensors are read every broadcastInterval (2s), but each buffered reading becomes its own
 // Apps Script call once we're able to send (see the flush loop in loop() below) -- bursting
 // all of them at once is inconsiderate of Apps Script's per-call execution overhead, so sends
-// are throttled to one flush attempt per sheetsFallbackInterval. Readings taken between
-// flushes accumulate in a circular buffer (once full, the newest overwrites the oldest --
-// degrades to "most recent 30" instead of overflowing) so a 60s outage window is recovered
-// in full, not just its last instant.
-const int sheetsFallbackBufferSize = 30;
+// are throttled to at most sheetsFallbackMaxSendPerTick per sheetsFallbackInterval tick (a
+// trickle drain, not a burst -- see loop()'s flush block). Readings taken between flushes
+// accumulate in a circular buffer (once full, the newest overwrites the oldest -- degrades to
+// "most recent hour" instead of overflowing) so up to an hour-long outage (WiFi down, backend
+// down, or both) is recovered in full, not just its last instant.
+const int sheetsFallbackBufferSize = 1800; // ~1 hour at the 2s broadcastInterval cadence
 float sheetsFallbackTempBuffer[sheetsFallbackBufferSize];
 float sheetsFallbackTurbBuffer[sheetsFallbackBufferSize];
 float sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferSize];
-int sheetsFallbackBufferCount = 0; // how many valid entries (caps at sheetsFallbackBufferSize)
-int sheetsFallbackBufferNext = 0;  // next slot to write; wraps once the buffer is full
+float sheetsFallbackFlowBuffer[sheetsFallbackBufferSize]; // raw flowPulses count for that reading
+int sheetsFallbackBufferCount = 0;  // how many valid entries (caps at sheetsFallbackBufferSize)
+int sheetsFallbackBufferNext = 0;   // next slot to write; wraps once the buffer is full
+int sheetsFallbackBufferOldest = 0; // index of the oldest still-buffered (not yet sent) entry
 
-void sheetsFallbackBufferPush(float temperature, float turbidity, float tdsVoltage) {
+void sheetsFallbackBufferPush(float temperature, float turbidity, float tdsVoltage, float flowPulses) {
   sheetsFallbackTempBuffer[sheetsFallbackBufferNext] = temperature;
   sheetsFallbackTurbBuffer[sheetsFallbackBufferNext] = turbidity;
   sheetsFallbackTdsVoltageBuffer[sheetsFallbackBufferNext] = tdsVoltage;
+  sheetsFallbackFlowBuffer[sheetsFallbackBufferNext] = flowPulses;
+  bool wasFull = (sheetsFallbackBufferCount == sheetsFallbackBufferSize);
   sheetsFallbackBufferNext = (sheetsFallbackBufferNext + 1) % sheetsFallbackBufferSize;
-  if (sheetsFallbackBufferCount < sheetsFallbackBufferSize) sheetsFallbackBufferCount++;
+  if (wasFull) {
+    // Buffer was already full -- this push just overwrote the oldest entry, so the new
+    // oldest is the next slot over.
+    sheetsFallbackBufferOldest = (sheetsFallbackBufferOldest + 1) % sheetsFallbackBufferSize;
+  } else {
+    sheetsFallbackBufferCount++;
+  }
 }
 
 void sheetsFallbackBufferClear() {
   sheetsFallbackBufferCount = 0;
   sheetsFallbackBufferNext = 0;
+  sheetsFallbackBufferOldest = 0;
+}
+
+// Removes the `n` oldest entries after they've been sent (or at least attempted -- matches
+// this sketch's existing fire-and-forget posture elsewhere, not a retry queue). Used for a
+// PARTIAL drain (see loop()'s flush block, capped at sheetsFallbackMaxSendPerTick per tick) --
+// sheetsFallbackBufferClear() above is only for a FULL reset (fresh WIFI_SET, etc.), never
+// called from the trickle-flush path itself.
+void sheetsFallbackBufferAdvance(int n) {
+  sheetsFallbackBufferOldest = (sheetsFallbackBufferOldest + n) % sheetsFallbackBufferSize;
+  sheetsFallbackBufferCount -= n;
+  if (sheetsFallbackBufferCount < 0) sheetsFallbackBufferCount = 0;
 }
 
 // Backend IP is normally found at runtime via UDP broadcast discovery (see discoverBackend())
