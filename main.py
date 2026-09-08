@@ -39,7 +39,6 @@ except FileNotFoundError:
 
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
-CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
 # Turso (libSQL) database for push subscriptions + daily water usage + AI reports only (see
 # storage.py). Reading history is NOT stored here -- it lives in the in-memory buffer and
 # Google Sheets. Leave "tursoDatabaseUrl" empty to disable it (push subscriptions won't
@@ -249,11 +248,6 @@ def _normalize_station(raw) -> str:
 STAT_KEYS = ("temperature", "turbidity", "tds", "flowRate")
 sensor_stats: dict[str, dict] = {}
 
-# Edge-detection state for push notifications: last known severity per (station, param), so
-# a push fires only on that station's good->warn/danger transition (see
-# _check_breaches_and_dispatch below) without one station's recovery masking another's.
-last_severity: dict[str, dict] = {}
-
 # In-memory rolling history of recent readings per station so the dashboard's short-window
 # graph works live off the sensor stream -- no Google Sheets round-trip. Holds the same
 # fields the sheet logs (raw ADC turbidity). Resets on restart; long windows still read from
@@ -461,105 +455,20 @@ def _default_calibration() -> dict:
     }
 
 
-def _initial_calibration_mode(calib: dict) -> bool:
-    # Defaults ON when a real calibration already exists, so a calibrated station keeps
-    # applying after a restart; otherwise OFF.
-    return bool(
-        calib["turbidity"]["coefficients"]
-        or (calib["tds"]["coefficients"] or {}).get("k", 1.0) != 1.0
-        or (calib["flow"]["coefficients"] or {}).get("k", 450.0) != 450.0
-    )
+async def _load_station_state(station: str) -> tuple[dict, bool, dict]:
+    """Returns (calibration, calibration_mode, last_severity) for `station` from Turso,
+    or fresh defaults if it has never had a station_state row (a brand-new station, or Turso
+    disabled). Every /update and every /calibration* endpoint calls this once per request --
+    there is no in-memory cache any more (see the per-station-state Turso migration spec)."""
+    state = await asyncio.to_thread(storage.get_station_state, station) if storage.enabled() else None
+    if state is None:
+        return _default_calibration(), False, {}
+    return state["calibration"], state["calibrationMode"], state["lastSeverity"]
 
 
-def _load_calibration() -> dict[str, dict]:
-    """Returns {station: calibration_dict}. calibration.json used to be a single flat
-    {turbidity:{...}, tds:{...}, flow:{...}} for one implicit station; this migrates that
-    old shape (detected by the top-level keys being sensor names directly) by wrapping it
-    once under DEFAULT_STATION and writing a one-time backup, since this file is git-ignored
-    production data that must never be silently discarded."""
-    try:
-        with open(CALIBRATION_PATH, encoding="utf-8") as f:
-            stored = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-    if not isinstance(stored, dict):
-        return {}
-
-    if any(key in stored for key in CALIBRATED_SENSORS):
-        backup_path = CALIBRATION_PATH + ".bak-premigration"
-        if not os.path.exists(backup_path):
-            try:
-                with open(backup_path, "w", encoding="utf-8") as bf:
-                    json.dump(stored, bf, indent=2)
-            except OSError as exc:
-                print(f"⚠️ Failed to write calibration pre-migration backup: {exc}")
-        stored = {DEFAULT_STATION: stored}
-        # Persist the migrated shape immediately, not just in memory -- otherwise every
-        # restart re-detects the (untouched) old-shape file on disk and re-derives the same
-        # migration from scratch, which is harmless but pointless once we already know the
-        # answer.
-        try:
-            with open(CALIBRATION_PATH, "w", encoding="utf-8") as f:
-                json.dump(stored, f, indent=2)
-            print(f"📦 Migrated {CALIBRATION_PATH} to multi-station shape (backup: {backup_path})")
-        except OSError as exc:
-            print(f"⚠️ Failed to write migrated {CALIBRATION_PATH}: {exc}")
-
-    result: dict[str, dict] = {}
-    for station, raw in stored.items():
-        if not isinstance(raw, dict):
-            continue
-        calib = _default_calibration()
-        for sensor in CALIBRATED_SENSORS:
-            if isinstance(raw.get(sensor), dict):
-                calib[sensor].update(raw[sensor])
-        result[station] = calib
-    return result
-
-
-# {station: {turbidity: {...}, tds: {...}, flow: {...}}}. A station not yet in this dict
-# (never captured/loaded) is created lazily on first access via _station_calibration.
-calibration: dict[str, dict] = _load_calibration()
-# {station: bool} -- see _initial_calibration_mode for the ON/OFF default; a not-yet-seen
-# station defaults to OFF (matches a brand-new, uncalibrated _default_calibration()).
-calibration_mode: dict[str, bool] = {
-    station: _initial_calibration_mode(calib) for station, calib in calibration.items()
-}
-
-
-def _station_calibration(station: str) -> dict:
-    calib = calibration.get(station)
-    if calib is None:
-        calib = _default_calibration()
-        calibration[station] = calib
-    return calib
-
-
-def _station_calibration_mode(station: str) -> bool:
-    return calibration_mode.get(station, False)
-
-
-# Latest raw reading per station per sensor, plus a short rolling buffer, so a calibration
-# "capture" can average out electrical noise instead of grabbing a single instant. Created
-# lazily per station on first reading.
-latest_raw: dict[str, dict] = {}
-_raw_buffers: dict[str, dict] = {}
-
-
-def _station_latest_raw(station: str) -> dict:
-    raw = latest_raw.get(station)
-    if raw is None:
-        raw = {"turbidity": None, "tdsVoltage": None, "temperature": None, "flowRaw": None}
-        latest_raw[station] = raw
-    return raw
-
-
-def _station_raw_buffers(station: str) -> dict:
-    bufs = _raw_buffers.get(station)
-    if bufs is None:
-        bufs = {"turbidity": deque(maxlen=5), "tdsVoltage": deque(maxlen=5), "flowRaw": deque(maxlen=5)}
-        _raw_buffers[station] = bufs
-    return bufs
+async def _save_station_state(station: str, calib: dict, mode: bool, last_severity: dict) -> None:
+    if storage.enabled():
+        await asyncio.to_thread(storage.upsert_station_state, station, calib, mode, last_severity)
 
 
 # Every in-memory dict keyed by station name. Single source of truth for
@@ -589,21 +498,13 @@ def _station_known_in_memory(station: str) -> bool:
     return any(station in m for m in PER_STATION_MAPS)
 
 
-def _save_calibration() -> None:
-    tmp_path = CALIBRATION_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(calibration, f, indent=2)
-    os.replace(tmp_path, CALIBRATION_PATH)
-
-
 def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _recompute_turbidity(station: str) -> None:
+def _recompute_turbidity(calib: dict) -> None:
     # 2-point linear fit. With >2 points, use the first and last by raw ADC so the line
     # spans the full captured range; a single point can't define a slope.
-    calib = _station_calibration(station)
     points = calib["turbidity"]["points"]
     if len(points) < 2:
         calib["turbidity"]["coefficients"] = None
@@ -628,9 +529,8 @@ def _dfrobot_ppm(voltage: float, temperature_c) -> float:
     return max(0.0, ppm)
 
 
-def _recompute_tds(station: str) -> None:
+def _recompute_tds(calib: dict) -> None:
     # Single-point k-factor: k = known_ppm / dfrobot_ppm at the captured voltage/temp.
-    calib = _station_calibration(station)
     points = calib["tds"]["points"]
     if not points:
         calib["tds"]["coefficients"] = {"k": 1.0}
@@ -641,16 +541,16 @@ def _recompute_tds(station: str) -> None:
     calib["tds"]["coefficients"] = {"k": k}
 
 
-def apply_turbidity(station: str, adc: float):
-    coeffs = _station_calibration(station)["turbidity"]["coefficients"]
+def apply_turbidity(calib: dict, adc: float):
+    coeffs = calib["turbidity"]["coefficients"]
     if not coeffs:
         return None
     ntu = coeffs["slope"] * adc + coeffs["intercept"]
     return round(max(0.0, ntu), 1)
 
 
-def apply_tds(station: str, voltage: float, temperature_c) -> float:
-    k = (_station_calibration(station)["tds"]["coefficients"] or {}).get("k", 1.0)
+def apply_tds(calib: dict, voltage: float, temperature_c) -> float:
+    k = (calib["tds"]["coefficients"] or {}).get("k", 1.0)
     return round(k * _dfrobot_ppm(voltage, temperature_c), 1)
 
 
@@ -667,11 +567,10 @@ def ppm_to_ec(ppm) -> float | None:
     return round(ppm / TDS_TO_EC_FACTOR, 1)
 
 
-def _recompute_flow(station: str) -> None:
+def _recompute_flow(calib: dict) -> None:
     # Single-point k-factor, same shape as _recompute_tds: k = counted_pulses / measured
     # liters (pulses per liter), from a "pour a known volume through, capture the pulse
     # count" calibration point.
-    calib = _station_calibration(station)
     points = calib["flow"]["points"]
     if not points:
         calib["flow"]["coefficients"] = {"k": 450.0}
@@ -687,12 +586,11 @@ def _recompute_flow(station: str) -> None:
 FLOW_INTERVAL_SECONDS = 2.0
 
 
-def apply_flow(station: str, pulses: float) -> tuple[float, float]:
+def apply_flow(calib: dict, mode: bool, pulses: float) -> tuple[float, float]:
     """Returns (litersThisInterval, flowRateLpm) from a raw pulse count. Only applies the
     saved k-factor when calibration mode is ON (mirrors apply_tds); OFF uses the nominal
     YF-S201 default so an unconfigured/miscalibrated k can't silently skew the live reading."""
-    mode = _station_calibration_mode(station)
-    k = (_station_calibration(station)["flow"]["coefficients"] or {}).get("k", 450.0) if mode else 450.0
+    k = (calib["flow"]["coefficients"] or {}).get("k", 450.0) if mode else 450.0
     if not k:
         return 0.0, 0.0
     liters = pulses / k
@@ -719,9 +617,10 @@ PARAM_DISPLAY = {
 }
 
 
-def _check_breaches_and_dispatch(station: str, payload: dict) -> list:
+def _check_breaches_and_dispatch(station_severity: dict, payload: dict) -> list:
+    """Mutates `station_severity` in place (edge-detection state for one station), returns
+    the list of (param, severity) pairs that just crossed into warn/danger this reading."""
     breaches = []
-    station_severity = last_severity.setdefault(station, {})
     for param in PUSH_PARAMS:
         value = payload.get(param)
         if not isinstance(value, (int, float)):
