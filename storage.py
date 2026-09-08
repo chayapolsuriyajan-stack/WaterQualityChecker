@@ -161,7 +161,7 @@ def init(url: str, auth_token: str) -> bool:
         _conn = None
         return False
     try:
-        raw = libsql.connect(database=url, auth_token=auth_token)
+        raw = libsql.connect(database=url, auth_token=auth_token, _check_same_thread=False)
         # No journal_mode/synchronous pragmas here -- those tune LOCAL file durability/
         # concurrency behavior; Turso manages this server-side for a remote connection.
         conn = _ConnWrapper(raw)
