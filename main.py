@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import os
+import random
 import sys
 import json
 import mimetypes
@@ -241,125 +242,11 @@ def _normalize_station(raw) -> str:
     return name[:MAX_STATION_NAME_LEN]
 
 
-# Running min/max per parameter, tracked since server start (reset on restart), keyed by
-# station so two boards' ranges never blend into one. Living on the backend (not
-# per-browser) so every connected dashboard shows the same range and it survives page
-# refreshes. Mutated only from the event loop in update_sensor, so no lock is needed.
-STAT_KEYS = ("temperature", "turbidity", "tds", "flowRate")
-sensor_stats: dict[str, dict] = {}
-
-# In-memory rolling history of recent readings per station so the dashboard's short-window
-# graph works live off the sensor stream -- no Google Sheets round-trip. Holds the same
-# fields the sheet logs (raw ADC turbidity). Resets on restart; long windows still read from
-# the sheet. Created lazily per station on first reading (see _station_history).
-HISTORY_BUFFER_MAX = 2000  # ~66 min at a 2s cadence; covers the 5m/15m/1h live windows
-history_buffer: dict[str, deque] = {}
-
-
-def _station_history(station: str) -> deque:
-    buf = history_buffer.get(station)
-    if buf is None:
-        buf = deque(maxlen=HISTORY_BUFFER_MAX)
-        history_buffer[station] = buf
-    return buf
-
-
-# Today's cumulative water usage, per station. Kept in-memory as the hot-path value (so the
-# quick-view doesn't need a DB round-trip on every 2s reading) and persisted to
-# storage.daily_usage fire-and-forget for durability + the Water Usage chart. Seeded from
-# storage lazily, the first time each station is seen after a date rollover (including at
-# startup), so a restart mid-day doesn't visibly reset usage to 0 -- same "new day, new row"
-# reasoning as the storage.py table itself.
+# Today's date as a local calendar-day string -- the key daily-resetting state (water usage,
+# the AI daily report's rollup/cooldown) is bucketed by. Kept as a plain function (not cached)
+# since callers need to detect a rollover by comparing against a freshly computed value.
 def _local_date() -> str:
     return datetime.date.today().isoformat()
-
-_daily_usage_date = _local_date()
-_daily_usage_totals: dict[str, float] = {}
-_daily_usage_seeded: set[str] = set()
-
-
-def _add_daily_usage(station: str, liters: float) -> float:
-    """Adds `liters` to `station`'s running total for today (rolling every station's
-    in-memory total over to a fresh day first if the date has changed since the last
-    reading), persists async, and returns the new total."""
-    global _daily_usage_date
-    today = _local_date()
-    if today != _daily_usage_date:
-        _daily_usage_date = today
-        _daily_usage_totals.clear()
-        _daily_usage_seeded.clear()
-    if station not in _daily_usage_seeded:
-        _daily_usage_totals[station] = storage.get_daily_usage(today, station) if storage.enabled() else 0.0
-        _daily_usage_seeded.add(station)
-    total = _daily_usage_totals.get(station, 0.0) + liters
-    _daily_usage_totals[station] = total
-    if storage.enabled():
-        asyncio.create_task(asyncio.to_thread(storage.add_daily_usage, today, station, liters))
-    return total
-
-
-def _update_stats(station: str, payload: dict) -> None:
-    stats = sensor_stats.setdefault(station, {})
-    for key in STAT_KEYS:
-        if key not in payload:
-            continue
-        value = payload[key]
-        current = stats.get(key)
-        if current is None:
-            stats[key] = {"min": value, "max": value}
-        else:
-            current["min"] = min(current["min"], value)
-            current["max"] = max(current["max"], value)
-
-
-def _stats_snapshot(station: str) -> dict:
-    # Deep-ish copy so a snapshot handed to a coroutine/broadcast can't be mutated
-    # underneath it by a later reading.
-    stats = sensor_stats.get(station, {})
-    return {key: dict(stat) for key, stat in stats.items()}
-
-
-# Rolling min/max/sum/count per parameter SINCE LOCAL MIDNIGHT, plus a tally of how many
-# readings landed in warn/danger -- the numbers the AI daily report (below) turns into a
-# prompt for Gemini. Deliberately separate from `sensor_stats` above (that one is since
-# SERVER START, not since midnight -- reusing it would silently mix the two meanings) and
-# from `last_severity` (edge-detection only, not a running count of how many times a
-# threshold was crossed). Same lazy date-rollover pattern as `_add_daily_usage` -- checked
-# on every reading rather than relying solely on the midnight scheduler below, so a server
-# outage spanning midnight can't leak yesterday's numbers into today's report.
-_daily_stats_date = _local_date()
-_daily_stats: dict[str, dict] = {}
-_daily_breach_counts: dict[str, dict] = {}
-
-
-def _update_daily_stats(station: str, payload: dict) -> None:
-    global _daily_stats_date
-    today = _local_date()
-    if today != _daily_stats_date:
-        _daily_stats_date = today
-        _daily_stats.clear()
-        _daily_breach_counts.clear()
-    stats = _daily_stats.setdefault(station, {})
-    breach_counts = _daily_breach_counts.setdefault(station, {})
-    # PUSH_PARAMS (defined further down, alongside the push-notification breach detection
-    # it's shared with) is resolved at call time, not definition time -- fine, since this
-    # function is never actually called until the whole module has finished loading.
-    for param in PUSH_PARAMS:
-        value = payload.get(param)
-        if not isinstance(value, (int, float)):
-            continue
-        current = stats.get(param)
-        if current is None:
-            stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
-        else:
-            current["min"] = min(current["min"], value)
-            current["max"] = max(current["max"], value)
-            current["sum"] += value
-            current["count"] += 1
-        if thresholds.is_sensor_fault(param, value):
-            continue
-        if thresholds.range_status_for(param, value) in ("warn", "danger"):
-            breach_counts[param] = breach_counts.get(param, 0) + 1
 
 
 async def broadcast_sensor_update(payload: dict) -> None:
@@ -469,33 +356,6 @@ async def _load_station_state(station: str) -> tuple[dict, bool, dict]:
 async def _save_station_state(station: str, calib: dict, mode: bool, last_severity: dict) -> None:
     if storage.enabled():
         await asyncio.to_thread(storage.upsert_station_state, station, calib, mode, last_severity)
-
-
-# Every in-memory dict keyed by station name. Single source of truth for
-# POST /station/rename's migration AND _station_known_in_memory's existence
-# check below -- if a future feature adds another per-station dict, add it
-# here and both consumers pick it up automatically instead of needing two
-# separate edits (which is exactly how this list itself started out of sync).
-PER_STATION_MAPS = (
-    history_buffer,
-    sensor_stats,
-    last_severity,
-    calibration,
-    calibration_mode,
-    latest_raw,
-    _raw_buffers,
-    _daily_usage_totals,
-    _daily_stats,
-    _daily_breach_counts,
-)
-
-
-def _station_known_in_memory(station: str) -> bool:
-    """True if `station` appears in any of the in-memory per-station structures.
-    Deliberately checks raw dict membership, NOT the _station_*() accessor functions
-    above -- those lazily CREATE an entry on first access, which would make every
-    station "exist" the moment you asked about it."""
-    return any(station in m for m in PER_STATION_MAPS)
 
 
 def _now_iso() -> str:
@@ -836,6 +696,9 @@ async def update_sensor(request: Request):
             "station": station,
         }
 
+        calib, station_mode, station_severity = await _load_station_state(station)
+        breaches: list = []
+
         if "temperature" in data and "turbidity" in data:
             payload["temperature"] = float(data["temperature"])
             # Turbidity arrives as the averaged raw ADC and is kept in `turbidity` (both
@@ -844,8 +707,7 @@ async def update_sensor(request: Request):
             turbidity_adc = float(data["turbidity"])
             # Only apply this station's saved calibration when calibration mode is ON (the
             # Calibration tab's on/off button). OFF => ntu stays None => dashboard shows raw ADC.
-            station_mode = _station_calibration_mode(station)
-            ntu = apply_turbidity(station, turbidity_adc) if station_mode else None
+            ntu = apply_turbidity(calib, turbidity_adc) if station_mode else None
             # `turbidityRaw` always carries the raw averaged ADC (for the calibration page +
             # honest Google Sheets logging). The primary `turbidity` field carries calibrated
             # NTU once a calibration exists, else falls back to raw ADC -- the React SPA (a
@@ -859,11 +721,6 @@ async def update_sensor(request: Request):
             else:
                 payload["turbidity"] = turbidity_adc
                 payload["turbidityUnit"] = "ADC"
-            raw = _station_latest_raw(station)
-            raw["turbidity"] = turbidity_adc
-            _station_raw_buffers(station)["turbidity"].append(turbidity_adc)
-
-            raw["temperature"] = payload["temperature"]
 
             # TDS: prefer the raw voltage from current firmware (backend computes ppm via
             # calibration). Fall back to a legacy pre-computed `tds` ppm from an un-reflashed
@@ -874,12 +731,10 @@ async def update_sensor(request: Request):
                 # Apply the k-factor only when calibration mode is ON; OFF => uncalibrated
                 # DFRobot ppm (k = 1.0).
                 payload["tds"] = (
-                    apply_tds(station, tds_voltage, payload["temperature"])
+                    apply_tds(calib, tds_voltage, payload["temperature"])
                     if station_mode
                     else round(_dfrobot_ppm(tds_voltage, payload["temperature"]), 1)
                 )
-                raw["tdsVoltage"] = tds_voltage
-                _station_raw_buffers(station)["tdsVoltage"].append(tds_voltage)
             elif "tds" in data:
                 payload["tds"] = float(data["tds"])
 
@@ -895,11 +750,67 @@ async def update_sensor(request: Request):
             # gating -- flow rate/usage are plain quantities, not water-quality judgments.
             if "flowPulses" in data:
                 flow_pulses = float(data["flowPulses"])
-                liters, flow_rate = apply_flow(station, flow_pulses)
+                liters, flow_rate = apply_flow(calib, station_mode, flow_pulses)
                 payload["flowRate"] = flow_rate
-                payload["waterUsageToday"] = round(_add_daily_usage(station, liters), 4)
-                raw["flowRaw"] = flow_pulses
-                _station_raw_buffers(station)["flowRaw"].append(flow_pulses)
+                if storage.enabled():
+                    total = await asyncio.to_thread(storage.add_daily_usage, _local_date(), station, liters)
+                else:
+                    # No Turso, no in-memory cache any more -- this interval's own liters is
+                    # the best available answer, not a running daily total.
+                    total = liters
+                payload["waterUsageToday"] = round(total, 4)
+
+            if storage.enabled():
+                ts_ms = payload["timestamp"] * 1000
+                await asyncio.to_thread(
+                    storage.insert_reading,
+                    station,
+                    ts_ms,
+                    {
+                        "temperature": payload.get("temperature"),
+                        "turbidity_raw": payload.get("turbidityRaw"),
+                        "turbidity_ntu": payload.get("turbidityNtu"),
+                        "tds_voltage": payload.get("tdsVoltage"),
+                        "tds_ppm": payload.get("tds"),
+                        "ec": payload.get("ec"),
+                        "flow_pulses": data.get("flowPulses"),
+                        "flow_rate": payload.get("flowRate"),
+                    },
+                )
+                # Opportunistic retention prune (not on every write -- a DELETE scan on every
+                # 2s reading would be wasteful). ~1/100 writes is frequent enough that the
+                # table never grows far past 24h + a few minutes of readings.
+                if random.random() < 0.01:
+                    cutoff_ms = int((time.time() - 86400) * 1000)
+                    asyncio.create_task(asyncio.to_thread(storage.prune_readings, cutoff_ms))
+
+                # Running min/max since the oldest retained reading (redefined from "since
+                # server start" now that there's no persistent server -- see the migration
+                # spec's Retention section). turbidity's column choice matches whichever unit
+                # this station is currently displaying, same as the old in-memory sensor_stats
+                # did (a station that toggles calibration mode mid-window will see the same
+                # unit-mixing quirk the original had).
+                stat_columns = {
+                    "temperature": "temperature",
+                    "turbidity": "turbidity_ntu" if station_mode else "turbidity_raw",
+                    "tds": "tds_ppm",
+                    "flowRate": "flow_rate",
+                }
+                extremes = await asyncio.to_thread(
+                    storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
+                )
+                payload["stats"] = {
+                    key: {"min": extremes[col]["min"], "max": extremes[col]["max"]}
+                    for key, col in stat_columns.items()
+                    if col in extremes
+                }
+            else:
+                payload["stats"] = {}
+
+            # Threshold-breach push notifications: detection is synchronous/inline (must
+            # observe every reading in order to edge-detect correctly); the actual sends are
+            # deferred below, like the Sheets relay.
+            breaches = _check_breaches_and_dispatch(station_severity, payload)
         else:
             text = await request.body()
             if not text:
@@ -912,26 +823,12 @@ async def update_sensor(request: Request):
 
             payload["water_level"] = int(float(water_level))
 
-        _update_stats(station, payload)
-        _update_daily_stats(station, payload)
-        payload["stats"] = _stats_snapshot(station)
+        if storage.enabled():
+            await _save_station_state(station, calib, station_mode, station_severity)
 
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
         if "temperature" in payload:
-            # Record into this station's in-memory rolling history for the live short-window
-            # graph (same raw ADC turbidity the sheet logs; timestamp in epoch ms to match it).
-            history_row = {
-                "timestamp": payload["timestamp"] * 1000,
-                "station": station,
-                "temperature": payload["temperature"],
-                "turbidity": payload.get("turbidityRaw", payload.get("turbidity")),
-                "tds": payload.get("tds"),
-                "ec": payload.get("ec"),
-                "flowRate": payload.get("flowRate"),
-            }
-            _station_history(station).append(history_row)
-
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
             sheet_payload = {
@@ -951,10 +848,6 @@ async def update_sensor(request: Request):
                 sheet_payload["flowRate"] = payload["flowRate"]
             asyncio.create_task(relay_to_google_sheets(sheet_payload))
 
-            # Threshold-breach push notifications: detection is synchronous/inline (must
-            # observe every reading in order to edge-detect correctly), the actual sends
-            # are deferred like the two tasks above.
-            breaches = _check_breaches_and_dispatch(station, payload)
             if breaches:
                 asyncio.create_task(dispatch_push_breaches(breaches, payload))
         return JSONResponse({"ok": True, "payload": payload})
