@@ -1,16 +1,12 @@
-"""Turso (libSQL) persistence for push subscriptions and daily water usage.
-
-Sensor reading history is NOT stored here -- it lives in the in-memory `history_buffer`
-(main.py) for the live short-window graph, and in Google Sheets (via google_apps_script.gs)
-for anything older. This module exists only for the two things Sheets can't reasonably
-hold: durable Web Push subscription state (so subscriptions survive a restart), and the
-flow sensor's daily-resetting water-usage counter (a small aggregate, not a per-reading log).
+"""Turso (libSQL) persistence for sensor readings, per-station state, push subscriptions,
+and daily water usage.
 
 Design notes:
 - One module-level connection with `check_same_thread=False`, guarded by a lock. Every
   public function here is blocking, and `main.py` calls them via `asyncio.to_thread` so a
-  slow disk never stalls the event loop or the ESP32's `/update` response.
-- WAL journal mode so a write doesn't block a concurrent read.
+  slow network round-trip never stalls the event loop or the ESP32's `/update` response.
+- The `readings` table is pruned to the last 24h by main.py (see prune_readings) --
+  Google Sheets remains the durable long-term archive for anything older.
 """
 
 import json
@@ -94,6 +90,30 @@ class _ConnWrapper:
     def close(self) -> None:
         self._conn.close()
 
+
+# Column names in `readings` that hold an actual sensor value (excludes id/station/ts_ms,
+# which every reading function already handles explicitly).
+_READING_COLUMNS = (
+    "temperature", "turbidity_raw", "turbidity_ntu", "tds_voltage",
+    "tds_ppm", "ec", "flow_pulses", "flow_rate",
+)
+
+
+def _reading_row_to_dict(r) -> dict:
+    """Maps one `readings` row onto the shape main.py's old history_buffer rows had, so
+    every consumer (the /history endpoint, the WS prime frame) needed no reshaping."""
+    return {
+        "timestamp": r["ts_ms"],
+        "temperature": r["temperature"],
+        "turbidity": r["turbidity_raw"],
+        "turbidityNtu": r["turbidity_ntu"],
+        "tds": r["tds_ppm"],
+        "tdsVoltage": r["tds_voltage"],
+        "ec": r["ec"],
+        "flowPulses": r["flow_pulses"],
+        "flowRate": r["flow_rate"],
+    }
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint    TEXT PRIMARY KEY,
@@ -124,6 +144,36 @@ CREATE TABLE IF NOT EXISTS ai_reports (
     report_text  TEXT NOT NULL,
     created_ms   INTEGER NOT NULL,
     PRIMARY KEY (date, station)
+);
+
+-- One row per sensor reading (replaces main.py's old in-memory history_buffer/sensor_stats/
+-- latest_raw/_raw_buffers/_daily_stats/_daily_breach_counts -- see
+-- docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md). Pruned to the
+-- last 24h by main.py (prune_readings below); Google Sheets remains the durable long-term
+-- archive for anything older, same two-tier split /history already documented.
+CREATE TABLE IF NOT EXISTS readings (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    station        TEXT NOT NULL,
+    ts_ms          INTEGER NOT NULL,
+    temperature    REAL,
+    turbidity_raw  REAL,
+    turbidity_ntu  REAL,
+    tds_voltage    REAL,
+    tds_ppm        REAL,
+    ec             REAL,
+    flow_pulses    REAL,
+    flow_rate      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_readings_station_ts ON readings(station, ts_ms);
+
+-- One row per station: calibration coefficients + mode, and breach edge-detection state.
+-- Replaces main.py's old in-memory calibration/calibration_mode dicts and calibration.json
+-- (retired entirely) plus last_severity.
+CREATE TABLE IF NOT EXISTS station_state (
+    station             TEXT PRIMARY KEY,
+    calibration_json    TEXT NOT NULL,
+    calibration_mode    INTEGER NOT NULL DEFAULT 0,
+    last_severity_json  TEXT NOT NULL DEFAULT '{}'
 );
 """
 
@@ -188,6 +238,260 @@ def close() -> None:
             _conn = None
 
 
+def insert_reading(station: str, ts_ms: int, fields: dict) -> None:
+    """Inserts one reading row. `fields` may omit any of _READING_COLUMNS (missing -> NULL,
+    e.g. a legacy water_level-only POST that never calls this at all, or a POST with no
+    flow sensor attached)."""
+    if _conn is None:
+        return
+    cols = ["station", "ts_ms"] + list(_READING_COLUMNS)
+    values = [station, ts_ms] + [fields.get(c) for c in _READING_COLUMNS]
+    placeholders = ", ".join("?" for _ in cols)
+    try:
+        with _lock:
+            _conn.execute(
+                f"INSERT INTO readings ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(values),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Reading insert failed: {exc}")
+
+
+def prune_readings(older_than_ms: int) -> None:
+    """Deletes every reading older than `older_than_ms` across all stations -- called
+    opportunistically (not on every write) by main.py to keep the table's growth bounded
+    without a separate scheduler."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("DELETE FROM readings WHERE ts_ms < ?", (older_than_ms,))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Reading prune failed: {exc}")
+
+
+_READING_SELECT = (
+    "ts_ms, temperature, turbidity_raw, turbidity_ntu, tds_voltage, tds_ppm, ec,"
+    " flow_pulses, flow_rate"
+)
+
+
+def get_readings(station: str, since_ms: float) -> list[dict]:
+    """`station`'s rows at/after `since_ms`, chronological ascending -- the live-window
+    source for GET /history (was history_buffer)."""
+    if _conn is None:
+        return []
+    try:
+        with _lock:
+            rows = _conn.execute(
+                f"SELECT {_READING_SELECT} FROM readings"
+                " WHERE station = ? AND ts_ms >= ? ORDER BY ts_ms ASC",
+                (station, since_ms),
+            ).fetchall()
+    except Exception as exc:
+        print(f"⚠️ Reading read failed: {exc}")
+        return []
+    return [_reading_row_to_dict(r) for r in rows]
+
+
+def get_latest_reading(station: str) -> dict | None:
+    """`station`'s single most recent reading, or None if it has never reported -- used by
+    the WS connect-time prime frame and calibration-capture's temperature/latestRaw fields."""
+    if _conn is None:
+        return None
+    try:
+        with _lock:
+            row = _conn.execute(
+                f"SELECT {_READING_SELECT} FROM readings"
+                " WHERE station = ? ORDER BY ts_ms DESC LIMIT 1",
+                (station,),
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Reading read failed: {exc}")
+        return None
+    return _reading_row_to_dict(row) if row else None
+
+
+def get_recent_raw(station: str, column: str, limit: int = 5) -> list[float]:
+    """Last `limit` non-null values of one raw column, most-recent-first -- averaged by
+    main.py's calibration-capture endpoint to smooth out electrical noise (was
+    latest_raw/_raw_buffers). `column` must be one of _READING_COLUMNS."""
+    if _conn is None or column not in _READING_COLUMNS:
+        return []
+    try:
+        with _lock:
+            rows = _conn.execute(
+                f"SELECT {column} FROM readings WHERE station = ? AND {column} IS NOT NULL"
+                " ORDER BY ts_ms DESC LIMIT ?",
+                (station, limit),
+            ).fetchall()
+    except Exception as exc:
+        print(f"⚠️ Reading read failed: {exc}")
+        return []
+    return [r[column] for r in rows]
+
+
+def get_reading_extremes(station: str, since_ms: float, columns: tuple[str, ...]) -> dict[str, dict]:
+    """{column: {"min", "max", "avg", "count"}} across every column in `columns` for rows at/
+    after `since_ms`, one query -- replaces sensor_stats (since_ms=0, meaning "since the
+    oldest retained row") and the AI report's daily rollup (since_ms=local midnight). A
+    column with zero non-null rows in range is omitted from the result entirely."""
+    if _conn is None:
+        return {}
+    bad = [c for c in columns if c not in _READING_COLUMNS]
+    if bad:
+        raise ValueError(f"unknown reading column(s): {bad}")
+    if not columns:
+        return {}
+    select = ", ".join(
+        f"MIN({c}) AS {c}_min, MAX({c}) AS {c}_max, AVG({c}) AS {c}_avg, COUNT({c}) AS {c}_count"
+        for c in columns
+    )
+    try:
+        with _lock:
+            row = _conn.execute(
+                f"SELECT {select} FROM readings WHERE station = ? AND ts_ms >= ?",
+                (station, since_ms),
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Reading stats read failed: {exc}")
+        return {}
+    if row is None:
+        return {}
+    out = {}
+    for c in columns:
+        count = row[f"{c}_count"]
+        if not count:
+            continue
+        out[c] = {"min": row[f"{c}_min"], "max": row[f"{c}_max"], "avg": row[f"{c}_avg"], "count": count}
+    return out
+
+
+def get_reading_values(station: str, since_ms: float, column: str) -> list[float]:
+    """Every non-null value of one column at/after since_ms -- used for breach-counting in
+    Python (thresholds.range_status_for isn't expressible in SQL), only at AI-report
+    generation time (once/day, or on manual "Generate now"), never on the /update hot path."""
+    if _conn is None or column not in _READING_COLUMNS:
+        return []
+    try:
+        with _lock:
+            rows = _conn.execute(
+                f"SELECT {column} FROM readings"
+                f" WHERE station = ? AND ts_ms >= ? AND {column} IS NOT NULL",
+                (station, since_ms),
+            ).fetchall()
+    except Exception as exc:
+        print(f"⚠️ Reading read failed: {exc}")
+        return []
+    return [r[column] for r in rows]
+
+
+def list_stations() -> list[str]:
+    """Every station with at least one reading, station_state row, or daily_usage row --
+    used wherever main.py used to iterate its in-memory PER_STATION_MAPS' keys (the WS
+    connect-time prime frame, the midnight AI-report scheduler)."""
+    if _conn is None:
+        return []
+    try:
+        with _lock:
+            rows = _conn.execute(
+                "SELECT station FROM readings"
+                " UNION SELECT station FROM station_state"
+                " UNION SELECT station FROM daily_usage"
+            ).fetchall()
+    except Exception as exc:
+        print(f"⚠️ Station list read failed: {exc}")
+        return []
+    return [r["station"] for r in rows]
+
+
+def get_station_state(station: str) -> dict | None:
+    """`station`'s calibration + mode + breach-edge-detection state, or None if it has never
+    had any (a brand-new station) -- caller (main.py) supplies its own defaults in that case."""
+    if _conn is None:
+        return None
+    try:
+        with _lock:
+            row = _conn.execute(
+                "SELECT calibration_json, calibration_mode, last_severity_json"
+                " FROM station_state WHERE station = ?",
+                (station,),
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Station state read failed: {exc}")
+        return None
+    if row is None:
+        return None
+    return {
+        "calibration": json.loads(row["calibration_json"]),
+        "calibrationMode": bool(row["calibration_mode"]),
+        "lastSeverity": json.loads(row["last_severity_json"]),
+    }
+
+
+def upsert_station_state(station: str, calibration: dict, calibration_mode: bool, last_severity: dict) -> None:
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute(
+                "INSERT INTO station_state (station, calibration_json, calibration_mode, last_severity_json)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(station) DO UPDATE SET calibration_json=excluded.calibration_json,"
+                " calibration_mode=excluded.calibration_mode, last_severity_json=excluded.last_severity_json",
+                (station, json.dumps(calibration), int(calibration_mode), json.dumps(last_severity)),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Station state write failed: {exc}")
+
+
+def station_exists(station: str) -> bool:
+    """True if `station` has a station_state row, any reading, or any daily_usage row --
+    used by /station/rename's collision checks now that nothing lives in memory."""
+    if _conn is None:
+        return False
+    try:
+        with _lock:
+            row = _conn.execute(
+                "SELECT 1 FROM station_state WHERE station = ?"
+                " UNION SELECT 1 FROM readings WHERE station = ?"
+                " UNION SELECT 1 FROM daily_usage WHERE station = ? LIMIT 1",
+                (station, station, station),
+            ).fetchone()
+    except Exception as exc:
+        print(f"⚠️ Station existence check failed: {exc}")
+        return False
+    return row is not None
+
+
+def rename_readings(old: str, new: str) -> None:
+    """Moves every readings row from `old` to `new`. Caller must have already confirmed
+    `new` has no existing rows anywhere (station_exists) -- same precondition as
+    rename_station_usage."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("UPDATE readings SET station = ? WHERE station = ?", (new, old))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Reading rename failed: {exc}")
+
+
+def rename_station_state(old: str, new: str) -> None:
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute("UPDATE station_state SET station = ? WHERE station = ?", (new, old))
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Station state rename failed: {exc}")
+
+
 def upsert_push_subscription(endpoint: str, p256dh: str, auth: str, prefs: dict) -> None:
     """Insert or update one push subscription. `prefs` is stored as one JSON blob per
     subscription since it's always read/written whole, never queried by field."""
@@ -241,12 +545,14 @@ def get_all_push_subscriptions() -> list[dict]:
     return out
 
 
-def add_daily_usage(date: str, station: str, liters: float) -> None:
+def add_daily_usage(date: str, station: str, liters: float) -> float:
     """Adds `liters` to `station`'s running total for `date` (creating the row if this is
-    its first reading of the day). `date` is a local YYYY-MM-DD string, caller-supplied so
-    this module doesn't need to know about timezones."""
+    its first reading of the day) and returns the new total. Returns 0.0 if disabled or the
+    write failed -- there is no in-memory cache left to fall back to (removed in the
+    per-station-state Turso migration), so a failed write here means main.py's
+    waterUsageToday for this reading is genuinely unknown, not just stale."""
     if _conn is None or liters is None:
-        return
+        return 0.0
     try:
         with _lock:
             _conn.execute(
@@ -254,9 +560,15 @@ def add_daily_usage(date: str, station: str, liters: float) -> None:
                 " ON CONFLICT(date, station) DO UPDATE SET total_liters = total_liters + excluded.total_liters",
                 (date, station, liters),
             )
+            row = _conn.execute(
+                "SELECT total_liters FROM daily_usage WHERE date = ? AND station = ?",
+                (date, station),
+            ).fetchone()
             _conn.commit()
     except Exception as exc:
         print(f"⚠️ Daily usage write failed: {exc}")
+        return 0.0
+    return row["total_liters"] if row else 0.0
 
 
 def get_daily_usage(date: str, station: str) -> float:
