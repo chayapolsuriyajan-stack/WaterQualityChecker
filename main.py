@@ -600,9 +600,11 @@ def apply_flow(calib: dict, mode: bool, pulses: float) -> tuple[float, float]:
 
 # --- Push notifications -------------------------------------------------------
 # Breach detection runs synchronously/inline on every reading (edge-triggered good->warn/
-# danger transition tracked in last_severity, so out-of-order dispatch can't corrupt it);
-# the actual network sends are deferred via asyncio.create_task, the same fire-and-forget
-# pattern already used for the Sheets relay and local DB insert in update_sensor.
+# danger transition tracked in each station's severity dict -- loaded via
+# _load_station_state and persisted via _save_station_state, so out-of-order dispatch can't
+# corrupt it); the actual network sends are deferred via asyncio.create_task, the same
+# fire-and-forget pattern already used for the Sheets relay and local DB insert in
+# update_sensor.
 
 PUSH_PARAMS = ("temperature", "turbidity", "tds", "ec")
 
