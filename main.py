@@ -106,7 +106,7 @@ def _load_gemini_api_key() -> str:
         with open(GEMINI_API_KEY_FILE, encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return os.getenv("GEMINI_API_KEY")
+        return os.getenv("GEMINI_API_KEY", "")
 
 
 GEMINI_API_KEY = _load_gemini_api_key()
