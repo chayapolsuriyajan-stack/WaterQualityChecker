@@ -40,11 +40,13 @@ except FileNotFoundError:
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
 CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
-# Local SQLite file for push subscriptions + daily water usage only (see storage.py).
-# Reading history is NOT stored here -- it lives in the in-memory buffer and Google Sheets.
-# Set "historyDbFile" to "" to disable it (push subscriptions won't survive a restart and
-# daily usage won't persist, but everything else keeps working).
-HISTORY_DB_PATH = webconfig.get("historyDbFile", "history.db")
+# Turso (libSQL) database for push subscriptions + daily water usage + AI reports only (see
+# storage.py). Reading history is NOT stored here -- it lives in the in-memory buffer and
+# Google Sheets. Leave "tursoDatabaseUrl" empty to disable it (push subscriptions won't
+# survive a restart and daily usage/AI reports won't persist, but everything else keeps
+# working). The auth token is a real secret -- read from the environment, never committed.
+TURSO_DATABASE_URL = webconfig.get("tursoDatabaseUrl", "")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 # Web Push (see push notification section below). Missing VAPID key file -> push endpoints
 # degrade to 503 rather than crashing startup, matching the existing degrade-not-crash
 # pattern used by storage.init/the Sheets webhook.
@@ -104,7 +106,7 @@ def _load_gemini_api_key() -> str:
         with open(GEMINI_API_KEY_FILE, encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return ""
+        return os.getenv("GEMINI_API_KEY")
 
 
 GEMINI_API_KEY = _load_gemini_api_key()
@@ -162,10 +164,10 @@ if GOOGLE_SHEETS_WEBHOOK_URL:
 else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
 
-if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
-    print(f"✅ Local database at {HISTORY_DB_PATH} (push subscriptions + daily water usage).")
+if TURSO_DATABASE_URL and storage.init(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN):
+    print(f"✅ Turso database at {TURSO_DATABASE_URL} (push subscriptions + daily water usage + AI reports).")
 else:
-    print("⚠️ Local database disabled; push subscriptions and daily water usage won't persist.")
+    print("⚠️ Turso database disabled; push subscriptions, daily water usage, and AI reports won't persist.")
 
 if gemini_available():
     print(f"✅ AI daily report enabled ({GEMINI_MODEL}) -- generates once per local midnight, per station.")

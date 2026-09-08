@@ -1,4 +1,4 @@
-"""Local SQLite persistence for push subscriptions and daily water usage.
+"""Turso (libSQL) persistence for push subscriptions and daily water usage.
 
 Sensor reading history is NOT stored here -- it lives in the in-memory `history_buffer`
 (main.py) for the live short-window graph, and in Google Sheets (via google_apps_script.gs)
@@ -15,12 +15,84 @@ Design notes:
 
 import json
 import os
-import sqlite3
 import threading
 import time
 
-_conn: sqlite3.Connection | None = None
+import libsql
+
+_conn = None  # type: ignore[no-redef]  -- libsql's connection type, no public type stub as of writing
 _lock = threading.Lock()
+
+
+class _Row:
+    """Minimal dict-style row adapter. libsql's cursor (confirmed by inspection --
+    Step 1 of the Turso migration) returns plain tuples, not sqlite3.Row-like objects and
+    has no `row_factory` support at all, so this maps column names (from the cursor's
+    DB-API `description`) onto tuple values -- the only thing needed to keep every
+    `row["column"]` access below unchanged."""
+
+    __slots__ = ("_cols", "_values")
+
+    def __init__(self, cols: list[str], values: tuple) -> None:
+        self._cols = cols
+        self._values = values
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self._values[self._cols.index(key)]
+        return self._values[key]
+
+    def __repr__(self) -> str:  # pragma: no cover -- debugging aid only
+        return repr(dict(zip(self._cols, self._values)))
+
+
+class _CursorWrapper:
+    """Wraps a libsql cursor so `fetchone`/`fetchall` return `_Row` objects instead of
+    plain tuples."""
+
+    __slots__ = ("_cursor",)
+
+    def __init__(self, cursor) -> None:
+        self._cursor = cursor
+
+    def _cols(self) -> list[str]:
+        return [d[0] for d in (self._cursor.description or [])]
+
+    def fetchall(self) -> list[_Row]:
+        cols = self._cols()
+        return [_Row(cols, row) for row in self._cursor.fetchall()]
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return _Row(self._cols(), row) if row is not None else None
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+
+class _ConnWrapper:
+    """Wraps the raw libsql connection so every `.execute()` call returns rows supporting
+    `row["column"]` access, matching the `sqlite3.Row` behavior the rest of this file's
+    queries were written against -- libsql itself has no row_factory equivalent (see the
+    `_Row`/`_CursorWrapper` docstrings above)."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params=()) -> _CursorWrapper:
+        return _CursorWrapper(self._conn.execute(sql, params))
+
+    def executescript(self, sql: str) -> None:
+        self._conn.executescript(sql)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -56,7 +128,7 @@ CREATE TABLE IF NOT EXISTS ai_reports (
 """
 
 
-def _migrate_daily_usage_schema(conn: sqlite3.Connection) -> None:
+def _migrate_daily_usage_schema(conn) -> None:
     """`daily_usage` used to be keyed by `date` alone (one implicit station). If an
     existing database still has that shape (no `station` column), rebuild the table with
     the new composite (date, station) key, attributing every existing row to 'default' --
@@ -77,31 +149,29 @@ def _migrate_daily_usage_schema(conn: sqlite3.Connection) -> None:
     print("📦 Migrated daily_usage to per-station schema (existing rows attributed to 'default').")
 
 
-def init(path: str) -> bool:
-    """Open (creating if needed) the local database. Returns False if unusable.
+def init(url: str, auth_token: str) -> bool:
+    """Open a connection to the Turso (libSQL) database at `url`. Returns False if unusable.
 
     A failure here is never fatal: main.py degrades gracefully -- push subscriptions simply
     have nowhere durable to live, and daily water usage stops persisting, but sensor readings
     and the rest of the app keep working normally.
     """
     global _conn
+    if not url:
+        _conn = None
+        return False
     try:
-        parent = os.path.dirname(os.path.abspath(path))
-        os.makedirs(parent, exist_ok=True)
-        conn = sqlite3.connect(path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # WAL: concurrent reads during writes. synchronous=NORMAL: safe under WAL for our
-        # durability needs (a reading lost to a power cut is already lost on the ESP32 side)
-        # and avoids an fsync every 2 seconds on the same disk the OS is running from.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        raw = libsql.connect(database=url, auth_token=auth_token)
+        # No journal_mode/synchronous pragmas here -- those tune LOCAL file durability/
+        # concurrency behavior; Turso manages this server-side for a remote connection.
+        conn = _ConnWrapper(raw)
         conn.executescript(_SCHEMA)
         conn.commit()
         _migrate_daily_usage_schema(conn)
         _conn = conn
         return True
-    except Exception as exc:  # sqlite3.Error, OSError, permissions...
-        print(f"⚠️ Local database unavailable at {path}: {exc}")
+    except Exception as exc:
+        print(f"⚠️ Turso database unavailable at {url}: {exc}")
         _conn = None
         return False
 
