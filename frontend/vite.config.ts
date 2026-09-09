@@ -16,10 +16,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/ws/app': {
-        target: 'ws://localhost:8080',
-        ws: true,
-      },
+      '/live': 'http://localhost:8080',
       '/history': 'http://localhost:8080',
       '/calibration': 'http://localhost:8080',
       '/update': 'http://localhost:8080',

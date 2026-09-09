@@ -101,7 +101,7 @@ _READING_COLUMNS = (
 
 def _reading_row_to_dict(r) -> dict:
     """Maps one `readings` row onto the shape main.py's old history_buffer rows had, so
-    every consumer (the /history endpoint, the WS prime frame) needed no reshaping."""
+    every consumer (the /history endpoint, GET /live) needed no reshaping."""
     return {
         "timestamp": r["ts_ms"],
         "temperature": r["temperature"],
@@ -298,7 +298,7 @@ def get_readings(station: str, since_ms: float) -> list[dict]:
 
 def get_latest_reading(station: str) -> dict | None:
     """`station`'s single most recent reading, or None if it has never reported -- used by
-    the WS connect-time prime frame and calibration-capture's temperature/latestRaw fields."""
+    GET /live and calibration-capture's temperature/latestRaw fields."""
     if _conn is None:
         return None
     try:
@@ -390,8 +390,8 @@ def get_reading_values(station: str, since_ms: float, column: str) -> list[float
 
 def list_stations() -> list[str]:
     """Every station with at least one reading, station_state row, or daily_usage row --
-    used wherever main.py used to iterate its in-memory PER_STATION_MAPS' keys (the WS
-    connect-time prime frame, the midnight AI-report scheduler)."""
+    used wherever main.py used to iterate its in-memory PER_STATION_MAPS' keys (GET /live,
+    the midnight AI-report scheduler)."""
     if _conn is None:
         return []
     try:

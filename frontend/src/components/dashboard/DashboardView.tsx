@@ -1,7 +1,7 @@
 /**
  * Dashboard (home) view: top WQI history chart, center live param grid,
  * bottom radial safety gauges. Reads the shared sensor context (single
- * /ws/app socket owned by SensorProvider) and distributes reading/series
+ * /live polling loop owned by SensorProvider) and distributes reading/series
  * down to its children.
  */
 import { useState } from 'react'

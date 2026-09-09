@@ -14,7 +14,7 @@ import { useRole } from '@/lib/RoleProvider'
 import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
 
 /**
- * Syncs the browser tab title to the live `/ws/app` connection state. Runs
+ * Syncs the browser tab title to the `/live` polling connection state. Runs
  * regardless of which `view` tab is active (connection state is global, not
  * per-view) and always in English -- an explicit decision to not follow the
  * EN/ไทย toggle, since a tab title is glanced at, not read.
@@ -44,8 +44,8 @@ export default function App() {
 
   return (
     // SensorProvider wraps the whole shell (above the keyed motion.div below) so the single
-    // shared /ws/app socket and its 30s rolling series survive `view` changes instead of being
-    // torn down and reconnected/reset on every tab switch.
+    // shared /live polling loop and its 30s rolling series survive `view` changes instead of
+    // being torn down and reconnected/reset on every tab switch.
     <SensorProvider>
       <TabTitleSync />
       <TourProvider view={view} setView={setView}>

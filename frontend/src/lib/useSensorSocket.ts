@@ -14,10 +14,13 @@ import { getHistory, getLive } from './api'
 import type { HistoryRow, SensorReading } from './types'
 
 const SPARKLINE_WINDOW_MS = 30_000
-const STALE_TIMEOUT_MS = 5_000
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 15_000
 const POLL_INTERVAL_MS = 3_000
+// ~3x the poll interval -- generous headroom over a remote-DB-backed poll's real latency
+// (/live does 1 + 4xN_stations sequential Turso round-trips), avoiding flicker between
+// "online" and "offline" during normal request-time variance.
+const STALE_TIMEOUT_MS = POLL_INTERVAL_MS * 3
 
 export type SeriesParam = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow'
 
@@ -107,9 +110,8 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
   const numOrNull = (v: unknown): number | null => (typeof v === 'number' ? v : null)
   const tds = numOrNull(obj.tds)
   const ec = numOrNull(obj.ec) ?? (tds != null ? tds * 2 : null)
-  // The prime frame's `timestamp` is epoch SECONDS (matching /history's convention); live
-  // `sensor_update` broadcasts and history_buffer both use epoch MILLISECONDS. Normalize
-  // both onto milliseconds.
+  // `/live`'s `timestamp` is epoch SECONDS (matching /history's convention). Expand to
+  // milliseconds so callers can treat every reading's timestamp uniformly.
   const rawTimestamp = typeof obj.timestamp === 'number' ? obj.timestamp : Date.now()
   const timestamp = rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp
   // Mirrors the backend's own DEFAULT_STATION sentinel (main.py) -- a board with no
@@ -141,10 +143,12 @@ export function useSensorSocket(): UseSensorSocketResult {
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unmountedRef = useRef(false)
   const seededStationsRef = useRef<Set<string>>(new Set())
+  const lastTimestampsRef = useRef<Record<string, number>>({})
 
   useEffect(() => {
     unmountedRef.current = false
     seededStationsRef.current = new Set()
+    lastTimestampsRef.current = {}
 
     const seedStationHistory = (station: string) => {
       if (seededStationsRef.current.has(station)) return
@@ -188,12 +192,43 @@ export function useSensorSocket(): UseSensorSocketResult {
         const live = await getLive()
         if (unmountedRef.current) return
         failureCountRef.current = 0
-        setConnected(true)
-        armStaleTimer()
+
+        // A renamed station's old key simply stops appearing in /live's response, and the
+        // new key appears -- prune anything no longer present so it doesn't linger forever.
+        // Skip this when the response lists zero stations: that's indistinguishable from a
+        // Turso outage (every storage helper degrades to an empty result rather than
+        // raising), and an outage should leave last-known-good readings frozen on screen,
+        // not wipe them -- `connected` going false (via the staleness check below) is what
+        // signals the outage instead.
+        if (live.stationNames.length > 0) {
+          const known = new Set(live.stationNames)
+          setStations((prev) => {
+            const next: Record<string, StationSensorState> = {}
+            for (const [name, state] of Object.entries(prev)) {
+              if (known.has(name)) next[name] = state
+            }
+            return next
+          })
+        }
+
+        // Only treat a poll as "fresh" -- applying the reading and re-arming the stale
+        // timer -- when at least one station's timestamp actually advanced. Otherwise a
+        // dead sensor (same reading repeated every poll) or a dead Turso (empty response)
+        // would keep `connected` true forever instead of eventually going stale.
+        let anyFresh = false
         for (const station of live.stationNames) {
           const entry = live.stations[station]
           if (!entry?.hasData || !entry.reading) continue
-          applyReading(normalizeReading(entry.reading as unknown as Record<string, unknown>))
+          const reading = normalizeReading(entry.reading as unknown as Record<string, unknown>)
+          const readingTimestamp = reading.timestamp ?? Date.now()
+          if (lastTimestampsRef.current[station] === readingTimestamp) continue
+          lastTimestampsRef.current[station] = readingTimestamp
+          anyFresh = true
+          applyReading(reading)
+        }
+        if (anyFresh) {
+          setConnected(true)
+          armStaleTimer()
         }
       } catch {
         // A failed poll doesn't immediately flip `connected` false -- STALE_TIMEOUT_MS

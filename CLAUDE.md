@@ -188,9 +188,8 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   immediately (subject to the cooldown above). Both default `station` to `"default"` like
   every other per-station endpoint.
 - **Frontend**: `AiReportCard.tsx` (Dashboard tab, after the WQI history chart) polls
-  `GET /ai-report` every 5 minutes and also refetches on a live `ai_report` WS event
-  (`useSensorSocket`'s `lastAiReport`, mirroring `lastRename`'s pattern) so every connected
-  dashboard updates immediately, not just the one that clicked "Generate now".
+  `GET /ai-report` every 5 minutes, so every connected dashboard picks up a newly generated
+  report within that window, not just the one that clicked "Generate now".
 
 ## WiFi provisioning over USB (`frontend/src/lib/webSerial.ts`, formerly `wifi_serial.py`)
 
@@ -214,7 +213,7 @@ Lets the dashboard change the ESP32's WiFi network like an OS WiFi picker — sc
 
 **One dashboard**, source-controlled, served at `/` by `main.py` (built `frontend/dist/`, mounted last as a root catch-all — `app.mount("/", ...)` registered after every API route).
 
-- **Stack**: Vite + React 19 + TypeScript + Tailwind v4, shadcn/ui + Recharts + Motion + TanStack Query. `npm run build` outputs `frontend/dist/` (git-ignored, along with `node_modules/`); `/` 404s until built at least once. `npm run dev` proxies `/ws/app`, `/history`, `/calibration*`, `/update`, `/push*`, `/flow*`, `/wifi*` to `:8080` for HMR against a live `python main.py`.
+- **Stack**: Vite + React 19 + TypeScript + Tailwind v4, shadcn/ui + Recharts + Motion + TanStack Query. `npm run build` outputs `frontend/dist/` (git-ignored, along with `node_modules/`); `/` 404s until built at least once. `npm run dev` proxies `/live`, `/history`, `/calibration*`, `/update`, `/push*`, `/flow*`, `/wifi*` to `:8080` for HMR against a live `python main.py`.
 - **Left sidebar shell**, three tabs — **Dashboard** (WQI history chart w/ time-range selector + reference lines; live param grid Temperature/Turbidity/TDS/EC/Flow, 30s sparklines, filtered by Settings' toggles; card click → detail modal, min/avg/max, too-high/too-low warning — skipped for Flow; Water Flow/Usage charts below, see Flow sensor above; 3 radial gauges), **Calibration** (turbidity 2-point + TDS/flow k-factors, wired to `/calibration*`, optimistic apply + toast, observed-range min/max/reset — Sensor calibration above; plus **WiFi**, above), **History** (`/history` table + CSV export) — plus theme toggle, EN/ไทย switcher, a **Settings** dialog (gear icon, `SettingsDialog.tsx`) for push prefs and display toggles.
 - **Live data**: `useSensorSocket.ts` polls `GET /live` on an interval (via `SensorProvider`, no shared WebSocket connection — Vercel's serverless Python functions can't keep one open across requests) and keeps a ~30s rolling per-parameter sample buffer for sparklines, seeded from `GET /history?window=5m` on mount so a reload shows recent data immediately instead of starting blank. **No fake-data fallback**: on a failed poll or >5s silence it flips `connected`/"Offline" but leaves the last reading frozen — never fabricates numbers (an earlier idle-random-data fallback was removed for this reason).
 - **Guided tour** (`frontend/src/components/tour/`) — a 10-step first-run walkthrough: `TourProvider` owns state, `TourOverlay` renders the spotlight, `tourSteps.ts` is the step list, `TourHelpButton` replays it on demand. Three mechanics: (1) auto-runs once per browser, gated on a **versioned** localStorage flag (`hydro-tour-v1-seen`) — bump it to re-show after a redesign; (2) steps target elements by **`data-tour="..."` attribute**, resolved via `document.querySelector` at render time, so renaming/dropping one silently breaks that step; (3) a step may carry a `view` to switch tabs and bring its target into the DOM. Step copy lives in `strings.ts` (`tour.*` keys).

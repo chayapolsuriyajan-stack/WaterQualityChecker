@@ -3,7 +3,7 @@
  * Mirrors the backend's `/update`/`/history` payload shape (see main.py).
  */
 
-/** A single live sensor reading pushed over `/ws/app` (sensor_update payload). */
+/** A single sensor reading, in the shape returned by both `GET /live` and `GET /history`. */
 export interface SensorReading {
   /** Which ESP32 board this reading came from. `"default"` for a board with no station
    * name provisioned (see CLAUDE.md's WiFi provisioning section, STATION_SET). */
