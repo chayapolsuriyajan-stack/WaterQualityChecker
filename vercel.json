@@ -1,8 +1,15 @@
 {
+  "installCommand": "cd frontend && npm install",
+  "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
   "rewrites": [
-    { "source": "/(update|live|history|calibration.*|station.*|ai-report.*|push.*|flow.*|wifi.*)", "destination": "/api/index" }
+    { "source": "/(update.*|live|history|calibration.*|station.*|ai-report.*|push.*|flow.*|wifi.*)", "destination": "/api/index" }
   ],
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "{main.py,storage.py,thresholds.py,wifi_serial.py,webconfig.json}"
+    }
+  },
   "crons": [
     { "path": "/ai-report/generate-all", "schedule": "0 0 * * *" }
   ]

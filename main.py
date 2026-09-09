@@ -139,7 +139,10 @@ wifi_serial.configure(webconfig.get("esp32SerialPort", "") or None)
 # an internet-reachable /update with no auth lets anyone inject fake sensor readings or spam
 # the Google Sheets relay/push notifications. The ESP32 sends it back via the X-API-Key header
 # (set through the same USB provisioning channel as WIFI_SET/BACKEND_SET, see esp32.ino).
-UPDATE_API_KEY = webconfig.get("updateApiKey", "")
+# Falls back to the UPDATE_API_KEY env var when webconfig.json doesn't set it -- mirrors
+# _load_gemini_api_key's file-then-env-var pattern, needed specifically for Vercel, where
+# webconfig.json is committed to the repo and so can't hold a real secret inline.
+UPDATE_API_KEY = webconfig.get("updateApiKey") or os.getenv("UPDATE_API_KEY", "")
 
 
 def vapid_available() -> bool:
@@ -1343,7 +1346,7 @@ async def generate_ai_report_now(station: str = DEFAULT_STATION):
 
 
 @app.get("/ai-report/generate-all")
-async def generate_ai_reports_all():
+async def generate_ai_reports_all(request: Request):
     """Vercel Cron's target (see vercel.json's "crons" entry) -- generates (or, within
     cooldown, returns the cached) AI daily report for every station that currently has data,
     the same loop _daily_report_scheduler's local-deployment midnight path already runs.
@@ -1353,12 +1356,24 @@ async def generate_ai_reports_all():
     backend-auth-gated, same precedent as that per-station endpoint -- every call is already
     cooldown-protected (AI_REPORT_COOLDOWN_SECONDS), so an internet-reachable trigger can't
     burn through the Gemini quota any faster than the existing manual button already
-    couldn't."""
+    couldn't. If CRON_SECRET is set as an env var, requires a matching Authorization: Bearer
+    header -- Vercel sets this automatically for configured cron jobs; unset locally, so
+    local/dev calls are unaffected. Each station's generation is isolated in its own
+    try/except so one station's Turso/Gemini failure can't abort the whole fan-out."""
+    cron_secret = os.getenv("CRON_SECRET", "")
+    if cron_secret and not hmac.compare_digest(
+        request.headers.get("authorization", ""), f"Bearer {cron_secret}"
+    ):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     stations = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
     results = {}
     for station in stations:
-        text, cached = await _generate_ai_report(station)
-        results[station] = {"generated": text is not None, "cached": cached}
+        try:
+            text, cached = await _generate_ai_report(station)
+            results[station] = {"generated": text is not None, "cached": cached}
+        except Exception as exc:
+            print(f"⚠️ AI report generation failed for station {station!r}: {exc}")
+            results[station] = {"generated": False, "cached": False, "error": str(exc)}
     return JSONResponse({"stations": results})
 
 
