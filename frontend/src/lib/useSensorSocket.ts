@@ -1,5 +1,5 @@
 /**
- * React hook: live sensor readings over `/ws/app`, with a rolling per-parameter
+ * React hook: live sensor readings polled from `/live`, with a rolling per-parameter
  * sample history for sparklines. On disconnect or stale data, this freezes at the
  * last real reading and flips `connected` to false rather than fabricating plausible-
  * looking numbers -- a real water-quality monitor must show an honest "offline" state,
@@ -10,13 +10,14 @@
  * normal operation.)
  */
 import { useEffect, useRef, useState } from 'react'
-import { getHistory } from './api'
+import { getHistory, getLive } from './api'
 import type { HistoryRow, SensorReading } from './types'
 
 const SPARKLINE_WINDOW_MS = 30_000
 const STALE_TIMEOUT_MS = 5_000
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 15_000
+const POLL_INTERVAL_MS = 3_000
 
 export type SeriesParam = 'temperature' | 'turbidity' | 'tds' | 'ec' | 'flow'
 
@@ -37,20 +38,9 @@ export interface UseSensorSocketResult {
    * only appears here once its first reading (live or primed) has arrived -- there is no
    * pre-registration. */
   stations: Record<string, StationSensorState>
-  /** Whether the shared /ws/app socket itself is up -- this is connection health, not
-   * per-station; a station can simply have gone quiet while the socket stays connected. */
+  /** Whether the last poll of /live succeeded -- this is polling health, not per-station; a
+   * station can simply have gone quiet while polling itself keeps succeeding. */
   connected: boolean
-  /** The most recent station_renamed event seen over the socket, or null if none yet this
-   * session. `at` is a Date.now() timestamp so consumers can key off a fresh event even when
-   * `old`/`new` happen to repeat (e.g. a rename immediately followed by its reverse). Lets
-   * SensorProvider follow a live rename for every connected client, not just the one that
-   * initiated it. */
-  lastRename: { old: string; new: string; at: number } | null
-  /** The most recent ai_report event seen over the socket (see main.py's broadcast_ai_report),
-   * or null if none yet this session. Lets every connected dashboard -- not just the one that
-   * clicked "Generate now" -- refresh its AI report card live, and lets the midnight scheduler's
-   * automatic generation show up without a page reload. */
-  lastAiReport: { station: string; date: string; report: string; at: number } | null
 }
 
 export function emptySeries(): SensorSeries {
@@ -112,40 +102,6 @@ function mergeSeries(live: SensorSeries, seeded: SensorSeries, now: number): Sen
   return next
 }
 
-/** Normalizes any of the tolerated WS message shapes into a SensorReading, or null. */
-function extractReading(data: unknown): SensorReading | null {
-  if (!data || typeof data !== 'object') return null
-  const msg = data as Record<string, unknown>
-
-  // { type: 'sensor_update', payload: {...} }
-  // Covers both real broadcasts AND the connect-time "prime" frame, which is sent in this
-  // same envelope (see main.py websocket_app): { type: 'sensor_update', payload: { hasData,
-  // stats, lastTimestamp, [...last reading fields if any]} }. When hasData is false (no
-  // reading has ever been recorded), or the payload otherwise carries no actual reading
-  // (no `temperature` key), there is nothing to show yet — return null rather than letting
-  // normalizeReading coerce the missing fields to fabricated zeros.
-  if (msg.type === 'sensor_update' && msg.payload && typeof msg.payload === 'object') {
-    const payload = msg.payload as Record<string, unknown>
-    if (payload.hasData === false || !('temperature' in payload)) return null
-    return normalizeReading(payload)
-  }
-
-  // Prime frame arriving unwrapped: { hasData, lastTimestamp, last: {...} } (or payload
-  // under `reading`).
-  if ('hasData' in msg || 'lastTimestamp' in msg) {
-    const last = (msg.last ?? msg.reading ?? msg.payload) as Record<string, unknown> | undefined
-    if (msg.hasData === false || !last || !('temperature' in last)) return null
-    return normalizeReading(last)
-  }
-
-  // Flat payload with recognizable sensor fields.
-  if ('temperature' in msg || 'turbidity' in msg || 'tds' in msg) {
-    return normalizeReading(msg)
-  }
-
-  return null
-}
-
 function normalizeReading(obj: Record<string, unknown>): SensorReading {
   const num = (v: unknown, fallback = 0): number => (typeof v === 'number' ? v : fallback)
   const numOrNull = (v: unknown): number | null => (typeof v === 'number' ? v : null)
@@ -179,32 +135,17 @@ function normalizeReading(obj: Record<string, unknown>): SensorReading {
 export function useSensorSocket(): UseSensorSocketResult {
   const [stations, setStations] = useState<Record<string, StationSensorState>>({})
   const [connected, setConnected] = useState(false)
-  const [lastRename, setLastRename] = useState<{ old: string; new: string; at: number } | null>(null)
-  const [lastAiReport, setLastAiReport] = useState<
-    { station: string; date: string; report: string; at: number } | null
-  >(null)
 
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnectAttemptRef = useRef(0)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const failureCountRef = useRef(0)
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastMessageAtRef = useRef<number>(0)
   const unmountedRef = useRef(false)
-  // Stations we've already fired a history-seed request for, so a station reporting every
-  // 2s doesn't refetch its own recent history on every single message.
   const seededStationsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     unmountedRef.current = false
     seededStationsRef.current = new Set()
 
-    // Seed one station's sparklines from recent history so a reload shows the last few
-    // minutes immediately instead of a blank chart that only fills back in as new live
-    // readings trickle in over ~30s. Lazy per station (fired the first time each station's
-    // first reading arrives, live or primed) since which stations exist isn't known up
-    // front -- mirrors the original single-station seed, just one per station instead of one
-    // total. Runs alongside the live stream, not before it -- a live point that lands first
-    // is safe, mergeSeries de-dupes by timestamp either way.
     const seedStationHistory = (station: string) => {
       if (seededStationsRef.current.has(station)) return
       seededStationsRef.current.add(station)
@@ -221,8 +162,7 @@ export function useSensorSocket(): UseSensorSocketResult {
           })
         })
         .catch(() => {
-          // No history yet for this station (fresh server, or its live buffer is still
-          // empty) -- its sparklines just start empty and fill in live.
+          // No history yet for this station -- its sparklines just start empty and fill in live.
         })
     }
 
@@ -235,24 +175,6 @@ export function useSensorSocket(): UseSensorSocketResult {
       seedStationHistory(r.station)
     }
 
-    /** A station was renamed server-side (see main.py's POST /station/rename). Moves its
-     * live reading + sparkline series from the old key to the new one so the dashboard
-     * reflects the rename immediately, without waiting for the renamed board's next
-     * reading (which, per the rename UI's own warning, may still arrive under the OLD
-     * name until the board is separately reprovisioned over USB). */
-    const applyStationRenamed = (oldName: string, newName: string) => {
-      setStations((prev) => {
-        if (!(oldName in prev)) return prev
-        const { [oldName]: moved, ...rest } = prev
-        return { ...rest, [newName]: moved }
-      })
-      setLastRename({ old: oldName, new: newName, at: Date.now() })
-    }
-
-    // No data for STALE_TIMEOUT_MS => mark offline. Deliberately does NOT touch any
-    // station's `reading`/`series`: the last real values stay on screen (frozen) rather
-    // than being replaced with fabricated numbers, so a genuine outage reads as "stale",
-    // not as new data.
     const armStaleTimer = () => {
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
       staleTimerRef.current = setTimeout(() => {
@@ -260,87 +182,47 @@ export function useSensorSocket(): UseSensorSocketResult {
       }, STALE_TIMEOUT_MS)
     }
 
-    const connect = () => {
+    const poll = async () => {
       if (unmountedRef.current) return
-
-      const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-      const url = `${protocol}://${location.host}/ws/app`
-      const ws = new WebSocket(url)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        reconnectAttemptRef.current = 0
-        setConnected(true)
-        lastMessageAtRef.current = Date.now()
-        armStaleTimer()
-      }
-
-      ws.onmessage = (event) => {
-        lastMessageAtRef.current = Date.now()
+      try {
+        const live = await getLive()
+        if (unmountedRef.current) return
+        failureCountRef.current = 0
         setConnected(true)
         armStaleTimer()
-        try {
-          const data = JSON.parse(event.data)
-          if (
-            data &&
-            typeof data === 'object' &&
-            data.type === 'station_renamed' &&
-            typeof data.old === 'string' &&
-            typeof data.new === 'string'
-          ) {
-            applyStationRenamed(data.old, data.new)
-            return
-          }
-          if (
-            data &&
-            typeof data === 'object' &&
-            data.type === 'ai_report' &&
-            typeof data.station === 'string' &&
-            typeof data.date === 'string' &&
-            typeof data.report === 'string'
-          ) {
-            setLastAiReport({ station: data.station, date: data.date, report: data.report, at: Date.now() })
-            return
-          }
-          const parsed = extractReading(data)
-          if (parsed) applyReading(parsed)
-        } catch {
-          // Ignore malformed frames.
+        for (const station of live.stationNames) {
+          const entry = live.stations[station]
+          if (!entry?.hasData || !entry.reading) continue
+          applyReading(normalizeReading(entry.reading as unknown as Record<string, unknown>))
         }
-      }
-
-      ws.onclose = () => {
-        setConnected(false)
-        scheduleReconnect()
-      }
-
-      ws.onerror = () => {
-        ws.close()
+      } catch {
+        // A failed poll doesn't immediately flip `connected` false -- STALE_TIMEOUT_MS
+        // (armed by the last successful poll) already handles that, exactly like the old
+        // WS's stale-timer did for a silently dead socket. This just tracks consecutive
+        // failures so scheduleNext can back off instead of hammering a down backend.
+        failureCountRef.current += 1
+      } finally {
+        scheduleNext()
       }
     }
 
-    const scheduleReconnect = () => {
+    const scheduleNext = () => {
       if (unmountedRef.current) return
-      if (reconnectTimerRef.current) return
-      const attempt = reconnectAttemptRef.current
-      const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS)
-      reconnectAttemptRef.current = attempt + 1
-      reconnectTimerRef.current = setTimeout(() => {
-        reconnectTimerRef.current = null
-        connect()
-      }, delay)
+      const failures = failureCountRef.current
+      const delay = failures === 0
+        ? POLL_INTERVAL_MS
+        : Math.min(RECONNECT_BASE_MS * 2 ** (failures - 1), RECONNECT_MAX_MS)
+      pollTimerRef.current = setTimeout(poll, delay)
     }
 
-    connect()
+    poll()
 
     return () => {
       unmountedRef.current = true
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current)
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
-      wsRef.current?.close()
-      wsRef.current = null
     }
   }, [])
 
-  return { stations, connected, lastRename, lastAiReport }
+  return { stations, connected }
 }

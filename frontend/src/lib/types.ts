@@ -29,6 +29,20 @@ export interface SensorReading {
   timestamp?: number
 }
 
+/** One station's entry in GET /live's response. */
+export interface LiveStationState {
+  hasData: boolean
+  reading: SensorReading | null
+  stats: Record<string, { min: number; max: number }> | null
+}
+
+/** GET /live's full response -- every station's current snapshot, polled on an interval
+ * instead of pushed over a WebSocket (see useSensorSocket.ts). */
+export interface LiveResponse {
+  stationNames: string[]
+  stations: Record<string, LiveStationState>
+}
+
 /** One row from `GET /history?window=`. */
 export interface HistoryRow {
   /** Epoch milliseconds. */

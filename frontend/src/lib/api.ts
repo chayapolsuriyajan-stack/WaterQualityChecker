@@ -10,6 +10,7 @@ import type {
   GenerateAiReportResponse,
   HistoryRow,
   HistoryWindow,
+  LiveResponse,
   WifiBackendStatus,
   WifiNetwork,
   WifiStatus,
@@ -51,6 +52,10 @@ export function getHistory(window: HistoryWindow, station: string): Promise<Hist
   return request<HistoryResponse>(
     `/history?window=${encodeURIComponent(window)}&station=${encodeURIComponent(station)}`,
   )
+}
+
+export function getLive(): Promise<LiveResponse> {
+  return request<LiveResponse>('/live')
 }
 
 export function getCalibration(station: string): Promise<CalibrationState> {
