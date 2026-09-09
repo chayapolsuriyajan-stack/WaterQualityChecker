@@ -41,8 +41,10 @@ export interface UseSensorSocketResult {
    * only appears here once its first reading (live or primed) has arrived -- there is no
    * pre-registration. */
   stations: Record<string, StationSensorState>
-  /** Whether the last poll of /live succeeded -- this is polling health, not per-station; a
-   * station can simply have gone quiet while polling itself keeps succeeding. */
+  /** Whether any station's reading has actually advanced within STALE_TIMEOUT_MS -- this
+   * tracks data FRESHNESS, not just poll success. A poll can succeed every 3s while a
+   * station's board is silent (backend/Turso fine, ESP32 dead); this flips false in that
+   * case too, so the UI can't read "online" off a stale reading served on repeat. */
   connected: boolean
 }
 
@@ -206,6 +208,17 @@ export function useSensorSocket(): UseSensorSocketResult {
             const next: Record<string, StationSensorState> = {}
             for (const [name, state] of Object.entries(prev)) {
               if (known.has(name)) next[name] = state
+              else {
+                // Clean the two per-station refs alongside the pruned state entry -- leaving
+                // a stale lastTimestampsRef entry behind would make this station's OLD
+                // (pre-rename) timestamp still match if it's ever renamed back while its
+                // board stays silent, permanently skipping it as "not fresh" and leaving it
+                // absent from `stations` until a genuinely new reading arrives. Clearing
+                // seededStationsRef too just means a re-appearing station re-seeds its
+                // sparkline from /history once, same as a first-ever appearance.
+                delete lastTimestampsRef.current[name]
+                seededStationsRef.current.delete(name)
+              }
             }
             return next
           })
@@ -232,9 +245,10 @@ export function useSensorSocket(): UseSensorSocketResult {
         }
       } catch {
         // A failed poll doesn't immediately flip `connected` false -- STALE_TIMEOUT_MS
-        // (armed by the last successful poll) already handles that, exactly like the old
-        // WS's stale-timer did for a silently dead socket. This just tracks consecutive
-        // failures so scheduleNext can back off instead of hammering a down backend.
+        // (armed by the last FRESH poll, not merely the last successful one -- see the
+        // anyFresh check above) already handles that, exactly like the old WS's stale-timer
+        // did for a silently dead socket. This just tracks consecutive failures so
+        // scheduleNext can back off instead of hammering a down backend.
         failureCountRef.current += 1
       } finally {
         scheduleNext()
