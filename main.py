@@ -1356,9 +1356,13 @@ async def generate_ai_reports_all(request: Request):
     backend-auth-gated, same precedent as that per-station endpoint -- every call is already
     cooldown-protected (AI_REPORT_COOLDOWN_SECONDS), so an internet-reachable trigger can't
     burn through the Gemini quota any faster than the existing manual button already
-    couldn't. If CRON_SECRET is set as an env var, requires a matching Authorization: Bearer
-    header -- Vercel sets this automatically for configured cron jobs; unset locally, so
-    local/dev calls are unaffected. Each station's generation is isolated in its own
+    couldn't. If CRON_SECRET is set as an env var -- a real secret the deployer creates and
+    sets themselves, e.g. in the Vercel project's environment variables, NOT something Vercel
+    provisions automatically -- requires a matching Authorization: Bearer header; Vercel then
+    sends that header automatically on its own cron-triggered requests once the var exists,
+    but a fresh deployment that never sets CRON_SECRET leaves this endpoint open by default.
+    Unset locally, so local/dev calls are unaffected either way. Each station's generation is
+    isolated in its own
     try/except so one station's Turso/Gemini failure can't abort the whole fan-out."""
     cron_secret = os.getenv("CRON_SECRET", "")
     if cron_secret and not hmac.compare_digest(

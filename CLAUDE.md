@@ -202,11 +202,14 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   `GET`. Not backend-auth-gated, same precedent as the manual endpoint: the per-station
   `AI_REPORT_COOLDOWN_SECONDS` cooldown inside `_generate_ai_report` already caps how often a
   Gemini call actually fires, regardless of who (or what schedule) hits the endpoint. On top of
-  that, setting `CRON_SECRET` (Vercel's own convention, auto-injected as an env var for
-  configured cron jobs and sent as an `Authorization: Bearer <CRON_SECRET>` header on the real
+  that, setting `CRON_SECRET` (a real secret the deployer creates themselves in the Vercel
+  project's environment variables — Vercel does **not** provision this automatically; once
+  it exists, Vercel sends it as an `Authorization: Bearer <CRON_SECRET>` header on the real
   cron request) protects this specific endpoint from being triggered by anyone who merely
   discovers the URL — a GET needs no CORS preflight or JavaScript, so it's trivially hittable
-  via a stray `<img src>` or crawler otherwise. Local/dev deployments stay open since
+  via a stray `<img src>` or crawler otherwise. **A fresh deployment that never sets
+  `CRON_SECRET` leaves this endpoint open by default** — the cooldown is the only protection
+  until that var is set. Local/dev deployments stay open since
   `CRON_SECRET` is never set there.
 
 ## Vercel deployment
