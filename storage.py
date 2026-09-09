@@ -448,6 +448,29 @@ def upsert_station_state(station: str, calibration: dict, calibration_mode: bool
         print(f"⚠️ Station state write failed: {exc}")
 
 
+def update_last_severity(station: str, last_severity: dict) -> None:
+    """Updates ONLY a station's breach edge-detection state, leaving calibration/mode
+    untouched -- used by /update, which never modifies calibration itself. Splitting this
+    from upsert_station_state prevents /update's every-2s write from racing with a
+    concurrent /calibration* endpoint's read-modify-write of the same row (both would
+    otherwise replace the whole row, and whichever write lands second silently discards
+    the other's change -- e.g. a just-captured calibration point reverting because /update
+    saved a stale calib dict it loaded before the capture)."""
+    if _conn is None:
+        return
+    try:
+        with _lock:
+            _conn.execute(
+                "INSERT INTO station_state (station, calibration_json, calibration_mode, last_severity_json)"
+                " VALUES (?, '{}', 0, ?)"
+                " ON CONFLICT(station) DO UPDATE SET last_severity_json = excluded.last_severity_json",
+                (station, json.dumps(last_severity)),
+            )
+            _conn.commit()
+    except Exception as exc:
+        print(f"⚠️ Station severity update failed: {exc}")
+
+
 def station_exists(station: str) -> bool:
     """True if `station` has a station_state row, any reading, or any daily_usage row --
     used by /station/rename's collision checks now that nothing lives in memory."""
@@ -641,9 +664,10 @@ def update_push_prefs(endpoint: str, prefs: dict) -> bool:
 
 
 def station_has_usage(station: str) -> bool:
-    """True if `station` has any daily_usage row at all (any date) -- used by
-    main.py's /station/rename to detect a name collision even for a station whose
-    in-memory state was wiped by a restart but still has historical usage on disk."""
+    """True if `station` has any daily_usage row at all (any date). Currently unused by
+    main.py -- /station/rename was rewritten (Task 4) to use station_exists (below) for its
+    collision check instead, which already covers daily_usage as one of its three UNIONed
+    sources. Left in place in case a caller needs the daily_usage-only check specifically."""
     if _conn is None:
         return False
     try:

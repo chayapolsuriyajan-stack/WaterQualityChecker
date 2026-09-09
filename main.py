@@ -39,11 +39,13 @@ except FileNotFoundError:
 
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
-# Turso (libSQL) database for push subscriptions + daily water usage + AI reports only (see
-# storage.py). Reading history is NOT stored here -- it lives in the in-memory buffer and
-# Google Sheets. Leave "tursoDatabaseUrl" empty to disable it (push subscriptions won't
-# survive a restart and daily usage/AI reports won't persist, but everything else keeps
-# working). The auth token is a real secret -- read from the environment, never committed.
+# Turso (libSQL) database for push subscriptions, daily water usage, AI reports, reading
+# history, and per-station calibration/mode/breach state (see storage.py) -- reading
+# history, calibration, and station state all live here now, not in any in-memory
+# structure. Leave "tursoDatabaseUrl" empty to disable it (push subscriptions won't survive
+# a restart, daily usage/AI reports won't persist, and reading history/calibration/station
+# state reset on every restart, but everything else keeps working). The auth token is a
+# real secret -- read from the environment, never committed.
 TURSO_DATABASE_URL = webconfig.get("tursoDatabaseUrl", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 # Web Push (see push notification section below). Missing VAPID key file -> push endpoints
@@ -164,7 +166,7 @@ else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
 
 if TURSO_DATABASE_URL and storage.init(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN):
-    print(f"✅ Turso database at {TURSO_DATABASE_URL} (push subscriptions + daily water usage + AI reports).")
+    print(f"✅ Turso database at {TURSO_DATABASE_URL} (push subscriptions + daily water usage + AI reports + readings + station state).")
 else:
     print("⚠️ Turso database disabled; push subscriptions, daily water usage, and AI reports won't persist.")
 
@@ -353,6 +355,18 @@ async def _load_station_state(station: str) -> tuple[dict, bool, dict]:
 async def _save_station_state(station: str, calib: dict, mode: bool, last_severity: dict) -> None:
     if storage.enabled():
         await asyncio.to_thread(storage.upsert_station_state, station, calib, mode, last_severity)
+
+
+def _turbidity_stat_column(calib: dict, station_mode: bool) -> str:
+    """Which readings-table column holds the turbidity value this station is actually
+    DISPLAYING right now -- NTU only when mode is ON *and* a real calibration exists
+    (>=2 captured points), not just when mode is toggled on. Using `station_mode` alone
+    as the condition is wrong: a station can have mode ON with zero calibration points,
+    in which case turbidity_ntu is all-NULL and every consumer of this column silently
+    loses turbidity's min/max. Centralized here so /update, the /ws/app prime frame, and
+    the AI report prompt-builder can't diverge on this choice."""
+    has_calibration = bool(calib["turbidity"]["coefficients"])
+    return "turbidity_ntu" if (station_mode and has_calibration) else "turbidity_raw"
 
 
 def _now_iso() -> str:
@@ -575,12 +589,12 @@ def _local_midnight_ms() -> int:
 
 async def _build_daily_report_prompt(station: str) -> str:
     since_ms = _local_midnight_ms()
-    _calib, station_mode, _severity = await _load_station_state(station)
+    calib, station_mode, _severity = await _load_station_state(station)
     # Same per-station unit choice /update's own sensor_stats query makes -- NTU once
     # calibrated, else raw ADC.
     columns = {
         "temperature": "temperature",
-        "turbidity": "turbidity_ntu" if station_mode else "turbidity_raw",
+        "turbidity": _turbidity_stat_column(calib, station_mode),
         "tds": "tds_ppm",
         "ec": "ec",
     }
@@ -809,10 +823,16 @@ async def update_sensor(request: Request):
                 # unit-mixing quirk the original had).
                 stat_columns = {
                     "temperature": "temperature",
-                    "turbidity": "turbidity_ntu" if station_mode else "turbidity_raw",
+                    "turbidity": _turbidity_stat_column(calib, station_mode),
                     "tds": "tds_ppm",
                     "flowRate": "flow_rate",
                 }
+                # NOTE: since_ms=0 scans every retained row (up to 24h) on every call -- an
+                # accepted tradeoff of this migration's no-in-process-caching design (see
+                # docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md),
+                # not free, but not a correctness bug. A future pass could maintain running
+                # min/max as columns on station_state instead if this becomes a measured
+                # bottleneck.
                 extremes = await asyncio.to_thread(
                     storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
                 )
@@ -841,7 +861,13 @@ async def update_sensor(request: Request):
             payload["water_level"] = int(float(water_level))
 
         if storage.enabled():
-            await _save_station_state(station, calib, station_mode, station_severity)
+            # /update never modifies calib/station_mode -- only station_severity (breach
+            # edge-detection). Writing through update_last_severity (not
+            # _save_station_state/upsert_station_state) touches only that one column, so this
+            # every-2s write can't race a concurrent /calibration* endpoint's read-modify-write
+            # of the same row and clobber a just-captured calibration point. See
+            # storage.update_last_severity's docstring.
+            await asyncio.to_thread(storage.update_last_severity, station, station_severity)
 
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)
@@ -959,7 +985,7 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW, station: str = DEFAU
     that covers it.
 
     Two tiers, in order:
-      1. the in-memory buffer -- answers instantly for anything still in the rolling window;
+      1. Turso's `readings` table -- answers instantly for anything still in the rolling window;
       2. Google Sheets -- consulted only for the part of the window the buffer doesn't reach
          (a fresh restart, or a window longer than the buffer holds). Proxied here so the
          dashboard's fetch stays same-origin.
@@ -1483,15 +1509,16 @@ async def websocket_app(websocket: WebSocket):
     # existed), so a completely fresh system still gets an explicit empty state.
     stations_with_data = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
 
-    if not stations_with_data:
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "sensor_update",
-                "payload": {"stats": None, "hasData": False, "lastTimestamp": None},
-            }))
-        except Exception:
-            pass
-    else:
+    # sent_any tracks whether the loop below actually got a frame out the door.
+    # storage.list_stations() unions readings/station_state/daily_usage, so it can return a
+    # station that has a station_state row (e.g. from a /calibration/mode toggle) but zero
+    # actual readings yet -- get_latest_reading returns None for that station and the loop
+    # `continue`s past it. Falling back to the hasData:false frame only when
+    # stations_with_data was empty to begin with would silently send NO frame at all for such
+    # a station, defeating the "never leave the dashboard guessing between no-data and a hung
+    # socket" guarantee this whole prime-frame mechanism exists for.
+    sent_any = False
+    if stations_with_data:
         for station in stations_with_data:
             last = await asyncio.to_thread(storage.get_latest_reading, station)
             if last is None:
@@ -1503,10 +1530,16 @@ async def websocket_app(websocket: WebSocket):
                 ntu = apply_turbidity(calib, turbidity_adc)
             stat_columns = {
                 "temperature": "temperature",
-                "turbidity": "turbidity_ntu" if station_mode else "turbidity_raw",
+                "turbidity": _turbidity_stat_column(calib, station_mode),
                 "tds": "tds_ppm",
                 "flowRate": "flow_rate",
             }
+            # NOTE: since_ms=0 scans every retained row (up to 24h) on every call, once per
+            # station primed here -- an accepted tradeoff of this migration's
+            # no-in-process-caching design (see
+            # docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md), not
+            # free, but not a correctness bug. A future pass could maintain running min/max as
+            # columns on station_state instead if this becomes a measured bottleneck.
             extremes = await asyncio.to_thread(
                 storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
             )
@@ -1534,8 +1567,18 @@ async def websocket_app(websocket: WebSocket):
                 await websocket.send_text(
                     json.dumps({"type": "sensor_update", "payload": prime_payload})
                 )
+                sent_any = True
             except Exception:
                 break
+
+    if not sent_any:
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "sensor_update",
+                "payload": {"stats": None, "hasData": False, "lastTimestamp": None},
+            }))
+        except Exception:
+            pass
 
     try:
         while True:

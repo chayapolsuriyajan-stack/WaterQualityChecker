@@ -36,7 +36,7 @@ Serves on `0.0.0.0:8080` (plain HTTP, always on — the ESP32 POSTs here). A sec
 ## Architecture (main.py / FastAPI path)
 
 - **Config**: `webconfig.json` sets `staticDir` (WebGL build folder), `googleSheetsWebhookUrl`, `tursoDatabaseUrl` (Turso/libSQL database — reading history, calibration, daily water usage, push subscriptions, and AI reports all live here now; empty disables it) plus the `TURSO_AUTH_TOKEN` environment variable (the actual secret, never committed), `vapidPrivateKeyFile`/`vapidPublicKey`/`vapidSubject` + `httpsCertFile`/`httpsKeyFile`/`httpsPort` (Push notifications below), and `updateApiKey` (`/update` auth, below). Missing file/keys fall back to defaults. (`calibrationFile`/`historyDbFile` no longer exist — `historyDbFile` was renamed to `tursoDatabaseUrl` in sub-project #2, and `calibrationFile`'s `calibration.json` was retired in favor of Turso's `station_state` table in this sub-project.)
-- **Sensor ingestion** — `POST /update`: if `updateApiKey` is set, requires a matching `X-API-Key` header (constant-time), 401 otherwise; empty/missing (default) leaves it unauthenticated — matters once the fixed-backend-host override (WiFi provisioning below) makes it internet-reachable. Accepts JSON (`{temperature, turbidity, tdsVoltage, flowPulses, station}`, or legacy `{temperature, turbidity, tds}`) or form-urlencoded with `water_level`. `station` is optional (Multi-station support below); missing/empty normalizes to `"default"`. Normalizes into a payload, derives `ec` from `tds` (`ppm_to_ec` — same DFRobot measurement pre the EC→TDS ×0.5 conversion, so it always agrees with TDS), appends to that station's `history_buffer`, broadcasts to `/ws/app` clients as `sensor_update`. See Multi-station support, Sensor calibration, and Flow sensor below.
+- **Sensor ingestion** — `POST /update`: if `updateApiKey` is set, requires a matching `X-API-Key` header (constant-time), 401 otherwise; empty/missing (default) leaves it unauthenticated — matters once the fixed-backend-host override (WiFi provisioning below) makes it internet-reachable. Accepts JSON (`{temperature, turbidity, tdsVoltage, flowPulses, station}`, or legacy `{temperature, turbidity, tds}`) or form-urlencoded with `water_level`. `station` is optional (Multi-station support below); missing/empty normalizes to `"default"`. Normalizes into a payload, derives `ec` from `tds` (`ppm_to_ec` — same DFRobot measurement pre the EC→TDS ×0.5 conversion, so it always agrees with TDS), persists the reading to Turso's `readings` table (`storage.py`), broadcasts to `/ws/app` clients as `sensor_update`. See Multi-station support, Sensor calibration, and Flow sensor below.
 - **Dashboard fan-out** — `WS /ws/app`: browser dashboards connect here and receive `sensor_update` JSON messages. Connected clients are tracked in the `ui_clients` set guarded by `ui_clients_lock`; disconnects are pruned during broadcast.
 - **Backend discovery** — a UDP listener (`DiscoveryProtocol`, `@app.on_event("startup")`) binds `0.0.0.0:8888`, replies `HYDRO_HERE` to `HYDRO_DISCOVER`, so LAN firmware finds this machine's IP without hardcoding. Requires a Windows Firewall inbound-UDP-8888 rule (`netsh advfirewall firewall add rule name="HydroMonitor UDP Discovery" dir=in action=allow protocol=UDP localport=8888` — a fresh machine lacks this and discovery silently times out until added). Only finds a backend on the ESP32's own subnet (UDP broadcast doesn't cross networks) — see the fixed-backend override below.
 
@@ -54,26 +54,23 @@ provisioning above) — no separate slug/ID.
   multi-station support existed. `main.py`'s `_normalize_station(raw)` trims and caps at
   `MAX_STATION_NAME_LEN = 40` chars (mirrored firmware-side as `maxStationNameLen`), empty/non-string → `"default"`.
 - **`/update`**: reads `station` from the JSON/form body itself (like `temperature` does, not a
-  query param), included in the outgoing payload, `history_buffer` row, and Sheets `sheet_payload`.
-  Every in-memory global that used to be a single value — `history_buffer`, `sensor_stats`,
-  `last_severity` (breach edge-detection), `latest_raw`/`_raw_buffers` (calibration capture),
-  `calibration`/`calibration_mode`, `_daily_usage_totals` — is now `dict[station] -> <value>`,
-  created lazily on first use so `"default"` needs no pre-registration.
+  query param), included in the outgoing payload, the `readings` row it inserts into Turso, and
+  Sheets `sheet_payload`. There is no per-station in-memory structure any more — station is just
+  a column value in Turso's `readings` and `station_state` tables (`storage.py`), so nothing
+  needs lazy per-station creation the way an in-memory `dict[station] -> <value>` once did.
 - **REST API**: a `?station=<name>` query param, defaulting server-side to `"default"`, on
   `GET /history`, every `/calibration*` endpoint, `GET /flow/usage`, `POST /flow/reset-today`.
 - **`POST /station/rename`** — `{old, new}`, admin-only rename that migrates a station's identity
-  across every structure in `PER_STATION_MAPS` (in-memory) plus the `daily_usage` SQLite table
-  (`storage.rename_station_usage`), persists `calibration.json` immediately if the renamed
-  station had calibration data, and broadcasts `{"type": "station_renamed", "old": ..., "new":
-  ...}` over `/ws/app` so connected dashboards update the station's key live without waiting for
-  a new reading. Does **not** touch the physical board's own provisioned name — the board will
-  start a fresh station under its old name on its next reading unless separately reprovisioned
-  over USB. Adding a new per-station in-memory structure? Add it to `PER_STATION_MAPS` — it's the
-  single list both the rename migration and the station-existence check read from.
-- **`calibration.json`** is `{"<station>": {turbidity: {...}, tds: {...}, flow: {...}}, ...}`.
-  An old flat-shaped file (top-level keys are `turbidity`/`tds`/`flow` directly) migrates once on
-  load: wrapped as `{"default": <old content>}`, a `.bak-premigration` backup written alongside,
-  and the real file rewritten immediately in the new shape.
+  by running plain `UPDATE ... SET station = ? WHERE station = ?` statements against every table
+  that stores a station column — `storage.rename_readings`, `storage.rename_station_state`,
+  `storage.rename_station_usage`, `storage.rename_ai_reports` — then broadcasts
+  `{"type": "station_renamed", "old": ..., "new": ...}` over `/ws/app` so connected dashboards
+  update the station's key live without waiting for a new reading. Does **not** touch the
+  physical board's own provisioned name — the board will start a fresh station under its old name
+  on its next reading unless separately reprovisioned over USB.
+- **Calibration/mode/breach state**: lives entirely in Turso's `station_state` table
+  (`calibration_json`/`calibration_mode`/`last_severity_json` columns), one row per station —
+  there is no `calibration.json` file and no separate migration step.
 - **`storage.py`'s `daily_usage` table**: composite primary key `(date, station)` — migrated via
   a full table rebuild (SQLite can't `ALTER TABLE` a primary key) guarded by checking
   `PRAGMA table_info(daily_usage)` for a `station` column.
@@ -121,12 +118,12 @@ A fifth **main** sensor (not a water-quality param — Sensor calibration above)
 - **`doPost` inserts each new reading at row 2** (right after the header) so the newest reading is always the top data row — older rows just sit further down, untouched. Columns: `Timestamp, Temperature (C), Turbidity (raw ADC), TDS (ppm), Flow Rate (L/min), Station`. **Station is the last column, not right after Timestamp** — appending (like Flow Rate was) rather than inserting keeps every existing column's meaning intact for rows written before multi-station support existed; a blank Station cell on those rows reads as `"default"`, same as `main.py`'s `DEFAULT_STATION` sentinel everywhere else. No backfill needed or attempted.
 - `doGet` accepts `?seconds=`/`?maxPoints=`/`?station=` (seconds/maxPoints default 900s/400; station optional — omitted or blank returns every station's rows undifferentiated), reads a **leading** slice (rows 2..N, newest first — matching the insert-at-top write above), reverses to chronological order, filters to the window (and to `station` when given, treating a blank Station cell as `"default"`), and stride-downsamples to `maxPoints` so long windows stay fast.
 - **`GET /history?window=`** — selectable window (`5m`/`15m`/`1h`/`3h`/`12h`/`24h`, default `15m`, `HISTORY_WINDOWS`). **Two tiers, cheapest first**, merged into one chronological list; the response's `source` field reports which contributed (e.g. `live`, `live+sheet`):
-  1. **in-memory `history_buffer`** — the whole live path, answers instantly for anything still in the rolling window; wiped on every restart;
-  2. **Google Sheets** — proxies `doGet` with matching `seconds`/`maxPoints` (same-origin, avoiding CORS/redirect issues with Google), consulted *only* for the part of the window the buffer doesn't reach: a fresh restart, or a window longer than the buffer holds.
+  1. **Turso's `readings` table** (`storage.py`) — the whole live path, answers instantly for anything still in the rolling window;
+  2. **Google Sheets** — proxies `doGet` with matching `seconds`/`maxPoints` (same-origin, avoiding CORS/redirect issues with Google), consulted *only* for the part of the window Turso doesn't reach: a fresh restart, or a window longer than Turso's retained rows cover.
 
-  The gap test allows `HISTORY_GAP_TOLERANCE_MS` (15s) slack — readings arrive every 2s, so the first row at/after a cutoff is always a second late, and an exact-match test made every steady-state request look like a gap, firing pointless Sheets round-trips. Every row gets `turbidityNtu` (via `_with_ntu`) and `ec` (from `tds` if absent) added uniformly across both sources. There is no local database for reading history — Google Sheets is the durable copy.
+  The gap test allows `HISTORY_GAP_TOLERANCE_MS` (15s) slack — readings arrive every 2s, so the first row at/after a cutoff is always a second late, and an exact-match test made every steady-state request look like a gap, firing pointless Sheets round-trips. Every row gets `turbidityNtu` (via `_with_ntu`) and `ec` (from `tds` if absent) added uniformly across both sources. Turso's `readings` table is pruned to the last 24h (see `storage.py`'s `prune_readings`); Google Sheets remains the durable long-term archive beyond that.
 - **Redeploy gotcha**: after editing `doGet`/`doPost`, redeploy as a **new version** — otherwise `/exec` keeps serving old code silently. The insert-at-top behavior above lives only in this repo's reference copy until then; the deployed script keeps appending at the bottom (still correct for `/history`, just not "newest at top" by hand) until redeployed.
-- Running min/max per sensor (`temperature`/`turbidity`/`tds`) is tracked in `main.py`'s in-memory `sensor_stats` (since server start, resets on restart, shared across dashboards) — not persisted or read from the spreadsheet.
+- Running min/max per sensor (`temperature`/`turbidity`/`tds`) is a Turso query (`storage.get_reading_extremes`) over the retained `readings` window — no longer "since server start"; effectively since the oldest retained reading, up to 24h — not persisted or read from the spreadsheet.
 
 ## Push notifications (Web Push)
 
@@ -160,13 +157,11 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   `vapid_available()`/`/push/*`.
 - **No new pip dependency**: calls Gemini's REST endpoint (`generativelanguage.googleapis.com`)
   directly via `urllib.request`, the same style `main.py` already uses to talk to Google Sheets.
-- **Daily rollup state**: `_daily_stats`/`_daily_breach_counts` (both in `PER_STATION_MAPS`,
-  so `/station/rename` migrates them automatically) are **separate** from `sensor_stats`
-  (since-server-start, not since-midnight) — `_update_daily_stats(station, payload)` runs
-  alongside `_update_stats` on every `/update`, tracking min/max/sum/count per `PUSH_PARAMS`
-  plus a tally of `range_status_for` "warn"/"danger" hits. Same lazy date-rollover pattern as
-  `_add_daily_usage` (checked on every reading, not solely by the scheduler below), so a
-  restart spanning midnight can't leak yesterday's numbers into today's report.
+- **Daily rollup state**: computed on demand, not tracked incrementally — `_build_daily_report_prompt`
+  calls `storage.get_reading_extremes`/`storage.get_reading_values` over a since-local-midnight
+  cutoff each time a report is generated, so there's no separate per-station structure for
+  `/station/rename` to migrate at all (unlike the since-server-start `sensor_stats`-style rollup
+  this replaced).
 - **Generation**: `_generate_ai_report(station)` builds a Thai-language prompt from the daily
   rollup, calls Gemini, and on success persists to `storage.py`'s `ai_reports` table
   (composite `(date, station)` key, same upsert shape as `daily_usage`) and broadcasts
@@ -176,7 +171,7 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
 - **Trigger**: an `asyncio` background task (`_daily_report_scheduler`, started once at
   `@app.on_event("startup")` behind a `_daily_scheduler_started` guard — same double-startup
   concern as `_discovery_listener_started`) sleeps until local midnight, then generates a
-  report for every station currently in `history_buffer`. **Plus** a manual override,
+  report for every station `storage.list_stations()` returns. **Plus** a manual override,
   `POST /ai-report/generate?station=`, powering the dashboard's admin-only "Generate now"
   button so a demo doesn't have to wait for real midnight — **not backend-auth-gated**, same
   precedent as `/station/rename` (admin is a frontend-only UI role, see `RoleProvider.tsx`).
