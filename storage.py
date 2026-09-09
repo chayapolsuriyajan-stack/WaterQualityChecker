@@ -14,7 +14,16 @@ import os
 import threading
 import time
 
+import certifi
 import libsql
+
+# libsql's Rust TLS stack doesn't reliably find a trusted root store on its own on some
+# Windows machines -- observed as `invalid peer certificate: UnknownIssuer` even though the
+# server's cert chain is perfectly valid (curl using the same machine's OS/Git cert store
+# verifies it fine). Pointing SSL_CERT_FILE at certifi's bundle (a known-good, actively
+# maintained Mozilla root store) fixes it. setdefault so an operator's own SSL_CERT_FILE
+# still wins if they've set one. No effect on Linux/Vercel, where this hasn't been observed.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 _conn = None  # type: ignore[no-redef]  -- libsql's connection type, no public type stub as of writing
 # One module-global connection guarded by one lock -- every asyncio.to_thread-dispatched call
