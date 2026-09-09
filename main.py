@@ -491,9 +491,11 @@ def apply_flow(calib: dict, mode: bool, pulses: float) -> tuple[float, float]:
 # Breach detection runs synchronously/inline on every reading (edge-triggered good->warn/
 # danger transition tracked in each station's severity dict -- loaded via
 # _load_station_state and persisted via _save_station_state, so out-of-order dispatch can't
-# corrupt it); the actual network sends are deferred via asyncio.create_task, the same
-# fire-and-forget pattern already used for the Sheets relay and local DB insert in
-# update_sensor.
+# corrupt it); the actual network sends are deferred via asyncio.create_task off Vercel --
+# same fire-and-forget reasoning as the Sheets relay in update_sensor, don't block the
+# ESP32's response for a process that stays alive to finish the send anyway. On Vercel
+# (IS_VERCEL), update_sensor awaits this directly instead, since a fire-and-forget task can
+# be silently dropped when the serverless container freezes right after the response.
 
 PUSH_PARAMS = ("temperature", "turbidity", "tds", "ec")
 
@@ -608,7 +610,7 @@ def _local_midnight_ms() -> int:
 async def _build_daily_report_prompt(station: str) -> str:
     since_ms = _local_midnight_ms()
     calib, station_mode, _severity = await _load_station_state(station)
-    # Same per-station unit choice /update's stats block makes via _turbidity_stat_column --
+    # Same per-station unit choice /live's stats block makes via _turbidity_stat_column --
     # NTU once calibrated, else raw ADC.
     columns = {
         "temperature": "temperature",
