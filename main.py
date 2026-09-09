@@ -1348,10 +1348,12 @@ async def generate_ai_reports_all():
     cooldown, returns the cached) AI daily report for every station that currently has data,
     the same loop _daily_report_scheduler's local-deployment midnight path already runs.
     Cron hits one URL on a schedule; this fans that single trigger out across every known
-    station. Not backend-auth-gated, same precedent as the per-station POST
-    /ai-report/generate -- every call is already cooldown-protected
-    (AI_REPORT_COOLDOWN_SECONDS), so an internet-reachable trigger can't burn through the
-    Gemini quota any faster than the existing manual button already couldn't."""
+    station. GET, not POST -- Vercel always invokes a cron target via HTTP GET, unlike the
+    admin-only POST /ai-report/generate this reuses the same underlying logic as. Not
+    backend-auth-gated, same precedent as that per-station endpoint -- every call is already
+    cooldown-protected (AI_REPORT_COOLDOWN_SECONDS), so an internet-reachable trigger can't
+    burn through the Gemini quota any faster than the existing manual button already
+    couldn't."""
     stations = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
     results = {}
     for station in stations:
