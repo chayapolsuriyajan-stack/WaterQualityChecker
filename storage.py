@@ -448,23 +448,27 @@ def upsert_station_state(station: str, calibration: dict, calibration_mode: bool
         print(f"⚠️ Station state write failed: {exc}")
 
 
-def update_last_severity(station: str, last_severity: dict) -> None:
-    """Updates ONLY a station's breach edge-detection state, leaving calibration/mode
-    untouched -- used by /update, which never modifies calibration itself. Splitting this
-    from upsert_station_state prevents /update's every-2s write from racing with a
-    concurrent /calibration* endpoint's read-modify-write of the same row (both would
-    otherwise replace the whole row, and whichever write lands second silently discards
-    the other's change -- e.g. a just-captured calibration point reverting because /update
-    saved a stale calib dict it loaded before the capture)."""
+def update_last_severity(station: str, last_severity: dict, default_calibration_json: str = "{}") -> None:
+    """Updates ONLY a station's breach edge-detection state, leaving calibration/mode alone
+    if the station already has a row. `default_calibration_json` supplies a valid calibration
+    shape for the INSERT-only branch (a station's very first ever station_state write, which
+    normally happens via /update before anyone has touched the Calibration tab) -- passing
+    '{}' here would leave the row with an empty calibration dict that later crashes any
+    consumer indexing into calib["turbidity"]/["tds"]/["flow"]. Splitting this from
+    upsert_station_state prevents /update's every-2s write from racing with a concurrent
+    /calibration* endpoint's read-modify-write of the same row (both would otherwise replace
+    the whole row, and whichever write lands second silently discards the other's change --
+    e.g. a just-captured calibration point reverting because /update saved a stale calib dict
+    it loaded before the capture)."""
     if _conn is None:
         return
     try:
         with _lock:
             _conn.execute(
                 "INSERT INTO station_state (station, calibration_json, calibration_mode, last_severity_json)"
-                " VALUES (?, '{}', 0, ?)"
+                " VALUES (?, ?, 0, ?)"
                 " ON CONFLICT(station) DO UPDATE SET last_severity_json = excluded.last_severity_json",
-                (station, json.dumps(last_severity)),
+                (station, default_calibration_json, json.dumps(last_severity)),
             )
             _conn.commit()
     except Exception as exc:
@@ -683,7 +687,7 @@ def station_has_usage(station: str) -> bool:
 
 def rename_station_usage(old: str, new: str) -> None:
     """Moves every daily_usage row from `old` to `new`. Caller (main.py) must have
-    already confirmed `new` has zero existing rows (via station_has_usage) -- this
+    already confirmed `new` has zero existing rows (via station_exists) -- this
     does a plain UPDATE, which would violate the (date, station) primary key if `new`
     already had a row for some date `old` also has one for."""
     if _conn is None:

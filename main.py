@@ -168,7 +168,7 @@ else:
 if TURSO_DATABASE_URL and storage.init(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN):
     print(f"✅ Turso database at {TURSO_DATABASE_URL} (push subscriptions + daily water usage + AI reports + readings + station state).")
 else:
-    print("⚠️ Turso database disabled; push subscriptions, daily water usage, and AI reports won't persist.")
+    print("⚠️ Turso database disabled; push subscriptions, daily water usage, AI reports, readings, and calibration/station state won't persist.")
 
 if gemini_available():
     print(f"✅ AI daily report enabled ({GEMINI_MODEL}) -- generates once per local midnight, per station.")
@@ -349,7 +349,16 @@ async def _load_station_state(station: str) -> tuple[dict, bool, dict]:
     state = await asyncio.to_thread(storage.get_station_state, station) if storage.enabled() else None
     if state is None:
         return _default_calibration(), False, {}
-    return state["calibration"], state["calibrationMode"], state["lastSeverity"]
+    # Merge over a full default shape rather than trusting state["calibration"] directly --
+    # a partial/empty calibration blob (e.g. update_last_severity's INSERT-only branch before
+    # it was fixed to pass a real default, or any future/manual write that leaves a sensor key
+    # out) would otherwise propagate a dict missing "turbidity"/"tds"/"flow", crashing any
+    # caller that indexes straight into calib[sensor]["coefficients"].
+    calib = _default_calibration()
+    for sensor in CALIBRATED_SENSORS:
+        if isinstance(state["calibration"].get(sensor), dict):
+            calib[sensor].update(state["calibration"][sensor])
+    return calib, state["calibrationMode"], state["lastSeverity"]
 
 
 async def _save_station_state(station: str, calib: dict, mode: bool, last_severity: dict) -> None:
@@ -590,8 +599,8 @@ def _local_midnight_ms() -> int:
 async def _build_daily_report_prompt(station: str) -> str:
     since_ms = _local_midnight_ms()
     calib, station_mode, _severity = await _load_station_state(station)
-    # Same per-station unit choice /update's own sensor_stats query makes -- NTU once
-    # calibrated, else raw ADC.
+    # Same per-station unit choice /update's stats block makes via _turbidity_stat_column --
+    # NTU once calibrated, else raw ADC.
     columns = {
         "temperature": "temperature",
         "turbidity": _turbidity_stat_column(calib, station_mode),
@@ -818,9 +827,9 @@ async def update_sensor(request: Request):
                 # Running min/max since the oldest retained reading (redefined from "since
                 # server start" now that there's no persistent server -- see the migration
                 # spec's Retention section). turbidity's column choice matches whichever unit
-                # this station is currently displaying, same as the old in-memory sensor_stats
-                # did (a station that toggles calibration mode mid-window will see the same
-                # unit-mixing quirk the original had).
+                # this station is currently displaying, the same choice /update's stats block
+                # makes via _turbidity_stat_column (a station that toggles calibration mode
+                # mid-window will see the same unit-mixing quirk the original had).
                 stat_columns = {
                     "temperature": "temperature",
                     "turbidity": _turbidity_stat_column(calib, station_mode),
@@ -867,7 +876,9 @@ async def update_sensor(request: Request):
             # every-2s write can't race a concurrent /calibration* endpoint's read-modify-write
             # of the same row and clobber a just-captured calibration point. See
             # storage.update_last_severity's docstring.
-            await asyncio.to_thread(storage.update_last_severity, station, station_severity)
+            await asyncio.to_thread(
+                storage.update_last_severity, station, station_severity, json.dumps(calib)
+            )
 
         print(f"Received sensor update: {payload}")
         await broadcast_sensor_update(payload)

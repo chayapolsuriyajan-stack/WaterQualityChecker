@@ -76,7 +76,9 @@ provisioning above) — no separate slug/ID.
   `PRAGMA table_info(daily_usage)` for a `station` column.
 - **`WS /ws/app`**: on connect, sends one `sensor_update` prime frame per station that has data
   (each carrying its own `station` field) instead of a single merged frame; falls back to one
-  `{"hasData": false}` frame only when no station has ever reported.
+  `{"hasData": false}` frame whenever no station's frame was actually sent — either no station
+  has ever reported, or every known station (e.g. one with only a `station_state` row from a
+  `/calibration/mode` toggle, zero actual readings) had nothing to prime with.
 - **Auth stays shared**: `updateApiKey` is not per-station. **UDP discovery is unaffected**: every
   board independently discovers the same backend with zero protocol changes. **Push subscriptions**
   (`storage.py`'s `push_subscriptions`, keyed by browser endpoint) stay as-is — inherently
