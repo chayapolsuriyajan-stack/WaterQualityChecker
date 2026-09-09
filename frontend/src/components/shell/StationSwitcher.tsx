@@ -46,10 +46,11 @@ function RenameForm({ station, onDone }: RenameFormProps) {
     setSaving(true)
     try {
       const result = await renameStation(station, trimmed)
-      // Redundant with SensorProvider's own lastRename-driven effect (which handles every
-      // connected client, this one included, once the station_renamed WS message arrives) --
-      // kept as a harmless immediate optimistic update for the client that caused the rename,
-      // landing slightly earlier than the WS round-trip.
+      // An immediate optimistic update for the client that caused the rename -- every OTHER
+      // connected client picks up the rename passively on its next /live poll (the old
+      // station name simply stops appearing and the new one appears; see
+      // SensorProvider.tsx's stationNames fallback), landing up to one poll interval later.
+      // This client doesn't have to wait for that.
       if (selectedStation === station) setSelectedStation(result.new)
       toast.success(t('station.renameSuccess'))
       onDone()
