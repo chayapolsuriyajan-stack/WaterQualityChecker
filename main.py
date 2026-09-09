@@ -8,7 +8,6 @@ import mimetypes
 import time
 import datetime
 import urllib.request
-from collections import deque
 from urllib.parse import parse_qs, urlencode
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.gzip import GZipMiddleware
