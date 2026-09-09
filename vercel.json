@@ -1,0 +1,9 @@
+{
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/(update|live|history|calibration.*|station.*|ai-report.*|push.*|flow.*|wifi.*)", "destination": "/api/index" }
+  ],
+  "crons": [
+    { "path": "/ai-report/generate-all", "schedule": "0 0 * * *" }
+  ]
+}

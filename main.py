@@ -8,6 +8,7 @@ import mimetypes
 import time
 import datetime
 import urllib.request
+from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlencode
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -27,7 +28,28 @@ try:
 except (AttributeError, ValueError):
     pass
 
-app = FastAPI()
+# Vercel sets this automatically in every deployment (build and runtime) -- see
+# https://vercel.com/docs/environment-variables/system-environment-variables. Used to skip
+# startup behavior that only makes sense for a persistent local/Windows-service process.
+IS_VERCEL = bool(os.getenv("VERCEL"))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # start_discovery_listener/start_daily_report_scheduler are defined further down this
+    # file (after DiscoveryProtocol/_daily_report_scheduler exist) -- fine, since this body
+    # only runs once uvicorn actually starts serving requests, well after the whole module
+    # has finished loading. Each is internally guarded by its own _started flag because the
+    # local dual-HTTP+HTTPS deployment (see __main__ below) runs two separate uvicorn.Server
+    # instances against this SAME app object, and each one drives the ASGI lifespan protocol
+    # independently -- without the guards, an HTTPS-enabled local deployment would try to
+    # bind the UDP discovery socket twice and start two competing midnight-report loops.
+    await start_discovery_listener()
+    await start_daily_report_scheduler()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 CONFIG_PATH = "webconfig.json"
@@ -191,12 +213,17 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
 
 _discovery_listener_started = False
 
-@app.on_event("startup")
 async def start_discovery_listener():
-    # Running HTTP:8080 and HTTPS:8443 as two separate uvicorn Server instances against the
-    # same app (see __main__ below) means this startup event fires once per server -- guard
-    # so the UDP socket, a single process-wide resource, is only bound once. Without this the
-    # second server's bind attempt raises OSError (WinError 10048) and startup fails entirely.
+    # Called from lifespan() (see above), not a route decorator any more -- FastAPI's
+    # @app.on_event is deprecated. Skipped entirely on Vercel: a serverless container has no
+    # LAN to discover firmware on, and binding an ephemeral UDP port on every cold start is
+    # pure waste even if the bind itself doesn't outright fail in that sandboxed environment.
+    if IS_VERCEL:
+        return
+    # Called once per uvicorn.Server instance sharing this app (see lifespan()'s docstring
+    # comment) -- guard so the UDP socket, a single process-wide resource, is only bound
+    # once. Without this a local HTTPS-enabled deployment's second server would raise
+    # OSError (WinError 10048) on its bind attempt and fail startup entirely.
     global _discovery_listener_started
     if _discovery_listener_started:
         return
@@ -209,12 +236,14 @@ async def start_discovery_listener():
     print(f"📡 UDP discovery listener active on port {DISCOVERY_PORT} (firmware IP auto-discovery)")
 
 
-@app.on_event("startup")
 async def start_daily_report_scheduler():
-    # Same double-startup-event concern as start_discovery_listener above (HTTP:8080 and
-    # HTTPS:8443 are two uvicorn Server instances sharing one app, so "startup" fires
-    # twice) -- guard so only one _daily_report_scheduler loop ever runs, not two racing to
-    # generate/overwrite the same day's report.
+    # Called from lifespan(), not a route decorator any more. Skipped on Vercel -- an
+    # in-process loop that sleeps until local midnight is meaningless in a serverless
+    # container that can be recycled anytime; Vercel Cron (see /ai-report/generate-all)
+    # replaces it there instead.
+    if IS_VERCEL:
+        return
+    # Same double-lifespan-invocation concern as start_discovery_listener above.
     global _daily_scheduler_started
     if _daily_scheduler_started:
         return
