@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HydroMonitor: a water quality monitoring system. A single ESP32 board reads DS18B20 temperature, analog turbidity, TDS, and flow-sensor pulses, and POSTs readings to a backend, which relays them to a live browser dashboard and, on breaches, to subscribed browsers as OS push notifications (Push notifications below). No camera/image-based inference (an earlier ESP32-CAM + Roboflow YOLO pipeline was removed).
 
-**`main.py`** (FastAPI) is the one and only backend — referenced by `webconfig.json` and the firmware's `backendPort`. Handles HTTP sensor ingestion, WebSocket UI broadcast, local SQLite persistence for push subscriptions + daily water usage (`storage.py`), and UDP backend discovery. (`server.js`, an earlier Node `ws` relay, no longer exists; `ws_client.py` is a standalone WebSocket test client, not a second backend.)
+**`main.py`** (FastAPI) is the one and only backend — referenced by `webconfig.json` and the firmware's `backendPort`. Handles HTTP sensor ingestion, polled UI live-state (`GET /live`), local SQLite persistence for push subscriptions + daily water usage (`storage.py`), and UDP backend discovery. (`server.js`, an earlier Node `ws` relay, no longer exists; `ws_client.py` is a standalone WebSocket test client, not a second backend — and no longer reflects `main.py`'s live-data path now that `/ws/app` is gone.)
 
 Firmware source lives at `firmware/esp32/esp32.ino` (moved here from the standalone Arduino sketches folder). Open the `.ino` directly in the Arduino IDE — the containing folder name matches the sketch name, which the IDE requires.
 
@@ -29,15 +29,15 @@ graphify . --update                                 # refresh the knowledge grap
 
 Serves on `0.0.0.0:8080` (plain HTTP, always on — the ESP32 POSTs here). A second HTTPS listener on `0.0.0.0:8443` starts when `webconfig.json`'s `httpsCertFile`/`httpsKeyFile` are set (Web Push needs a secure context off `localhost` — see Push notifications below). `frontend/dist/` (see Commands) mounts at `/`. A WebGL build directory (default `Build/`, `webconfig.json`'s `staticDir`) mounts at `/{staticDir}` with Brotli/gzip content-encoding for precompressed assets — unrelated legacy Unity output.
 
-**Autoreload is opt-in via `HYDRO_DEV=1`** (`python main.py` alone runs with `reload=False`). Don't re-enable it by default: the reloader watches the working directory, so any file change in it would restart the server, dropping all dashboard WebSockets — reading history, calibration, and daily usage all live in Turso now (this sub-project), so a restart no longer loses them, only the live WebSocket connections themselves.
+**Autoreload is opt-in via `HYDRO_DEV=1`** (`python main.py` alone runs with `reload=False`). Don't re-enable it by default: the reloader watches the working directory, so any file change in it would restart the server, failing any in-flight requests (including a dashboard's `GET /live` poll) — reading history, calibration, and daily usage all live in Turso now (this sub-project), so a restart no longer loses them, only that one poll cycle.
 
 **Deployment**: `scripts/install-service.ps1` installs `main.py` as a Windows service via NSSM (restart-on-failure, rotated logs in `logs/`, `AppDirectory` = repo root so relative paths resolve). Run from an elevated prompt; `-Uninstall` removes it. Without it, deployment is a terminal window and a reboot silently ends monitoring.
 
 ## Architecture (main.py / FastAPI path)
 
 - **Config**: `webconfig.json` sets `staticDir` (WebGL build folder), `googleSheetsWebhookUrl`, `tursoDatabaseUrl` (Turso/libSQL database — reading history, calibration, daily water usage, push subscriptions, and AI reports all live here now; empty disables it) plus the `TURSO_AUTH_TOKEN` environment variable (the actual secret, never committed), `vapidPrivateKeyFile`/`vapidPublicKey`/`vapidSubject` + `httpsCertFile`/`httpsKeyFile`/`httpsPort` (Push notifications below), and `updateApiKey` (`/update` auth, below). Missing file/keys fall back to defaults. (`calibrationFile`/`historyDbFile` no longer exist — `historyDbFile` was renamed to `tursoDatabaseUrl` in sub-project #2, and `calibrationFile`'s `calibration.json` was retired in favor of Turso's `station_state` table in this sub-project.)
-- **Sensor ingestion** — `POST /update`: if `updateApiKey` is set, requires a matching `X-API-Key` header (constant-time), 401 otherwise; empty/missing (default) leaves it unauthenticated — matters once the fixed-backend-host override (WiFi provisioning below) makes it internet-reachable. Accepts JSON (`{temperature, turbidity, tdsVoltage, flowPulses, station}`, or legacy `{temperature, turbidity, tds}`) or form-urlencoded with `water_level`. `station` is optional (Multi-station support below); missing/empty normalizes to `"default"`. Normalizes into a payload, derives `ec` from `tds` (`ppm_to_ec` — same DFRobot measurement pre the EC→TDS ×0.5 conversion, so it always agrees with TDS), persists the reading to Turso's `readings` table (`storage.py`), broadcasts to `/ws/app` clients as `sensor_update`. See Multi-station support, Sensor calibration, and Flow sensor below.
-- **Dashboard fan-out** — `WS /ws/app`: browser dashboards connect here and receive `sensor_update` JSON messages. Connected clients are tracked in the `ui_clients` set guarded by `ui_clients_lock`; disconnects are pruned during broadcast.
+- **Sensor ingestion** — `POST /update`: if `updateApiKey` is set, requires a matching `X-API-Key` header (constant-time), 401 otherwise; empty/missing (default) leaves it unauthenticated — matters once the fixed-backend-host override (WiFi provisioning below) makes it internet-reachable. Accepts JSON (`{temperature, turbidity, tdsVoltage, flowPulses, station}`, or legacy `{temperature, turbidity, tds}`) or form-urlencoded with `water_level`. `station` is optional (Multi-station support below); missing/empty normalizes to `"default"`. Normalizes into a payload, derives `ec` from `tds` (`ppm_to_ec` — same DFRobot measurement pre the EC→TDS ×0.5 conversion, so it always agrees with TDS), persists the reading to Turso's `readings` table (`storage.py`), picked up by the next `GET /live` poll. See Multi-station support, Sensor calibration, and Flow sensor below.
+- **Dashboard fan-out** — `GET /live`: browser dashboards poll this endpoint (every ~3s, see frontend's `useSensorSocket.ts`) instead of holding a WebSocket open — Vercel's serverless Python functions can't keep a persistent connection alive across requests. Returns every station's current reading + stats in one response (`storage.py`'s Turso-backed `list_stations`/`get_latest_reading`/`get_reading_extremes`).
 - **Backend discovery** — a UDP listener (`DiscoveryProtocol`, `@app.on_event("startup")`) binds `0.0.0.0:8888`, replies `HYDRO_HERE` to `HYDRO_DISCOVER`, so LAN firmware finds this machine's IP without hardcoding. Requires a Windows Firewall inbound-UDP-8888 rule (`netsh advfirewall firewall add rule name="HydroMonitor UDP Discovery" dir=in action=allow protocol=UDP localport=8888` — a fresh machine lacks this and discovery silently times out until added). Only finds a backend on the ESP32's own subnet (UDP broadcast doesn't cross networks) — see the fixed-backend override below.
 
 ## Multi-station support (several ESP32 boards, one backend)
@@ -63,22 +63,19 @@ provisioning above) — no separate slug/ID.
 - **`POST /station/rename`** — `{old, new}`, admin-only rename that migrates a station's identity
   by running plain `UPDATE ... SET station = ? WHERE station = ?` statements against every table
   that stores a station column — `storage.rename_readings`, `storage.rename_station_state`,
-  `storage.rename_station_usage`, `storage.rename_ai_reports` — then broadcasts
-  `{"type": "station_renamed", "old": ..., "new": ...}` over `/ws/app` so connected dashboards
-  update the station's key live without waiting for a new reading. Does **not** touch the
-  physical board's own provisioned name — the board will start a fresh station under its old name
-  on its next reading unless separately reprovisioned over USB.
+  `storage.rename_station_usage`, `storage.rename_ai_reports` — connected dashboards pick up the
+  renamed station's key on their next `GET /live` poll, no explicit broadcast needed. Does
+  **not** touch the physical board's own provisioned name — the board will start a fresh station
+  under its old name on its next reading unless separately reprovisioned over USB.
 - **Calibration/mode/breach state**: lives entirely in Turso's `station_state` table
   (`calibration_json`/`calibration_mode`/`last_severity_json` columns), one row per station —
   there is no `calibration.json` file and no separate migration step.
 - **`storage.py`'s `daily_usage` table**: composite primary key `(date, station)` — migrated via
   a full table rebuild (SQLite can't `ALTER TABLE` a primary key) guarded by checking
   `PRAGMA table_info(daily_usage)` for a `station` column.
-- **`WS /ws/app`**: on connect, sends one `sensor_update` prime frame per station that has data
-  (each carrying its own `station` field) instead of a single merged frame; falls back to one
-  `{"hasData": false}` frame whenever no station's frame was actually sent — either no station
-  has ever reported, or every known station (e.g. one with only a `station_state` row from a
-  `/calibration/mode` toggle, zero actual readings) had nothing to prime with.
+- **`GET /live`**: returns every station's snapshot (`{"hasData": false, ...}` per station with no
+  reading yet) in one response on every poll — no separate prime-frame concept needed, since
+  every call already covers every station.
 - **Auth stays shared**: `updateApiKey` is not per-station. **UDP discovery is unaffected**: every
   board independently discovers the same backend with zero protocol changes. **Push subscriptions**
   (`storage.py`'s `push_subscriptions`, keyed by browser endpoint) stay as-is — inherently
@@ -108,7 +105,7 @@ Calibration lives on the backend, not the firmware, so sensors recalibrate live 
 
 A fifth **main** sensor (not a water-quality param — Sensor calibration above), alongside temperature/turbidity/TDS/EC. A YF-S201 hall-effect sensor on GPIO27 (digital pulse input) reports a raw pulse count each `/update`; the backend converts it via the `"flow"` k-factor into two facets:
 
-- **Current flow rate** (`payload["flowRate"]`, L/min) — instantaneous, like the other live params (broadcast over `/ws/app`, stored in `storage.py`'s `readings.flow_rate`, no thresholds/push alerts).
+- **Current flow rate** (`payload["flowRate"]`, L/min) — instantaneous, like the other live params (surfaced via `GET /live`'s polling, stored in `storage.py`'s `readings.flow_rate`, no thresholds/push alerts).
 - **Water usage** (`payload["waterUsageToday"]`, liters) — a **daily-resetting** counter in `storage.py`'s `daily_usage(date, station, total_liters)`, composite-keyed by local date **and station** (Multi-station support above). A day rollover starts a fresh row automatically; `POST /flow/reset-today?station=` zeroes it manually for that station. `GET /flow/usage?days=N&station=` returns today's total plus the last N days', for the "Water Usage" bar chart — separate from `/history`'s merge (different shape/cadence: one row/day, kept indefinitely).
 - **Frontend**: `flow` is a `ParamKey` (ParamGrid, quick-view, Settings toggles, Calibration tab) but **absent from `RANGE_BANDS`/`ThresholdParam`** (`thresholds.ts`) — every scoring/coloring component guards against this (`ParamCard`'s optional `param` prop, `ParamDetailDialog`'s `rangeParam` narrowing). Two charts (`WaterFlowChart.tsx`, `WaterUsageChart.tsx`) sit below the ParamGrid, respecting Settings' show/hide toggles (`DashboardPrefsProvider`, localStorage-persisted).
 - **Google Sheets logging** — `sheet_payload` includes `flowRate` when present, logged in a `Flow Rate (L/min)` column (needs redeploying the Apps Script — redeploy gotcha below). Rows before that redeploy, or with no flow reading, get `flowRate: null` via `_with_ntu`'s backfill. **Daily water usage is not logged to Sheets** — a differently-shaped aggregate (`daily_usage` above); only `GET /flow/usage` serves it (the ESP32's Sheets fallback, Firmware below, also skips flow).
@@ -166,10 +163,10 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   this replaced).
 - **Generation**: `_generate_ai_report(station)` builds a Thai-language prompt from the daily
   rollup, calls Gemini, and on success persists to `storage.py`'s `ai_reports` table
-  (composite `(date, station)` key, same upsert shape as `daily_usage`) and broadcasts
-  `{"type": "ai_report", "station", "date", "report"}` over `/ws/app`. Any failure (missing
-  key, network, rate limit, malformed response) is logged and returns `None` — never crashes
-  the request or the scheduler, same fail-soft philosophy as the Sheets relay.
+  (composite `(date, station)` key, same upsert shape as `daily_usage`) — a connected dashboard
+  picks up the new report on its next `GET /ai-report` poll, no explicit broadcast needed. Any
+  failure (missing key, network, rate limit, malformed response) is logged and returns `None` —
+  never crashes the request or the scheduler, same fail-soft philosophy as the Sheets relay.
 - **Trigger**: an `asyncio` background task (`_daily_report_scheduler`, started once at
   `@app.on_event("startup")` behind a `_daily_scheduler_started` guard — same double-startup
   concern as `_discovery_listener_started`) sleeps until local midnight, then generates a
@@ -219,7 +216,7 @@ Lets the dashboard change the ESP32's WiFi network like an OS WiFi picker — sc
 
 - **Stack**: Vite + React 19 + TypeScript + Tailwind v4, shadcn/ui + Recharts + Motion + TanStack Query. `npm run build` outputs `frontend/dist/` (git-ignored, along with `node_modules/`); `/` 404s until built at least once. `npm run dev` proxies `/ws/app`, `/history`, `/calibration*`, `/update`, `/push*`, `/flow*`, `/wifi*` to `:8080` for HMR against a live `python main.py`.
 - **Left sidebar shell**, three tabs — **Dashboard** (WQI history chart w/ time-range selector + reference lines; live param grid Temperature/Turbidity/TDS/EC/Flow, 30s sparklines, filtered by Settings' toggles; card click → detail modal, min/avg/max, too-high/too-low warning — skipped for Flow; Water Flow/Usage charts below, see Flow sensor above; 3 radial gauges), **Calibration** (turbidity 2-point + TDS/flow k-factors, wired to `/calibration*`, optimistic apply + toast, observed-range min/max/reset — Sensor calibration above; plus **WiFi**, above), **History** (`/history` table + CSV export) — plus theme toggle, EN/ไทย switcher, a **Settings** dialog (gear icon, `SettingsDialog.tsx`) for push prefs and display toggles.
-- **Live data**: `useSensorSocket.ts` holds the one shared `/ws/app` connection (via `SensorProvider`) and a ~30s rolling per-parameter sample buffer for sparklines, seeded from `GET /history?window=5m` on mount so a reload shows recent data immediately instead of starting blank. **No fake-data fallback**: on disconnect or >5s silence it flips `connected`/"Offline" but leaves the last reading frozen — never fabricates numbers (an earlier idle-random-data fallback was removed for this reason).
+- **Live data**: `useSensorSocket.ts` polls `GET /live` on an interval (via `SensorProvider`, no shared WebSocket connection — Vercel's serverless Python functions can't keep one open across requests) and keeps a ~30s rolling per-parameter sample buffer for sparklines, seeded from `GET /history?window=5m` on mount so a reload shows recent data immediately instead of starting blank. **No fake-data fallback**: on a failed poll or >5s silence it flips `connected`/"Offline" but leaves the last reading frozen — never fabricates numbers (an earlier idle-random-data fallback was removed for this reason).
 - **Guided tour** (`frontend/src/components/tour/`) — a 10-step first-run walkthrough: `TourProvider` owns state, `TourOverlay` renders the spotlight, `tourSteps.ts` is the step list, `TourHelpButton` replays it on demand. Three mechanics: (1) auto-runs once per browser, gated on a **versioned** localStorage flag (`hydro-tour-v1-seen`) — bump it to re-show after a redesign; (2) steps target elements by **`data-tour="..."` attribute**, resolved via `document.querySelector` at render time, so renaming/dropping one silently breaks that step; (3) a step may carry a `view` to switch tabs and bring its target into the DOM. Step copy lives in `strings.ts` (`tour.*` keys).
 - Two earlier dashboards (`web-react/`, a prebuilt SPA at `/`; and a hand-built `web/index.html`+`app.js`+`style.css` at `/classic`) were **removed**, along with the later standalone `/calibrate` page (`web/calibrate.html`) once the frontend's own Calibration tab covered the same ground. The `web/` directory itself is gone — none of its files or routes exist any more. **Do not add code paths or comments referring to any of them.**
 

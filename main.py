@@ -9,7 +9,7 @@ import time
 import datetime
 import urllib.request
 from urllib.parse import parse_qs, urlencode
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -221,9 +221,6 @@ async def start_daily_report_scheduler():
     _daily_scheduler_started = True
     asyncio.create_task(_daily_report_scheduler())
 
-ui_clients = set()
-ui_clients_lock = asyncio.Lock()
-
 # --- Multi-station identity ---------------------------------------------------
 # Each ESP32 board is a "station", identified by a human-readable name it carries in every
 # /update POST (set via USB provisioning -- see the STATION_* serial commands in esp32.ino
@@ -248,48 +245,6 @@ def _normalize_station(raw) -> str:
 # since callers need to detect a rollover by comparing against a freshly computed value.
 def _local_date() -> str:
     return datetime.date.today().isoformat()
-
-
-async def broadcast_sensor_update(payload: dict) -> None:
-    disconnected_clients = []
-    message = json.dumps({"type": "sensor_update", "payload": payload})
-
-    async with ui_clients_lock:
-        print(f"Broadcasting sensor update to {len(ui_clients)} connected UI clients")
-        for client in list(ui_clients):
-            try:
-                await client.send_text(message)
-            except Exception:
-                disconnected_clients.append(client)
-
-        for client in disconnected_clients:
-            ui_clients.discard(client)
-
-
-async def broadcast_station_renamed(old: str, new: str) -> None:
-    disconnected_clients = []
-    message = json.dumps({"type": "station_renamed", "old": old, "new": new})
-    async with ui_clients_lock:
-        for client in list(ui_clients):
-            try:
-                await client.send_text(message)
-            except Exception:
-                disconnected_clients.append(client)
-        for client in disconnected_clients:
-            ui_clients.discard(client)
-
-
-async def broadcast_ai_report(station: str, date: str, report: str) -> None:
-    disconnected_clients = []
-    message = json.dumps({"type": "ai_report", "station": station, "date": date, "report": report})
-    async with ui_clients_lock:
-        for client in list(ui_clients):
-            try:
-                await client.send_text(message)
-            except Exception:
-                disconnected_clients.append(client)
-        for client in disconnected_clients:
-            ui_clients.discard(client)
 
 
 def _post_to_google_sheets(payload: dict) -> None:
@@ -372,7 +327,7 @@ def _turbidity_stat_column(calib: dict, station_mode: bool) -> str:
     (>=2 captured points), not just when mode is toggled on. Using `station_mode` alone
     as the condition is wrong: a station can have mode ON with zero calibration points,
     in which case turbidity_ntu is all-NULL and every consumer of this column silently
-    loses turbidity's min/max. Centralized here so /update, the /ws/app prime frame, and
+    loses turbidity's min/max. Centralized here so /update, GET /live, and
     the AI report prompt-builder can't diverge on this choice."""
     has_calibration = bool(calib["turbidity"]["coefficients"])
     return "turbidity_ntu" if (station_mode and has_calibration) else "turbidity_raw"
@@ -678,7 +633,6 @@ async def _generate_ai_report(station: str) -> tuple[str | None, bool]:
     today = _local_date()
     if storage.enabled():
         await asyncio.to_thread(storage.save_ai_report, today, station, text)
-    await broadcast_ai_report(station, today, text)
     return text, False
 
 
@@ -881,7 +835,6 @@ async def update_sensor(request: Request):
             )
 
         print(f"Received sensor update: {payload}")
-        await broadcast_sensor_update(payload)
         if "temperature" in payload:
             # Google Sheets keeps logging the raw averaged turbidity ADC (its column header is
             # "Turbidity (raw ADC)"), independent of what unit the dashboards display.
@@ -1042,6 +995,81 @@ async def get_history(window: str = HISTORY_DEFAULT_WINDOW, station: str = DEFAU
         "windowSeconds": seconds,
         "source": "+".join(sources) if sources else "none",
     })
+
+
+@app.get("/live")
+async def get_live():
+    """Snapshot of every station's current live state -- the Vercel-compatible replacement
+    for the old WS /ws/app prime-frame + broadcast mechanism (removed from this file).
+    Vercel's serverless Python functions can't hold a persistent connection open across requests, so
+    the frontend polls this on an interval (useSensorSocket.ts) instead of listening for
+    pushed frames. Returns the same per-station content the old prime frame built once per
+    connection -- now just re-computed fresh on every call."""
+    station_names = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
+    stations: dict = {}
+    today = _local_date()
+    for station in station_names:
+        last = await asyncio.to_thread(storage.get_latest_reading, station)
+        if last is None:
+            stations[station] = {"hasData": False, "reading": None, "stats": None}
+            continue
+
+        calib, station_mode, _severity = await _load_station_state(station)
+        turbidity_adc = last.get("turbidity")
+        ntu = last.get("turbidityNtu")
+        if ntu is None and station_mode and turbidity_adc is not None:
+            ntu = apply_turbidity(calib, turbidity_adc)
+
+        stat_columns = {
+            "temperature": "temperature",
+            "turbidity": _turbidity_stat_column(calib, station_mode),
+            "tds": "tds_ppm",
+            "flowRate": "flow_rate",
+        }
+        # NOTE: since_ms=0 scans every retained row (up to 24h) on every call, once per
+        # station polled here -- an accepted tradeoff of this migration's
+        # no-in-process-caching design (see
+        # docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md), not
+        # free, but not a correctness bug. A future pass could maintain running min/max as
+        # columns on station_state instead if this becomes a measured bottleneck. This is the
+        # same query the old WS prime frame ran per connecting client; polling now runs it
+        # per station per poll interval instead -- a materially higher call rate, tracked as
+        # the same accepted tradeoff, not a new one this endpoint introduces.
+        extremes = await asyncio.to_thread(
+            storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
+        )
+        stats = {
+            key: {"min": extremes[col]["min"], "max": extremes[col]["max"]}
+            for key, col in stat_columns.items()
+            if col in extremes
+        }
+
+        water_usage_today = (
+            await asyncio.to_thread(storage.get_daily_usage, today, station)
+            if storage.enabled()
+            else None
+        )
+
+        stations[station] = {
+            "hasData": True,
+            "reading": {
+                "station": station,
+                "timestamp": last["timestamp"] // 1000,
+                "temperature": last.get("temperature"),
+                "turbidityRaw": turbidity_adc,
+                "turbidityNtu": ntu,
+                "turbidity": ntu if ntu is not None else turbidity_adc,
+                "turbidityUnit": "NTU" if ntu is not None else "ADC",
+                "tds": last.get("tds"),
+                "tdsVoltage": last.get("tdsVoltage"),
+                "ec": last.get("ec"),
+                "flowRate": last.get("flowRate"),
+                "waterUsageToday": water_usage_today,
+            },
+            "stats": stats or None,
+        }
+
+    return JSONResponse({"stationNames": station_names, "stations": stations})
 
 
 # --- Calibration API ---------------------------------------------------------
@@ -1299,8 +1327,6 @@ async def rename_station(request: Request):
     await asyncio.to_thread(storage.rename_station_usage, old, new)
     await asyncio.to_thread(storage.rename_ai_reports, old, new)
 
-    await broadcast_station_renamed(old, new)
-
     print(f"✏️ Renamed station {old!r} -> {new!r}")
     return JSONResponse({"old": old, "new": new})
 
@@ -1499,111 +1525,9 @@ async def put_push_preferences(request: Request):
     return JSONResponse({"ok": True})
 
 
-@app.websocket("/ws/app")
-async def websocket_app(websocket: WebSocket):
-    await websocket.accept()
-    print("🖥️ Web UI connected to /ws/app")
-
-    async with ui_clients_lock:
-        ui_clients.add(websocket)
-
-    # Always prime the freshly connected dashboard -- even with nothing recorded yet.
-    # Previously this only fired when sensor_stats was non-empty, so a dashboard opened
-    # before the first ESP32 push got *zero* frames and could not tell "no record yet"
-    # from a hung socket. The prime always carries `hasData`, so the UI can render an
-    # explicit empty state instead of fabricating numbers.
-    #
-    # Multi-station: one prime frame is sent PER known station that has data, each carrying
-    # its own `station` field, so a dashboard connecting mid-run sees every station's latest
-    # reading immediately rather than only whichever one posted last. If no station has any
-    # data yet, a single hasData:false frame is sent instead (same shape as before stations
-    # existed), so a completely fresh system still gets an explicit empty state.
-    stations_with_data = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
-
-    # sent_any tracks whether the loop below actually got a frame out the door.
-    # storage.list_stations() unions readings/station_state/daily_usage, so it can return a
-    # station that has a station_state row (e.g. from a /calibration/mode toggle) but zero
-    # actual readings yet -- get_latest_reading returns None for that station and the loop
-    # `continue`s past it. Falling back to the hasData:false frame only when
-    # stations_with_data was empty to begin with would silently send NO frame at all for such
-    # a station, defeating the "never leave the dashboard guessing between no-data and a hung
-    # socket" guarantee this whole prime-frame mechanism exists for.
-    sent_any = False
-    if stations_with_data:
-        for station in stations_with_data:
-            last = await asyncio.to_thread(storage.get_latest_reading, station)
-            if last is None:
-                continue
-            calib, station_mode, _severity = await _load_station_state(station)
-            turbidity_adc = last.get("turbidity")
-            ntu = last.get("turbidityNtu")
-            if ntu is None and station_mode and turbidity_adc is not None:
-                ntu = apply_turbidity(calib, turbidity_adc)
-            stat_columns = {
-                "temperature": "temperature",
-                "turbidity": _turbidity_stat_column(calib, station_mode),
-                "tds": "tds_ppm",
-                "flowRate": "flow_rate",
-            }
-            # NOTE: since_ms=0 scans every retained row (up to 24h) on every call, once per
-            # station primed here -- an accepted tradeoff of this migration's
-            # no-in-process-caching design (see
-            # docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md), not
-            # free, but not a correctness bug. A future pass could maintain running min/max as
-            # columns on station_state instead if this becomes a measured bottleneck.
-            extremes = await asyncio.to_thread(
-                storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
-            )
-            stats = {
-                key: {"min": extremes[col]["min"], "max": extremes[col]["max"]}
-                for key, col in stat_columns.items()
-                if col in extremes
-            }
-            prime_payload = {
-                "stats": stats or None,
-                "hasData": True,
-                # SECONDS (epoch), matching the WS `timestamp` convention used by /update.
-                "lastTimestamp": last["timestamp"] // 1000,
-                "source": "prime",
-                "station": station,
-                "timestamp": last["timestamp"] // 1000,
-                "temperature": last.get("temperature"),
-                "turbidityRaw": turbidity_adc,
-                "turbidityNtu": ntu,
-                "turbidity": ntu if ntu is not None else turbidity_adc,
-                "turbidityUnit": "NTU" if ntu is not None else "ADC",
-                "tds": last.get("tds"),
-            }
-            try:
-                await websocket.send_text(
-                    json.dumps({"type": "sensor_update", "payload": prime_payload})
-                )
-                sent_any = True
-            except Exception:
-                break
-
-    if not sent_any:
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "sensor_update",
-                "payload": {"stats": None, "hasData": False, "lastTimestamp": None},
-            }))
-        except Exception:
-            pass
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        print("📴 Web UI disconnected from /ws/app")
-    finally:
-        async with ui_clients_lock:
-            ui_clients.discard(websocket)
-
-
 # The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
 # only catches requests that no explicit route above already matched (Starlette tries
-# routes in registration order; specific routes like /history, /calibration, /ws/app all win
+# routes in registration order; specific routes like /history, /calibration, /live all win
 # over this root Mount since they were registered earlier). StaticFiles(html=True) serves
 # frontend/dist/index.html for "/" and transparently serves every nested file the built app
 # needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.
@@ -1619,10 +1543,10 @@ if __name__ == "__main__":
 
     # The autoreloader is DEV-ONLY, opt-in via HYDRO_DEV=1. It must stay off in a real
     # deployment: it watches the working directory, so any file change in it would restart
-    # the server -- dropping all dashboard WebSockets. Reading history, calibration, and
-    # daily usage all live in Turso now (this sub-project), so a restart no longer loses
-    # them, only the live WebSocket connections themselves. It also runs a supervisor + child
-    # process, which double-binds the UDP discovery port on restart.
+    # the server -- causing any in-flight requests (including a dashboard's GET /live poll)
+    # to fail. Reading history, calibration, and daily usage all live in Turso now (this
+    # sub-project), so a restart no longer loses them, only that one poll cycle. It also runs
+    # a supervisor + child process, which double-binds the UDP discovery port on restart.
     dev_mode = os.getenv("HYDRO_DEV") == "1"
     if dev_mode:
         print("🔧 HYDRO_DEV=1 -- autoreload ON (development only).")
