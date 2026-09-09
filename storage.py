@@ -17,6 +17,12 @@ import time
 import libsql
 
 _conn = None  # type: ignore[no-redef]  -- libsql's connection type, no public type stub as of writing
+# One module-global connection guarded by one lock -- every asyncio.to_thread-dispatched call
+# across the whole app (main.py) serializes through this single lock, so concurrent requests
+# (e.g. multiple browsers polling GET /live at once) don't get real parallelism at the storage
+# layer; process-wide throughput is capped at roughly one Turso round-trip at a time. A
+# connection pool (multiple libsql connections, one lock/queue per connection) would be the fix
+# if this becomes a measured bottleneck -- not attempted here since it isn't one yet.
 _lock = threading.Lock()
 
 

@@ -704,7 +704,13 @@ async def _daily_report_scheduler() -> None:
         await asyncio.sleep(await _seconds_until_next_midnight())
         stations_to_report = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
         for station in stations_to_report:
-            await _generate_ai_report(station)
+            # Isolate each station's generation the same way generate_ai_reports_all (the
+            # Vercel Cron sibling of this loop) does -- one station's Turso/Gemini failure
+            # shouldn't silently stop every later station's report from generating tonight.
+            try:
+                await _generate_ai_report(station)
+            except Exception as exc:
+                print(f"⚠️ AI report generation failed for station {station!r}: {exc}")
 
 
 # Same auth as /update (see its check below), factored out so both routes enforce it
@@ -827,39 +833,14 @@ async def update_sensor(request: Request):
                 )
                 # Opportunistic retention prune (not on every write -- a DELETE scan on every
                 # 2s reading would be wasteful). ~1/100 writes is frequent enough that the
-                # table never grows far past 24h + a few minutes of readings.
+                # table never grows far past 24h + a few minutes of readings. Always awaited
+                # directly (not fire-and-forget): a DELETE query adds negligible latency and
+                # only runs ~1% of the time, and on Vercel's serverless runtime a task merely
+                # created (not awaited) can be silently dropped if the container freezes/tears
+                # down right after the HTTP response is sent.
                 if random.random() < 0.01:
                     cutoff_ms = int((time.time() - 86400) * 1000)
-                    asyncio.create_task(asyncio.to_thread(storage.prune_readings, cutoff_ms))
-
-                # Running min/max since the oldest retained reading (redefined from "since
-                # server start" now that there's no persistent server -- see the migration
-                # spec's Retention section). turbidity's column choice matches whichever unit
-                # this station is currently displaying, the same choice /update's stats block
-                # makes via _turbidity_stat_column (a station that toggles calibration mode
-                # mid-window will see the same unit-mixing quirk the original had).
-                stat_columns = {
-                    "temperature": "temperature",
-                    "turbidity": _turbidity_stat_column(calib, station_mode),
-                    "tds": "tds_ppm",
-                    "flowRate": "flow_rate",
-                }
-                # NOTE: since_ms=0 scans every retained row (up to 24h) on every call -- an
-                # accepted tradeoff of this migration's no-in-process-caching design (see
-                # docs/superpowers/specs/2026-09-08-station-state-turso-migration-design.md),
-                # not free, but not a correctness bug. A future pass could maintain running
-                # min/max as columns on station_state instead if this becomes a measured
-                # bottleneck.
-                extremes = await asyncio.to_thread(
-                    storage.get_reading_extremes, station, 0, tuple(set(stat_columns.values()))
-                )
-                payload["stats"] = {
-                    key: {"min": extremes[col]["min"], "max": extremes[col]["max"]}
-                    for key, col in stat_columns.items()
-                    if col in extremes
-                }
-            else:
-                payload["stats"] = {}
+                    await asyncio.to_thread(storage.prune_readings, cutoff_ms)
 
             # Threshold-breach push notifications: detection is synchronous/inline (must
             # observe every reading in order to edge-detect correctly); the actual sends are
@@ -907,10 +888,20 @@ async def update_sensor(request: Request):
             # documents for its Flow Rate column.
             if "flowRate" in payload:
                 sheet_payload["flowRate"] = payload["flowRate"]
-            asyncio.create_task(relay_to_google_sheets(sheet_payload))
+            if IS_VERCEL:
+                # Vercel's serverless container may freeze/terminate immediately after the HTTP
+                # response is sent -- a task merely CREATED but not yet awaited can silently never
+                # run. Awaiting here trades a slightly slower /update response for actually
+                # guaranteeing the Sheets relay/push dispatch happens on this deployment target.
+                await relay_to_google_sheets(sheet_payload)
+            else:
+                asyncio.create_task(relay_to_google_sheets(sheet_payload))
 
             if breaches:
-                asyncio.create_task(dispatch_push_breaches(breaches, payload))
+                if IS_VERCEL:
+                    await dispatch_push_breaches(breaches, payload)
+                else:
+                    asyncio.create_task(dispatch_push_breaches(breaches, payload))
         return JSONResponse({"ok": True, "payload": payload})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -1634,9 +1625,9 @@ if __name__ == "__main__":
     # The autoreloader is DEV-ONLY, opt-in via HYDRO_DEV=1. It must stay off in a real
     # deployment: it watches the working directory, so any file change in it would restart
     # the server -- causing any in-flight requests (including a dashboard's GET /live poll)
-    # to fail. Reading history, calibration, and daily usage all live in Turso now (this
-    # sub-project), so a restart no longer loses them, only that one poll cycle. It also runs
-    # a supervisor + child process, which double-binds the UDP discovery port on restart.
+    # to fail. Reading history, calibration, and daily usage all live in Turso now, so a
+    # restart no longer loses them, only that one poll cycle. It also runs a supervisor +
+    # child process, which double-binds the UDP discovery port on restart.
     dev_mode = os.getenv("HYDRO_DEV") == "1"
     if dev_mode:
         print("🔧 HYDRO_DEV=1 -- autoreload ON (development only).")
