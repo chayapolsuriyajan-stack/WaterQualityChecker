@@ -128,7 +128,7 @@ A fifth **main** sensor (not a water-quality param — Sensor calibration above)
 
 Threshold-breach alerts as OS-level push notifications, so a subscribed browser is warned even with no tab open — an *outbound* path on top of the same `range_status_for` scoring `/update` already does.
 
-- **VAPID keys**: `webconfig.json`'s `vapidPrivateKeyFile` (default `vapid_private_key.pem`, git-ignored — generate with `vapid --gen` from `py-vapid`), `vapidPublicKey`, `vapidSubject` (`mailto:` contact required by the Push protocol). `vapid_available()` checks the key file exists and public key is non-empty; every `/push/*` endpoint 503s rather than crashing startup if unconfigured.
+- **VAPID keys**: `webconfig.json`'s `vapidPrivateKeyFile` (default `vapid_private_key.pem`, git-ignored — generate with `vapid --gen` from `py-vapid`), `vapidPublicKey`, `vapidSubject` (`mailto:` contact required by the Push protocol). `vapid_available()` checks the key file exists and public key is non-empty; every `/push/*` endpoint 503s rather than crashing startup if unconfigured. `_resolve_vapid_key_path()` also accepts a `VAPID_PRIVATE_KEY` environment variable holding the raw PEM text — a Vercel-compatible fallback for when the git-ignored `vapid_private_key.pem` file isn't present in the deployment bundle, materialized to the OS temp dir (`VAPID_PRIVATE_KEY_PATH`) once at import time, same file-then-env-var pattern as the Gemini API key below.
 - **HTTPS listener**: Web Push needs a secure context — `http://localhost` is exempt only on the *same machine*, so a phone/other LAN device needs real HTTPS. `webconfig.json`'s `httpsCertFile`/`httpsKeyFile` (empty by default — off) and `httpsPort` (default 8443) start a **second** uvicorn `Server` alongside the always-on HTTP:8080 one, both serving the same FastAPI `app`. `@app.on_event("startup")` fires per `Server`, so a `_discovery_listener_started` guard stops the UDP listener rebinding port 8888 (would crash the second server). A self-signed cert works for LAN testing but needs its CA trusted per-device (Android refuses an untrusted cert even after "proceed anyway").
 - **Subscription storage** (`storage.py`'s `push_subscriptions`) — one row per browser push endpoint (no user/account concept in this app), holding endpoint URL, `p256dh`/`auth` keys, and a `prefs_json` blob (`{param: {warn: bool, danger: bool}}`, default warn=off/danger=on for `temperature`/`turbidity`/`tds`/`ec` — **not** `flow`, no thresholds).
 - **Trigger**: `_check_breaches_and_dispatch` runs inline on every `/update` (must see every reading to edge-detect), comparing status against `last_severity` — fires only on the **good→warn/danger transition** (re-arms on recovery). Sends are deferred via `asyncio.create_task`, same pattern as the Sheets relay/DB insert, so a slow push service never delays the ESP32's response.
@@ -190,6 +190,51 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
 - **Frontend**: `AiReportCard.tsx` (Dashboard tab, after the WQI history chart) polls
   `GET /ai-report` every 5 minutes, so every connected dashboard picks up a newly generated
   report within that window, not just the one that clicked "Generate now".
+- **Vercel Cron trigger**: `GET /ai-report/generate-all` (`vercel.json`'s `crons` entry, daily
+  at 00:00 UTC) is the serverless equivalent of the local-deployment `_daily_report_scheduler`
+  midnight loop — a sleeping `asyncio` task makes no sense in a Vercel Python function that can
+  be recycled between invocations (`IS_VERCEL` skips starting that loop entirely — see Vercel
+  deployment below), so Vercel Cron hits this one URL instead. It fans that single GET out
+  across every station `storage.list_stations()` currently knows about, calling the same
+  `_generate_ai_report(station)` each per-station path already uses, and returns
+  `{"stations": {<name>: {"generated": bool, "cached": bool}}}`. Vercel invokes cron targets
+  via **GET**, not POST — unlike the admin-only `POST /ai-report/generate`, this route is a
+  `GET`. Not backend-auth-gated, same precedent as the manual endpoint: the per-station
+  `AI_REPORT_COOLDOWN_SECONDS` cooldown inside `_generate_ai_report` already caps how often a
+  Gemini call actually fires, regardless of who (or what schedule) hits the endpoint.
+
+## Vercel deployment
+
+An alternate deployment target alongside the Windows-service path (Running above) — the same
+`main.py` FastAPI `app`, unmodified, served through Vercel's serverless Python runtime instead
+of a long-running uvicorn process.
+
+- **Entrypoint**: `api/index.py` re-exports `main.py`'s `app` (`from main import app`) —
+  Vercel's Python runtime convention expects an ASGI `app` under `api/`. `vercel.json`'s
+  `rewrites` route every backend path (`/update`, `/live`, `/history`, `/calibration*`,
+  `/station*`, `/ai-report*`, `/push*`, `/flow*`, `/wifi*`) to that function; `frontend/dist`
+  (`outputDirectory`) is served as **static output directly by Vercel**, not proxied through
+  the Python function — same built assets `npm run build` already produces for the local
+  deployment's `app.mount("/", ...)`.
+- **`IS_VERCEL`** (`bool(os.getenv("VERCEL"))`, set automatically by every Vercel
+  build/runtime) gates the two pieces of startup behavior that only make sense for a
+  persistent process: the UDP discovery listener (`start_discovery_listener`, meaningless
+  without a stable bound socket across invocations) and the in-process daily-midnight
+  `asyncio` scheduler (`start_daily_report_scheduler` — replaced by the Vercel Cron trigger,
+  see AI daily report above).
+- **Cron**: `vercel.json`'s `crons` entry (`{"path": "/ai-report/generate-all", "schedule": "0
+  0 * * *"}`) hits `GET /ai-report/generate-all` daily — Vercel always invokes cron targets via
+  GET, there is no method to configure.
+- **Environment variables** a Vercel deployment needs set (Project Settings → Environment
+  Variables, not committed): `TURSO_AUTH_TOKEN` (Turso auth token — `tursoDatabaseUrl` itself
+  stays in `webconfig.json`, committed, non-secret), `GEMINI_API_KEY` (fallback for
+  `gemini_api_key.txt`, which is git-ignored and won't exist in the deployment bundle unless
+  committed some other way), `VAPID_PRIVATE_KEY` (same fallback pattern, for
+  `vapid_private_key.pem` — see Push notifications above), and `UPDATE_API_KEY` if `/update`
+  auth is in use (mirrors `webconfig.json`'s `updateApiKey`, kept as an env var here since
+  `webconfig.json` is committed). Every other `webconfig.json` value (`vapidPublicKey`,
+  `vapidSubject`, `geminiModel`, `aiReportCooldownSeconds`, `googleSheetsWebhookUrl`, etc.) is
+  non-secret and stays exactly as committed — read normally by both deployment paths.
 
 ## WiFi provisioning over USB (`frontend/src/lib/webSerial.ts`, formerly `wifi_serial.py`)
 

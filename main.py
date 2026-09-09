@@ -5,6 +5,7 @@ import random
 import sys
 import json
 import mimetypes
+import tempfile
 import time
 import datetime
 import urllib.request
@@ -76,6 +77,27 @@ TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 VAPID_PRIVATE_KEY_FILE = webconfig.get("vapidPrivateKeyFile", "vapid_private_key.pem")
 VAPID_PUBLIC_KEY = webconfig.get("vapidPublicKey", "")
 VAPID_CLAIM_SUB = webconfig.get("vapidSubject", "mailto:admin@example.com")
+
+
+def _resolve_vapid_key_path() -> str:
+    """Returns a usable file path for the VAPID private key. If VAPID_PRIVATE_KEY_FILE
+    already exists on disk (the local-deployment case -- a git-ignored file generated once
+    per machine via `vapid --gen`), use it as-is. Otherwise, fall back to a
+    VAPID_PRIVATE_KEY environment variable holding the raw PEM text and materialize it to
+    /tmp (the one writable path in Vercel's otherwise read-only deployment filesystem) once
+    at import time -- mirrors _load_gemini_api_key's existing file-then-env-var pattern."""
+    if os.path.exists(VAPID_PRIVATE_KEY_FILE):
+        return VAPID_PRIVATE_KEY_FILE
+    key_text = os.getenv("VAPID_PRIVATE_KEY", "")
+    if not key_text:
+        return VAPID_PRIVATE_KEY_FILE  # unchanged not-found path; vapid_available() stays False
+    tmp_path = os.path.join(tempfile.gettempdir(), "vapid_private_key.pem")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(key_text)
+    return tmp_path
+
+
+VAPID_PRIVATE_KEY_PATH = _resolve_vapid_key_path()
 # HTTPS listener (Web Push requires a secure context; http://localhost is only exempt on
 # the same machine). Empty cert/key -> HTTPS stays off, HTTP:8080 behavior is unchanged.
 HTTPS_CERT_FILE = webconfig.get("httpsCertFile", "")
@@ -121,7 +143,7 @@ UPDATE_API_KEY = webconfig.get("updateApiKey", "")
 
 
 def vapid_available() -> bool:
-    return os.path.exists(VAPID_PRIVATE_KEY_FILE) and bool(VAPID_PUBLIC_KEY)
+    return os.path.exists(VAPID_PRIVATE_KEY_PATH) and bool(VAPID_PUBLIC_KEY)
 
 
 def _load_gemini_api_key() -> str:
@@ -537,7 +559,7 @@ def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) 
         webpush(
             subscription_info=subscription_info,
             data=_push_payload(title, body, f"{param}-{severity}"),
-            vapid_private_key=VAPID_PRIVATE_KEY_FILE,
+            vapid_private_key=VAPID_PRIVATE_KEY_PATH,
             vapid_claims={"sub": VAPID_CLAIM_SUB},
         )
     except WebPushException as e:
@@ -1320,6 +1342,24 @@ async def generate_ai_report_now(station: str = DEFAULT_STATION):
     return JSONResponse({"station": station, "date": _local_date(), "report": text, "cached": cached})
 
 
+@app.get("/ai-report/generate-all")
+async def generate_ai_reports_all():
+    """Vercel Cron's target (see vercel.json's "crons" entry) -- generates (or, within
+    cooldown, returns the cached) AI daily report for every station that currently has data,
+    the same loop _daily_report_scheduler's local-deployment midnight path already runs.
+    Cron hits one URL on a schedule; this fans that single trigger out across every known
+    station. Not backend-auth-gated, same precedent as the per-station POST
+    /ai-report/generate -- every call is already cooldown-protected
+    (AI_REPORT_COOLDOWN_SECONDS), so an internet-reachable trigger can't burn through the
+    Gemini quota any faster than the existing manual button already couldn't."""
+    stations = await asyncio.to_thread(storage.list_stations) if storage.enabled() else []
+    results = {}
+    for station in stations:
+        text, cached = await _generate_ai_report(station)
+        results[station] = {"generated": text is not None, "cached": cached}
+    return JSONResponse({"stations": results})
+
+
 @app.post("/station/rename")
 async def rename_station(request: Request):
     body = await request.json()
@@ -1521,7 +1561,7 @@ async def push_test(request: Request):
                     "This is a test notification. If you can see this, alerts are working.",
                     "test",
                 ),
-                vapid_private_key=VAPID_PRIVATE_KEY_FILE,
+                vapid_private_key=VAPID_PRIVATE_KEY_PATH,
                 vapid_claims={"sub": VAPID_CLAIM_SUB},
             )
             return True, None
