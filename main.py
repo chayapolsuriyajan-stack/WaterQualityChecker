@@ -373,6 +373,56 @@ def _update_daily_stats(station: str, payload: dict) -> None:
             breach_counts[param] = breach_counts.get(param, 0) + 1
 
 
+# Rolling per-station comparison windows for the daily AI report (see
+# _build_daily_report_prompt below) -- unlike _daily_stats's single shared midnight clock,
+# each station's weekly/monthly window rolls over independently, a fixed number of days
+# after THAT STATION'S OWN period_start (see _update_period_stats). This is what
+# POST /ai-report/reset-baseline manually triggers on demand, for "this station just moved
+# to a new physical location, the old baseline is meaningless now."
+_weekly_stats: dict[str, dict] = {}
+_weekly_breach_counts: dict[str, dict] = {}
+_weekly_period_start: dict[str, float] = {}
+
+_monthly_stats: dict[str, dict] = {}
+_monthly_breach_counts: dict[str, dict] = {}
+_monthly_period_start: dict[str, float] = {}
+
+
+def _update_period_stats(
+    stats: dict, breach_counts: dict, period_start: dict, station: str, payload: dict, window_days: int
+) -> None:
+    """Shared rolling-window accumulator for _weekly_stats/_monthly_stats. Unlike
+    _update_daily_stats's single shared midnight rollover, each station's window rolls over
+    independently, window_days after ITS OWN period_start -- either the last natural
+    rollover or the last manual POST /ai-report/reset-baseline call, whichever is more
+    recent. Same per-param min/max/sum/count/breach-count accumulation _update_daily_stats
+    already does, just parameterized so weekly and monthly share one implementation."""
+    now = time.time()
+    start = period_start.get(station)
+    if start is None or (now - start) >= window_days * 86400:
+        period_start[station] = now
+        stats.pop(station, None)
+        breach_counts.pop(station, None)
+    station_stats = stats.setdefault(station, {})
+    station_breach_counts = breach_counts.setdefault(station, {})
+    for param in PUSH_PARAMS:
+        value = payload.get(param)
+        if not isinstance(value, (int, float)):
+            continue
+        current = station_stats.get(param)
+        if current is None:
+            station_stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
+        else:
+            current["min"] = min(current["min"], value)
+            current["max"] = max(current["max"], value)
+            current["sum"] += value
+            current["count"] += 1
+        if thresholds.is_sensor_fault(param, value):
+            continue
+        if thresholds.range_status_for(param, value) in ("warn", "danger"):
+            station_breach_counts[param] = station_breach_counts.get(param, 0) + 1
+
+
 async def broadcast_sensor_update(payload: dict) -> None:
     disconnected_clients = []
     message = json.dumps({"type": "sensor_update", "payload": payload})
@@ -866,7 +916,25 @@ async def dispatch_ai_breach_enrichment(station: str, breaches: list, payload: d
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
-def _build_daily_report_prompt(station: str) -> str:
+def _format_period_comparison(period_label: str, stats: dict) -> str | None:
+    """One combined line per period (week/month), only for params with data -- mirrors
+    _build_daily_report_prompt's per-param line format so the AI can directly compare
+    today's numbers against this line. Returns None if `stats` is empty (nothing accumulated
+    yet for this period, even though enough TIME has passed -- e.g. storage was disabled)."""
+    parts = []
+    for param in PUSH_PARAMS:
+        stat = stats.get(param)
+        if not stat or not stat.get("count"):
+            continue
+        _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
+        avg = stat["sum"] / stat["count"]
+        parts.append(f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit})")
+    if not parts:
+        return None
+    return f"- ข้อมูลเปรียบเทียบ{period_label}: " + ", ".join(parts)
+
+
+async def _build_daily_report_prompt(station: str) -> str:
     stats = _daily_stats.get(station, {})
     breach_counts = _daily_breach_counts.get(station, {})
     lines = [
@@ -884,6 +952,30 @@ def _build_daily_report_prompt(station: str) -> str:
             f"- {label}: ต่ำสุด {stat['min']:.1f}, สูงสุด {stat['max']:.1f}, "
             f"เฉลี่ย {avg:.1f} {unit}, เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
         )
+
+    now = time.time()
+    week_start = _weekly_period_start.get(station)
+    if week_start is not None and (now - week_start) >= 7 * 86400:
+        week_line = _format_period_comparison("สัปดาห์นี้", _weekly_stats.get(station, {}))
+        if week_line:
+            lines.append(week_line)
+        usage_days = min(int((now - week_start) // 86400), 7)
+        weekly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        if weekly_usage:
+            avg_usage = sum(r["totalLiters"] for r in weekly_usage) / len(weekly_usage)
+            lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในสัปดาห์นี้: {avg_usage:.1f} ลิตร")
+
+    month_start = _monthly_period_start.get(station)
+    if month_start is not None and (now - month_start) >= 30 * 86400:
+        month_line = _format_period_comparison("เดือนนี้", _monthly_stats.get(station, {}))
+        if month_line:
+            lines.append(month_line)
+        usage_days = min(int((now - month_start) // 86400), 30)
+        monthly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        if monthly_usage:
+            avg_usage = sum(r["totalLiters"] for r in monthly_usage) / len(monthly_usage)
+            lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในเดือนนี้: {avg_usage:.1f} ลิตร")
+
     return "\n".join(lines)
 
 
@@ -924,7 +1016,7 @@ async def _generate_ai_report(station: str) -> tuple[str | None, bool]:
             age_seconds = (time.time() * 1000 - latest["created_ms"]) / 1000
             if age_seconds < AI_REPORT_COOLDOWN_SECONDS:
                 return latest["report"], True
-    prompt = _build_daily_report_prompt(station)
+    prompt = await _build_daily_report_prompt(station)
     text = await asyncio.to_thread(_call_gemini, prompt)
     if text is None:
         return None, False
@@ -1071,6 +1163,8 @@ async def update_sensor(request: Request):
 
         _update_stats(station, payload)
         _update_daily_stats(station, payload)
+        _update_period_stats(_weekly_stats, _weekly_breach_counts, _weekly_period_start, station, payload, 7)
+        _update_period_stats(_monthly_stats, _monthly_breach_counts, _monthly_period_start, station, payload, 30)
         payload["stats"] = _stats_snapshot(station)
 
         print(f"Received sensor update: {payload}")
@@ -1462,6 +1556,27 @@ async def generate_ai_report_now(station: str = DEFAULT_STATION):
     if text is None:
         return JSONResponse({"error": "AI report generation failed"}, status_code=502)
     return JSONResponse({"station": station, "date": _local_date(), "report": text, "cached": cached})
+
+
+@app.post("/ai-report/reset-baseline")
+async def reset_ai_baseline(station: str = DEFAULT_STATION):
+    """Admin-triggered reset for 'this station just moved to a new physical location' --
+    discards the accumulated weekly/monthly comparison baseline and restarts both rolling
+    windows from now, exactly like their natural elapsed-time rollover already does (see
+    _update_period_stats) -- this just triggers it on demand instead of waiting up to 30
+    days for the old-location data to age out. The daily report keeps generating normally
+    throughout; it simply omits the week/month comparison lines until enough fresh
+    post-reset data has accumulated again. Not backend-auth-gated, same precedent as
+    /station/rename and /ai-report/generate -- "admin" is a frontend-only UI role
+    (RoleProvider.tsx), enforced by only showing the button to admins, not by this endpoint."""
+    station = _normalize_station(station)
+    _weekly_stats.pop(station, None)
+    _weekly_breach_counts.pop(station, None)
+    _weekly_period_start[station] = time.time()
+    _monthly_stats.pop(station, None)
+    _monthly_breach_counts.pop(station, None)
+    _monthly_period_start[station] = time.time()
+    return JSONResponse({"ok": True, "station": station})
 
 
 @app.post("/station/rename")
