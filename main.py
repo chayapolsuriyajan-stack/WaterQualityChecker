@@ -1625,9 +1625,11 @@ async def reset_ai_baseline(station: str = DEFAULT_STATION):
     _weekly_stats.pop(station, None)
     _weekly_breach_counts.pop(station, None)
     _weekly_period_start[station] = time.time()
+    _weekly_snapshot.pop(station, None)
     _monthly_stats.pop(station, None)
     _monthly_breach_counts.pop(station, None)
     _monthly_period_start[station] = time.time()
+    _monthly_snapshot.pop(station, None)
     return JSONResponse({"ok": True, "station": station})
 
 
