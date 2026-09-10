@@ -1,8 +1,17 @@
-# AI-enriched breach push notifications — design spec
+# AI reporting enhancements — design spec
+
+Two related but independently-triggered features, spec'd together per an explicit instruction
+to cover both in one implementation plan: (1) AI-enriched breach push notifications, (2)
+week/month comparison context in the daily AI report, plus a manual baseline-reset button for
+relocating a station.
 
 Date: 2026-09-10
 Status: approved, ready for planning
-Branch: `main`
+Branch: `feature/ai-breach-notifications`
+
+---
+
+# Part 1: AI-enriched breach push notifications
 
 ## Context
 
@@ -141,7 +150,7 @@ by-the-time-Gemini-even-starts) templated alert.
 - No change to the AI daily report (`_build_daily_report_prompt`/`_daily_report_scheduler`) —
   a separate, already-working feature with its own once-a-day cooldown, untouched here.
 - No change to the instant templated alert's content, timing, or reliability.
-- Scoped to the `main` branch only (this session's active branch) — not ported to
+- Scoped to `main`-derived branches only (this feature branches from `main`) — not ported to
   `feature/vercel-migration`, which has its own separate `IS_VERCEL`-gated fire-and-forget
   posture for push dispatch; porting this feature there, if wanted later, is a separate task.
 - No new REST endpoint, no frontend changes — this is entirely a backend push-notification
@@ -156,3 +165,205 @@ the instant templated alert still fires immediately, confirm a second AI-enriche
 arrives shortly after with the expected problem+instruction content, confirm a second breach of
 a different parameter *before* full recovery does NOT trigger a second enrichment call, and
 confirm a fresh breach *after* returning to all-good does trigger a new one.
+
+---
+
+# Part 2: Week/month comparison context + baseline reset
+
+## Context
+
+The daily AI report (`_build_daily_report_prompt`/`_generate_ai_report`) currently only judges
+each parameter against its fixed threshold band (`thresholds.RANGE_BANDS`) — it has no sense of
+what's *typical* for this specific station recently, so it can't flag "today's turbidity is
+unusually high compared to this week," only "today's turbidity is in the danger range." This
+feature adds that comparative context, plus a manual reset for when a station physically moves
+to a new location and its accumulated baseline stops being meaningful.
+
+Confirmed during design review: this is **not** a separate weekly/monthly report artifact —
+it's additional context appended to the existing daily prompt, gated on enough baseline data
+having accumulated.
+
+## Rolling per-station windows, not calendar-aligned
+
+Two new state triples, alongside the existing `_daily_stats`/`_daily_breach_counts`/
+`_daily_stats_date`:
+
+```python
+_weekly_stats: dict[str, dict] = {}
+_weekly_breach_counts: dict[str, dict] = {}
+_weekly_period_start: dict[str, float] = {}  # station -> time.time() the window started
+
+_monthly_stats: dict[str, dict] = {}
+_monthly_breach_counts: dict[str, dict] = {}
+_monthly_period_start: dict[str, float] = {}
+```
+
+Unlike `_daily_stats`'s single shared `_daily_stats_date` (one calendar clock, every station
+rolls over together at local midnight), each station's weekly/monthly window rolls over
+**independently**, a fixed number of days after *that station's own* `period_start` — 7 days for
+weekly, 30 for monthly. A shared helper handles both (parameterized by which dicts and window
+length, so the logic isn't duplicated):
+
+```python
+def _update_period_stats(
+    stats: dict, breach_counts: dict, period_start: dict, station: str, payload: dict, window_days: int
+) -> None:
+    """Shared rolling-window accumulator for _weekly_stats/_monthly_stats. Unlike
+    _update_daily_stats's single shared midnight rollover, each station's window rolls over
+    independently, window_days after ITS OWN period_start -- either the last natural
+    rollover or the last manual POST /ai-report/reset-baseline call, whichever is more
+    recent. Same per-param min/max/sum/count/breach-count accumulation _update_daily_stats
+    already does, just parameterized so weekly and monthly share one implementation."""
+    now = time.time()
+    start = period_start.get(station)
+    if start is None or (now - start) >= window_days * 86400:
+        period_start[station] = now
+        stats.pop(station, None)
+        breach_counts.pop(station, None)
+    station_stats = stats.setdefault(station, {})
+    station_breach_counts = breach_counts.setdefault(station, {})
+    for param in PUSH_PARAMS:
+        value = payload.get(param)
+        if not isinstance(value, (int, float)):
+            continue
+        current = station_stats.get(param)
+        if current is None:
+            station_stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
+        else:
+            current["min"] = min(current["min"], value)
+            current["max"] = max(current["max"], value)
+            current["sum"] += value
+            current["count"] += 1
+        if thresholds.is_sensor_fault(param, value):
+            continue
+        if thresholds.range_status_for(param, value) in ("warn", "danger"):
+            station_breach_counts[param] = station_breach_counts.get(param, 0) + 1
+```
+
+Called in `POST /update` (`update_sensor`) alongside the existing `_update_daily_stats(station,
+payload)` call:
+
+```python
+_update_period_stats(_weekly_stats, _weekly_breach_counts, _weekly_period_start, station, payload, 7)
+_update_period_stats(_monthly_stats, _monthly_breach_counts, _monthly_period_start, station, payload, 30)
+```
+
+A brand-new station's first-ever reading sets its own `period_start` immediately (the `start is
+None` branch) — after 7/30 days of continuous operation, comparison lines start appearing
+automatically, no special-casing needed for "new station" vs. "post-reset station."
+
+## Manual reset: the same rollover, triggered on demand
+
+```python
+@app.post("/ai-report/reset-baseline")
+async def reset_ai_baseline(station: str = DEFAULT_STATION):
+    """Admin-triggered reset for 'this station just moved to a new physical location' --
+    discards the accumulated weekly/monthly comparison baseline and restarts both rolling
+    windows from now, exactly like their natural elapsed-time rollover already does (see
+    _update_period_stats) -- this just triggers it on demand instead of waiting up to 30
+    days for the old-location data to age out. The daily report keeps generating normally
+    throughout; it simply omits the week/month comparison lines until enough fresh
+    post-reset data has accumulated again."""
+    station = _normalize_station(station)
+    _weekly_stats.pop(station, None)
+    _weekly_breach_counts.pop(station, None)
+    _weekly_period_start[station] = time.time()
+    _monthly_stats.pop(station, None)
+    _monthly_breach_counts.pop(station, None)
+    _monthly_period_start[station] = time.time()
+    return JSONResponse({"ok": True, "station": station})
+```
+
+Not backend-auth-gated, same precedent as `/station/rename` and `/ai-report/generate` — "admin"
+is a frontend-only UI role (`RoleProvider.tsx`), enforced by only showing the button to admins,
+not by the endpoint itself.
+
+## Daily prompt gains comparison lines, gated on accumulated baseline
+
+`_build_daily_report_prompt` becomes `async` (needed for the water-usage comparison's
+`storage.get_recent_daily_usage` call) — its one caller, `_generate_ai_report`, changes
+`prompt = _build_daily_report_prompt(station)` to `prompt = await
+_build_daily_report_prompt(station)`. Everything the function already builds (the daily
+per-param lines) is unchanged; appended after it:
+
+```python
+    now = time.time()
+    week_start = _weekly_period_start.get(station)
+    if week_start is not None and (now - week_start) >= 7 * 86400:
+        week_line = _format_period_comparison("สัปดาห์นี้", _weekly_stats.get(station, {}))
+        if week_line:
+            lines.append(week_line)
+        usage_days = min(int((now - week_start) // 86400), 7)
+        weekly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        if weekly_usage:
+            avg_usage = sum(r["totalLiters"] for r in weekly_usage) / len(weekly_usage)
+            lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในสัปดาห์นี้: {avg_usage:.1f} ลิตร")
+
+    month_start = _monthly_period_start.get(station)
+    if month_start is not None and (now - month_start) >= 30 * 86400:
+        month_line = _format_period_comparison("เดือนนี้", _monthly_stats.get(station, {}))
+        if month_line:
+            lines.append(month_line)
+        usage_days = min(int((now - month_start) // 86400), 30)
+        monthly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        if monthly_usage:
+            avg_usage = sum(r["totalLiters"] for r in monthly_usage) / len(monthly_usage)
+            lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในเดือนนี้: {avg_usage:.1f} ลิตร")
+
+    return "\n".join(lines)
+```
+
+New shared helper, mirroring the existing daily-line format (min/max/avg/breach-count) so
+Gemini sees "today: X" and "this week: Y" in a visually comparable shape:
+
+```python
+def _format_period_comparison(period_label: str, stats: dict) -> str | None:
+    """One combined line per period (week/month), only for params with data -- mirrors
+    _build_daily_report_prompt's per-param line format so the AI can directly compare
+    today's numbers against this line. Returns None if `stats` is empty (nothing accumulated
+    yet for this period, even though enough TIME has passed -- e.g. storage was disabled)."""
+    parts = []
+    for param in PUSH_PARAMS:
+        stat = stats.get(param)
+        if not stat or not stat.get("count"):
+            continue
+        _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
+        avg = stat["sum"] / stat["count"]
+        parts.append(f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit})")
+    if not parts:
+        return None
+    return f"- ข้อมูลเปรียบเทียบ{period_label}: " + ", ".join(parts)
+```
+
+## Frontend: a reset button on the Calibration tab's WiFi/station area (or AiReportCard)
+
+A new admin-only button — "This is a new location" / reset copy TBD at implementation time,
+consistent with the app's existing EN/ไทย localization pattern (`strings.ts`) — calling a new
+`resetAiBaseline(station)` fetcher (`POST /ai-report/reset-baseline?station=`), toast on
+success/failure, same interaction shape as the existing "Generate now" button. Exact placement
+(AiReportCard vs. the station-identity area near `StationSwitcher.tsx`) is an implementation
+detail, not a design fork — placing it near the AI report card (what it visibly affects) is the
+natural default unless the plan finds a better fit while implementing.
+
+## Non-goals
+
+- No change to `_daily_stats`/`_update_daily_stats`/the daily report's own per-param lines —
+  those stay exactly as they are; this only appends new lines after them.
+- No new persisted storage — `_weekly_stats`/`_monthly_stats` are in-memory only, same
+  restart-loses-the-window tradeoff `_daily_stats` already accepts, confirmed acceptable during
+  design review.
+- No calendar-alignment (ISO week, 1st-of-month) — purely rolling windows from each station's
+  own `period_start`, chosen specifically so a manual reset and a natural rollover are the exact
+  same operation.
+- Does not touch `daily_usage`'s underlying stored rows (the Water Usage bar chart's data) —
+  only reads from it via the existing `get_recent_daily_usage`, never deletes/modifies it.
+
+## Testing
+
+No automated test suite exists in this repo. Verification is manual: POST readings over a
+simulated multi-day period (or temporarily patch `_weekly_period_start`/`_monthly_period_start`
+backward in time to fast-forward past the 7/30-day gate without waiting for real time to pass),
+confirm the comparison lines appear only once the gate is crossed and correctly reflect the
+accumulated min/max/avg, call `POST /ai-report/reset-baseline` and confirm the comparison lines
+disappear again until the window re-accumulates, and confirm the daily report still generates
+normally (with just the comparison lines missing) immediately after a reset.
