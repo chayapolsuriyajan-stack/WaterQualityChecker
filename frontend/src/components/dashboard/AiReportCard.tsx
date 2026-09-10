@@ -12,6 +12,7 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Sparkles } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import { toast } from 'sonner'
 import { ApiError, generateAiReport, getAiReport, resetAiBaseline } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -121,7 +122,15 @@ export function AiReportCard({ station }: AiReportCardProps) {
           <p className="text-sm text-destructive">{t('aiReport.loadFailed')}</p>
         ) : data?.report ? (
           <div className="space-y-1">
-            <p className="whitespace-pre-line text-sm text-foreground">{data.report}</p>
+            {/* Gemini's prompt (main.py's _build_daily_report_prompt/_build_breach_enrichment_prompt)
+             * asks for plain prose but often comes back with markdown emphasis (**bold**) and,
+             * for the week/month comparison lines, real markdown bullet syntax ("- label: ...")
+             * -- render it as markdown instead of showing literal "**"/"-" characters. Only
+             * inline formatting and lists are expected from this source, so the element set is
+             * deliberately narrow rather than pulling in a full prose/typography stylesheet. */}
+            <div className="text-sm text-foreground [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
+              <ReactMarkdown>{data.report}</ReactMarkdown>
+            </div>
             {data.date && (
               <p className="text-xs text-muted-foreground">{t('aiReport.lastGenerated', { date: data.date })}</p>
             )}
