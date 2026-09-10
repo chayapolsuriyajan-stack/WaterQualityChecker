@@ -633,6 +633,13 @@ PER_STATION_MAPS = (
     _daily_usage_totals,
     _daily_stats,
     _daily_breach_counts,
+    _ai_enrichment_sent,
+    _weekly_stats,
+    _weekly_breach_counts,
+    _weekly_period_start,
+    _monthly_stats,
+    _monthly_breach_counts,
+    _monthly_period_start,
 )
 
 
