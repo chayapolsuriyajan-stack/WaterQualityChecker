@@ -259,6 +259,14 @@ last_severity: dict[str, dict] = {}
 # transition and not on a timer.
 _ai_enrichment_sent: dict[str, bool] = {}
 
+# station -> time.time() of the last enrichment dispatch -- a floor UNDER the episode-based
+# _ai_enrichment_sent flag, so a sensor flapping across a threshold boundary (rapid
+# breach -> full-recovery -> breach cycles) can't fire a fresh Gemini call every few
+# seconds. 10 minutes, matching roughly the order of magnitude a human would actually want a
+# fresh AI notification, not a strict science -- easy to retune later.
+_ai_enrichment_last_sent: dict[str, float] = {}
+AI_ENRICHMENT_MIN_INTERVAL_SECONDS = 600
+
 # In-memory rolling history of recent readings per station so the dashboard's short-window
 # graph works live off the sensor stream -- no Google Sheets round-trip. Holds the same
 # fields the sheet logs (raw ADC turbidity). Resets on restart; long windows still read from
@@ -387,19 +395,36 @@ _monthly_stats: dict[str, dict] = {}
 _monthly_breach_counts: dict[str, dict] = {}
 _monthly_period_start: dict[str, float] = {}
 
+# station -> {"stats": {...}, "breach_counts": {...}} from the last FULLY completed 7-day
+# window -- written once at rollover, stable until the NEXT rollover, so the daily report
+# can read a comparison baseline that isn't wiped out from under it by the next /update call.
+# Without this split, _update_period_stats (called every ~2s) and _build_daily_report_prompt
+# (called once a day) would race on the identical "window_days have elapsed" predicate: the
+# instant it becomes true, the very next /update call resets period_start and wipes the
+# accumulated stats before the once-a-day report ever gets a chance to read them.
+_weekly_snapshot: dict[str, dict] = {}
+_monthly_snapshot: dict[str, dict] = {}
+
 
 def _update_period_stats(
-    stats: dict, breach_counts: dict, period_start: dict, station: str, payload: dict, window_days: int
+    stats: dict, breach_counts: dict, period_start: dict, snapshot: dict,
+    station: str, payload: dict, window_days: int
 ) -> None:
-    """Shared rolling-window accumulator for _weekly_stats/_monthly_stats. Unlike
-    _update_daily_stats's single shared midnight rollover, each station's window rolls over
-    independently, window_days after ITS OWN period_start -- either the last natural
-    rollover or the last manual POST /ai-report/reset-baseline call, whichever is more
-    recent. Same per-param min/max/sum/count/breach-count accumulation _update_daily_stats
-    already does, just parameterized so weekly and monthly share one implementation."""
+    """Shared rolling-window accumulator for _weekly_stats/_monthly_stats, now paired with a
+    stable completed-window snapshot. Unlike _update_daily_stats's single shared midnight
+    rollover, each station's window rolls over independently, window_days after ITS OWN
+    period_start -- either the last natural rollover or the last manual
+    POST /ai-report/reset-baseline call, whichever is more recent. On rollover, the
+    just-completed window's stats are saved into `snapshot` BEFORE being cleared, so a
+    report generated any time after rollover reads a stable comparison baseline instead of
+    racing the very next /update call that would otherwise wipe it out from under it (the
+    live accumulator ticks every ~2s; a report only reads once a day -- without this split,
+    the two would almost never coexist)."""
     now = time.time()
     start = period_start.get(station)
     if start is None or (now - start) >= window_days * 86400:
+        if station in stats:
+            snapshot[station] = {"stats": stats[station], "breach_counts": breach_counts.get(station, {})}
         period_start[station] = now
         stats.pop(station, None)
         breach_counts.pop(station, None)
@@ -634,12 +659,15 @@ PER_STATION_MAPS = (
     _daily_stats,
     _daily_breach_counts,
     _ai_enrichment_sent,
+    _ai_enrichment_last_sent,
     _weekly_stats,
     _weekly_breach_counts,
     _weekly_period_start,
+    _weekly_snapshot,
     _monthly_stats,
     _monthly_breach_counts,
     _monthly_period_start,
+    _monthly_snapshot,
 )
 
 
@@ -895,10 +923,14 @@ async def dispatch_ai_breach_enrichment(station: str, breaches: list, payload: d
         return
     if _ai_enrichment_sent.get(station):
         return
+    last_sent = _ai_enrichment_last_sent.get(station)
+    if last_sent is not None and (time.time() - last_sent) < AI_ENRICHMENT_MIN_INTERVAL_SECONDS:
+        return
     _ai_enrichment_sent[station] = True  # set before the Gemini call, not after -- a
     # concurrent reading landing while this call is in flight must not also fire.
+    _ai_enrichment_last_sent[station] = time.time()
     prompt = _build_breach_enrichment_prompt(station, breaches, payload)
-    text = await asyncio.to_thread(_call_gemini, prompt)
+    text = await asyncio.to_thread(_call_gemini, prompt, caller_label="breach enrichment")
     if text is None:
         return
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
@@ -923,11 +955,11 @@ async def dispatch_ai_breach_enrichment(station: str, breaches: list, payload: d
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
-def _format_period_comparison(period_label: str, stats: dict) -> str | None:
+def _format_period_comparison(period_label: str, stats: dict, breach_counts: dict) -> str | None:
     """One combined line per period (week/month), only for params with data -- mirrors
-    _build_daily_report_prompt's per-param line format so the AI can directly compare
-    today's numbers against this line. Returns None if `stats` is empty (nothing accumulated
-    yet for this period, even though enough TIME has passed -- e.g. storage was disabled)."""
+    _build_daily_report_prompt's per-param line format (including breach counts) so the AI
+    can directly compare today's numbers against this line. Returns None if `stats` is
+    empty (nothing accumulated yet for this period -- e.g. storage was disabled)."""
     parts = []
     for param in PUSH_PARAMS:
         stat = stats.get(param)
@@ -935,7 +967,11 @@ def _format_period_comparison(period_label: str, stats: dict) -> str | None:
             continue
         _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
         avg = stat["sum"] / stat["count"]
-        parts.append(f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit})")
+        breaches = breach_counts.get(param, 0)
+        parts.append(
+            f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit}, "
+            f"เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด)"
+        )
     if not parts:
         return None
     return f"- ข้อมูลเปรียบเทียบ{period_label}: " + ", ".join(parts)
@@ -960,25 +996,22 @@ async def _build_daily_report_prompt(station: str) -> str:
             f"เฉลี่ย {avg:.1f} {unit}, เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
         )
 
-    now = time.time()
-    week_start = _weekly_period_start.get(station)
-    if week_start is not None and (now - week_start) >= 7 * 86400:
-        week_line = _format_period_comparison("สัปดาห์นี้", _weekly_stats.get(station, {}))
+    week_snapshot = _weekly_snapshot.get(station)
+    if week_snapshot:
+        week_line = _format_period_comparison("สัปดาห์นี้", week_snapshot["stats"], week_snapshot["breach_counts"])
         if week_line:
             lines.append(week_line)
-        usage_days = min(int((now - week_start) // 86400), 7)
-        weekly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        weekly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, 7)
         if weekly_usage:
             avg_usage = sum(r["totalLiters"] for r in weekly_usage) / len(weekly_usage)
             lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในสัปดาห์นี้: {avg_usage:.1f} ลิตร")
 
-    month_start = _monthly_period_start.get(station)
-    if month_start is not None and (now - month_start) >= 30 * 86400:
-        month_line = _format_period_comparison("เดือนนี้", _monthly_stats.get(station, {}))
+    month_snapshot = _monthly_snapshot.get(station)
+    if month_snapshot:
+        month_line = _format_period_comparison("เดือนนี้", month_snapshot["stats"], month_snapshot["breach_counts"])
         if month_line:
             lines.append(month_line)
-        usage_days = min(int((now - month_start) // 86400), 30)
-        monthly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, usage_days)
+        monthly_usage = await asyncio.to_thread(storage.get_recent_daily_usage, station, 30)
         if monthly_usage:
             avg_usage = sum(r["totalLiters"] for r in monthly_usage) / len(monthly_usage)
             lines.append(f"- การใช้น้ำเฉลี่ยต่อวันในเดือนนี้: {avg_usage:.1f} ลิตร")
@@ -986,7 +1019,7 @@ async def _build_daily_report_prompt(station: str) -> str:
     return "\n".join(lines)
 
 
-def _call_gemini(prompt: str) -> str | None:
+def _call_gemini(prompt: str, caller_label: str = "AI report") -> str | None:
     url = GEMINI_ENDPOINT.format(model=GEMINI_MODEL) + f"?key={GEMINI_API_KEY}"
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
     req = urllib.request.Request(
@@ -997,7 +1030,7 @@ def _call_gemini(prompt: str) -> str | None:
             data = json.loads(resp.read().decode("utf-8"))
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as exc:
-        print(f"⚠️ Gemini AI report generation failed: {exc}")
+        print(f"⚠️ Gemini {caller_label} generation failed: {exc}")
         return None
 
 
@@ -1170,8 +1203,8 @@ async def update_sensor(request: Request):
 
         _update_stats(station, payload)
         _update_daily_stats(station, payload)
-        _update_period_stats(_weekly_stats, _weekly_breach_counts, _weekly_period_start, station, payload, 7)
-        _update_period_stats(_monthly_stats, _monthly_breach_counts, _monthly_period_start, station, payload, 30)
+        _update_period_stats(_weekly_stats, _weekly_breach_counts, _weekly_period_start, _weekly_snapshot, station, payload, 7)
+        _update_period_stats(_monthly_stats, _monthly_breach_counts, _monthly_period_start, _monthly_snapshot, station, payload, 30)
         payload["stats"] = _stats_snapshot(station)
 
         print(f"Received sensor update: {payload}")
@@ -1575,8 +1608,20 @@ async def reset_ai_baseline(station: str = DEFAULT_STATION):
     throughout; it simply omits the week/month comparison lines until enough fresh
     post-reset data has accumulated again. Not backend-auth-gated, same precedent as
     /station/rename and /ai-report/generate -- "admin" is a frontend-only UI role
-    (RoleProvider.tsx), enforced by only showing the button to admins, not by this endpoint."""
+    (RoleProvider.tsx), enforced by only showing the button to admins, not by this endpoint.
+
+    Requires the station to already be known (same existence check /station/rename uses) --
+    otherwise, since the per-station dicts this writes are in PER_STATION_MAPS,
+    _weekly_period_start[station] = time.time() below would silently CREATE a phantom
+    station that never actually reported a reading, which then makes
+    _station_known_in_memory(station) return True forever after and incorrectly blocks a
+    later POST /station/rename to that name with a 409 "already exists"."""
     station = _normalize_station(station)
+    station_exists = _station_known_in_memory(station) or (
+        storage.enabled() and await asyncio.to_thread(storage.station_has_usage, station)
+    )
+    if not station_exists:
+        return JSONResponse({"error": f'station "{station}" not found'}, status_code=404)
     _weekly_stats.pop(station, None)
     _weekly_breach_counts.pop(station, None)
     _weekly_period_start[station] = time.time()

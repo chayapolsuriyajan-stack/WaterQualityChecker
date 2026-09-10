@@ -136,6 +136,7 @@ Threshold-breach alerts as OS-level push notifications, so a subscribed browser 
 - **HTTPS listener**: Web Push needs a secure context — `http://localhost` is exempt only on the *same machine*, so a phone/other LAN device needs real HTTPS. `webconfig.json`'s `httpsCertFile`/`httpsKeyFile` (empty by default — off) and `httpsPort` (default 8443) start a **second** uvicorn `Server` alongside the always-on HTTP:8080 one, both serving the same FastAPI `app`. `@app.on_event("startup")` fires per `Server`, so a `_discovery_listener_started` guard stops the UDP listener rebinding port 8888 (would crash the second server). A self-signed cert works for LAN testing but needs its CA trusted per-device (Android refuses an untrusted cert even after "proceed anyway").
 - **Subscription storage** (`storage.py`'s `push_subscriptions`) — one row per browser push endpoint (no user/account concept in this app), holding endpoint URL, `p256dh`/`auth` keys, and a `prefs_json` blob (`{param: {warn: bool, danger: bool}}`, default warn=off/danger=on for `temperature`/`turbidity`/`tds`/`ec` — **not** `flow`, no thresholds).
 - **Trigger**: `_check_breaches_and_dispatch` runs inline on every `/update` (must see every reading to edge-detect), comparing status against `last_severity` — fires only on the **good→warn/danger transition** (re-arms on recovery). Sends are deferred via `asyncio.create_task`, same pattern as the Sheets relay/DB insert, so a slow push service never delays the ESP32's response.
+- **AI-enriched follow-up** (second, independent dispatch): `dispatch_ai_breach_enrichment` fires alongside the templated alert above — the instant templated push has already gone out by the time this even starts, so a slow/failed Gemini call here can never delay or block it. Fires **at most once per breach episode** (`_ai_enrichment_sent`, reset to `False` only once every tracked param returns to `"good"` — see AI daily report below for the sibling `_ai_enrichment_last_sent`/`AI_ENRICHMENT_MIN_INTERVAL_SECONDS` floor that guards against a sensor flapping across a threshold boundary from firing a fresh Gemini call every few seconds even within one nominal "episode"). Payload title is `"🤖 AI Guidance"`, tagged `ai-<station>-info` — deliberately distinct from the original alert's own `<param>-<severity>` tag so it never replaces/hides it in the notification tray. Sent to any subscriber eligible (per their `prefs`) for at least one of the currently-breaching param/severity pairs.
 - **Payload**: `PARAM_DISPLAY` (emoji/label/unit, hand-mirrored from `paramMeta.ts` like `thresholds.py` mirrors `RANGE_BANDS`) builds a title/body, an `icon`/`badge` (app favicon), two action buttons (`view` opens the dashboard, `dismiss` closes) — consumed by the service worker below. A dead subscription (404/410) self-heals by deleting that row.
 - **REST API**: `GET /push/vapid-public-key`, `POST /push/subscribe` `{endpoint, keys:{p256dh,auth}, prefs?}`, `POST /push/unsubscribe` `{endpoint}`, `GET /push/preferences?endpoint=`, `PUT /push/preferences` `{endpoint, prefs}`, `POST /push/test` `{endpoint}` (bypasses prefs/thresholds, backs Settings' test-notification button). All 503 if local SQLite storage is disabled.
 - **Frontend**: `frontend/src/lib/push.ts` is the browser-side plumbing (Service Worker registration, subscribe/unsubscribe, prefs get/save, `sendTestPush`); `frontend/public/sw.js` is **plain vanilla JS** (not Vite-built — no imports/TypeScript) handling `push`/`notificationclick`. The UI lives in the **Settings** dialog (Frontend below), not a standalone bell icon.
@@ -167,8 +168,29 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   plus a tally of `range_status_for` "warn"/"danger" hits. Same lazy date-rollover pattern as
   `_add_daily_usage` (checked on every reading, not solely by the scheduler below), so a
   restart spanning midnight can't leak yesterday's numbers into today's report.
-- **Generation**: `_generate_ai_report(station)` builds a Thai-language prompt from the daily
-  rollup, calls Gemini, and on success persists to `storage.py`'s `ai_reports` table
+- **Week/month comparison state**: eight more module globals, all in `PER_STATION_MAPS`
+  — `_weekly_stats`/`_weekly_breach_counts`/`_weekly_period_start`/`_weekly_snapshot` and
+  the `_monthly_*` equivalents (30-day window). `_update_period_stats` (called from
+  `POST /update` right alongside `_update_daily_stats`, once for the 7-day window and once
+  for the 30-day one) accumulates into `_weekly_stats`/`_monthly_stats` exactly like the
+  daily rollup, rolling each station's window over independently, `window_days` after ITS
+  OWN `period_start` (natural rollover, or a manual `POST /ai-report/reset-baseline`).
+  Critically, the **live accumulator and the once-a-day report never read the same dict**:
+  on rollover, the just-completed window's stats are copied into `_weekly_snapshot`/
+  `_monthly_snapshot` *before* the live dict is cleared, and `_build_daily_report_prompt`
+  reads only the snapshot. (An earlier version had the report gate on the same
+  `elapsed >= window_days * 86400` predicate the accumulator itself resets on — since
+  `/update` fires every ~2s and the report only once a day, the accumulator's own next tick
+  almost always wiped the just-completed window before the report ever saw it, making the
+  comparison effectively unreachable on a live station. The snapshot split fixes that: the
+  snapshot is stable until the *next* rollover, so a report generated any time after
+  rollover — not just within an impossible few-second gap — reads real data.) The snapshot
+  includes breach counts, not just min/max/avg, mirrored into the prompt the same way the
+  daily per-param line already does.
+- **Generation**: `_generate_ai_report(station)` builds a Thai-language prompt (via the
+  `async` `_build_daily_report_prompt`, since the week/month comparison lines above need an
+  `await`ed `storage.get_recent_daily_usage` call) from the daily rollup, calls Gemini, and
+  on success persists to `storage.py`'s `ai_reports` table
   (composite `(date, station)` key, same upsert shape as `daily_usage`) and broadcasts
   `{"type": "ai_report", "station", "date", "report"}` over `/ws/app`. Any failure (missing
   key, network, rate limit, malformed response) is logged and returns `None` — never crashes
@@ -191,12 +213,18 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   every viewer" and stops a spammed button from burning through the daily/per-minute quota.
 - **REST API**: `GET /ai-report?station=` returns the latest stored report (`{station, date,
   report}`, `date`/`report` null if none yet); `POST /ai-report/generate?station=` runs one
-  immediately (subject to the cooldown above). Both default `station` to `"default"` like
-  every other per-station endpoint.
+  immediately (subject to the cooldown above); `POST /ai-report/reset-baseline?station=`
+  discards that station's accumulated weekly/monthly comparison baseline and restarts both
+  rolling windows from now (for "this station just moved to a new physical location, the
+  old baseline is meaningless") — 404s if the station isn't already known (same existence
+  check `/station/rename` uses), so it can't silently create a phantom station that would
+  later block a legitimate rename to that name. All three default `station` to `"default"`
+  like every other per-station endpoint.
 - **Frontend**: `AiReportCard.tsx` (Dashboard tab, after the WQI history chart) polls
   `GET /ai-report` every 5 minutes and also refetches on a live `ai_report` WS event
   (`useSensorSocket`'s `lastAiReport`, mirroring `lastRename`'s pattern) so every connected
-  dashboard updates immediately, not just the one that clicked "Generate now".
+  dashboard updates immediately, not just the one that clicked "Generate now". A "New
+  location" button on the same card calls `POST /ai-report/reset-baseline`.
 
 ## WiFi provisioning over USB (`frontend/src/lib/webSerial.ts`, formerly `wifi_serial.py`)
 

@@ -26,6 +26,8 @@ export default defineConfig({
       '/push': 'http://localhost:8080',
       '/flow': 'http://localhost:8080',
       '/wifi': 'http://localhost:8080',
+      '/ai-report': 'http://localhost:8080',
+      '/station': 'http://localhost:8080',
     },
   },
 })
