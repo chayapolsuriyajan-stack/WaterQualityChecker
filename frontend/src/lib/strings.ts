@@ -163,6 +163,10 @@ const en = {
   'aiReport.loadFailed': "Couldn't load today's report.",
   'aiReport.empty': 'No report yet for this station. It generates automatically at midnight.',
   'aiReport.lastGenerated': 'Generated {date}',
+  'aiReport.resetBaseline': 'New location',
+  'aiReport.resetBaselineConfirm': 'Reset this station\'s AI comparison baseline? Use this after physically moving the board to a new place.',
+  'aiReport.resetBaselineSuccess': 'Baseline reset — comparison context will rebuild over the next week',
+  'aiReport.resetBaselineFailed': "Couldn't reset the baseline",
 
   // --- quick view (dashboard right column) ----------------------------------
   'quickview.title': 'Quick view',
@@ -535,6 +539,10 @@ export const messages = {
     'aiReport.loadFailed': 'โหลดรายงานวันนี้ไม่สำเร็จ',
     'aiReport.empty': 'ยังไม่มีรายงานสำหรับสถานีนี้ ระบบจะสร้างให้อัตโนมัติทุกเที่ยงคืน',
     'aiReport.lastGenerated': 'สร้างเมื่อ {date}',
+    'aiReport.resetBaseline': 'สถานที่ใหม่',
+    'aiReport.resetBaselineConfirm': 'รีเซ็ตข้อมูลเปรียบเทียบของสถานีนี้? ใช้เมื่อย้ายอุปกรณ์ไปสถานที่ใหม่',
+    'aiReport.resetBaselineSuccess': 'รีเซ็ตข้อมูลเปรียบเทียบแล้ว — ระบบจะสะสมข้อมูลใหม่ในช่วงสัปดาห์หน้า',
+    'aiReport.resetBaselineFailed': 'รีเซ็ตข้อมูลเปรียบเทียบไม่สำเร็จ',
 
     'calib.title': 'ปรับเทียบเซนเซอร์',
     'calib.subtitle': 'ปรับเทียบได้ขณะเซนเซอร์ทำงานอยู่ โดยไม่ต้องอัปโหลดเฟิร์มแวร์ใหม่',

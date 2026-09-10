@@ -13,7 +13,7 @@ import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
-import { ApiError, generateAiReport, getAiReport } from '@/lib/api'
+import { ApiError, generateAiReport, getAiReport, resetAiBaseline } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -65,6 +65,14 @@ export function AiReportCard({ station }: AiReportCardProps) {
     onError: () => toast.error(t('aiReport.generateFailed')),
   })
 
+  const resetBaselineMutation = useMutation({
+    mutationFn: () => resetAiBaseline(station),
+    onSuccess: () => {
+      toast.success(t('aiReport.resetBaselineSuccess'))
+    },
+    onError: () => toast.error(t('aiReport.resetBaselineFailed')),
+  })
+
   // Not configured on the backend at all (no Gemini key) -- distinct from "configured but no
   // report yet", and distinct enough from every other error to warrant its own quiet message
   // rather than a scary "failed" toast-style banner on every page load.
@@ -78,15 +86,30 @@ export function AiReportCard({ station }: AiReportCardProps) {
           <CardTitle className="text-base">{t('aiReport.title')}</CardTitle>
         </div>
         {role === 'admin' && !notConfigured && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={generateMutation.isPending}
-            onClick={() => generateMutation.mutate()}
-          >
-            {generateMutation.isPending ? t('aiReport.generating') : t('aiReport.generateNow')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={resetBaselineMutation.isPending}
+              onClick={() => {
+                if (window.confirm(t('aiReport.resetBaselineConfirm'))) {
+                  resetBaselineMutation.mutate()
+                }
+              }}
+            >
+              {t('aiReport.resetBaseline')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={generateMutation.isPending}
+              onClick={() => generateMutation.mutate()}
+            >
+              {generateMutation.isPending ? t('aiReport.generating') : t('aiReport.generateNow')}
+            </Button>
+          </div>
         )}
       </CardHeader>
       <CardContent>

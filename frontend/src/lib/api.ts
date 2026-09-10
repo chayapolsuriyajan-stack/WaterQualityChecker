@@ -141,6 +141,17 @@ export function generateAiReport(station: string): Promise<GenerateAiReportRespo
   })
 }
 
+/** Admin-only: discards this station's accumulated weekly/monthly comparison baseline and
+ * restarts both rolling windows from now (see main.py's POST /ai-report/reset-baseline) --
+ * for "this station just moved to a new physical location, the old baseline no longer
+ * applies." The daily report itself keeps generating normally; it just won't show
+ * week/month comparison context again until enough fresh data has accumulated. */
+export function resetAiBaseline(station: string): Promise<{ ok: boolean; station: string }> {
+  return request(`/ai-report/reset-baseline?station=${encodeURIComponent(station)}`, {
+    method: 'POST',
+  })
+}
+
 /**
  * WiFi provisioning over USB (see wifi_serial.py / main.py's /wifi/* routes). Unlike every
  * other fetcher in this file, a "the ESP32 isn't on USB" response (a plain, expected outcome,
