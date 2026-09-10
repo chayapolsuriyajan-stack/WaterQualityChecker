@@ -252,6 +252,13 @@ sensor_stats: dict[str, dict] = {}
 # _check_breaches_and_dispatch below) without one station's recovery masking another's.
 last_severity: dict[str, dict] = {}
 
+# Tracks whether an AI-enriched follow-up notification has already been sent for a
+# station's CURRENT breach episode (see dispatch_ai_breach_enrichment) -- reset to False
+# only once the station returns to all-good, so one episode (however many params breach
+# or how long it lasts before recovery) produces exactly one Gemini call, not one per
+# transition and not on a timer.
+_ai_enrichment_sent: dict[str, bool] = {}
+
 # In-memory rolling history of recent readings per station so the dashboard's short-window
 # graph works live off the sensor stream -- no Google Sheets round-trip. Holds the same
 # fields the sheet logs (raw ADC turbidity). Resets on restart; long windows still read from
@@ -731,6 +738,13 @@ def _check_breaches_and_dispatch(station: str, payload: dict) -> list:
         if status in ("warn", "danger") and prev == "good":
             breaches.append((param, status))
         station_severity[param] = status
+    # Full recovery -- every tracked param back to "good" -- ends the current breach
+    # episode, so the NEXT breach (of anything) starts a fresh one and gets its own AI
+    # enrichment call. A station with zero tracked params yet (station_severity still
+    # empty) is not "recovered", it just hasn't reported anything breach-relevant yet --
+    # `all(...)` on an empty dict/values() is True in Python, so guard on non-empty too.
+    if station_severity and all(s == "good" for s in station_severity.values()):
+        _ai_enrichment_sent[station] = False
     return breaches
 
 
@@ -743,6 +757,27 @@ def _format_push_text(param: str, severity: str, value) -> tuple:
         formatted_value = str(value)
     body = f"{formatted_value} {unit} is in the {severity} range".strip()
     return title, body
+
+
+def _build_breach_enrichment_prompt(station: str, breaches: list, payload: dict) -> str:
+    lines = [
+        "เกิดปัญหาคุณภาพน้ำที่ตรวจพบตอนนี้ กรุณาอธิบายปัญหาปัจจุบันสั้นๆ และให้คำแนะนำว่าควรทำอย่างไร "
+        "เป็นภาษาไทย ไม่เกิน 2-3 ประโยค:"
+    ]
+    for param, severity in breaches:
+        value = payload.get(param)
+        _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
+        band = thresholds.RANGE_BANDS.get(param, {})
+        good_range = f"{band.get('goodMin', '-')}–{band.get('goodMax', '-')}"
+        try:
+            formatted_value = f"{float(value):.1f}"
+        except (TypeError, ValueError):
+            formatted_value = str(value)
+        lines.append(
+            f"- {label}: ค่าที่วัดได้ {formatted_value} {unit} อยู่ในระดับ{severity} "
+            f"(ช่วงปกติ: {good_range} {unit})"
+        )
+    return "\n".join(lines)
 
 
 def _push_payload(title: str, body: str, tag: str) -> str:
@@ -792,6 +827,31 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
         for sub in subs:
             if sub["prefs"].get(param, {}).get(severity, False):
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
+
+
+async def dispatch_ai_breach_enrichment(station: str, breaches: list, payload: dict) -> None:
+    """Second, independent dispatch alongside dispatch_push_breaches -- the instant
+    templated alert (above) has already been sent by the time this even starts; a slow or
+    failed Gemini call here can never delay or block it. Fires at most once per breach
+    episode (see _ai_enrichment_sent / _check_breaches_and_dispatch's recovery reset)."""
+    if not breaches or not gemini_available() or not vapid_available():
+        return
+    if _ai_enrichment_sent.get(station):
+        return
+    _ai_enrichment_sent[station] = True  # set before the Gemini call, not after -- a
+    # concurrent reading landing while this call is in flight must not also fire.
+    prompt = _build_breach_enrichment_prompt(station, breaches, payload)
+    text = await asyncio.to_thread(_call_gemini, prompt)
+    if text is None:
+        return
+    subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
+    title = "🤖 AI Guidance"
+    for sub in subs:
+        eligible = any(
+            sub["prefs"].get(param, {}).get(severity, False) for param, severity in breaches
+        )
+        if eligible:
+            await asyncio.to_thread(_send_one_push, sub, title, text, f"ai-{station}", "info")
 
 
 # --- AI daily report (Gemini) -------------------------------------------------
@@ -1054,6 +1114,7 @@ async def update_sensor(request: Request):
             breaches = _check_breaches_and_dispatch(station, payload)
             if breaches:
                 asyncio.create_task(dispatch_push_breaches(breaches, payload))
+                asyncio.create_task(dispatch_ai_breach_enrichment(station, breaches, payload))
         return JSONResponse({"ok": True, "payload": payload})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
