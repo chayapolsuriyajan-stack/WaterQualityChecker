@@ -367,16 +367,24 @@ def _update_daily_stats(station: str, payload: dict) -> None:
         value = payload.get(param)
         if not isinstance(value, (int, float)):
             continue
-        current = stats.get(param)
-        if current is None:
-            stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
+        current = stats.setdefault(param, {"min": None, "max": None, "sum": 0.0, "count": 0, "faults": 0})
+        if thresholds.is_sensor_fault(param, value):
+            # An implausibly-near-zero reading (see thresholds.is_sensor_fault) almost always
+            # means the sensor was disconnected/faulty for that reading, not that the water was
+            # genuinely at ~0 -- folding it into min/max/avg would silently skew the reported
+            # average toward zero for however long the sensor was unplugged. Tracked separately
+            # instead, so the AI report can say "the sensor looked disconnected N times" rather
+            # than silently mis-reporting water quality that was never actually measured.
+            current["faults"] += 1
+            continue
+        if current["count"] == 0:
+            current["min"] = value
+            current["max"] = value
         else:
             current["min"] = min(current["min"], value)
             current["max"] = max(current["max"], value)
-            current["sum"] += value
-            current["count"] += 1
-        if thresholds.is_sensor_fault(param, value):
-            continue
+        current["sum"] += value
+        current["count"] += 1
         if thresholds.range_status_for(param, value) in ("warn", "danger"):
             breach_counts[param] = breach_counts.get(param, 0) + 1
 
@@ -434,16 +442,20 @@ def _update_period_stats(
         value = payload.get(param)
         if not isinstance(value, (int, float)):
             continue
-        current = station_stats.get(param)
-        if current is None:
-            station_stats[param] = {"min": value, "max": value, "sum": value, "count": 1}
+        current = station_stats.setdefault(param, {"min": None, "max": None, "sum": 0.0, "count": 0, "faults": 0})
+        if thresholds.is_sensor_fault(param, value):
+            # Same reasoning as _update_daily_stats -- exclude a likely-disconnected reading
+            # from min/max/avg entirely, track it as a fault instead.
+            current["faults"] += 1
+            continue
+        if current["count"] == 0:
+            current["min"] = value
+            current["max"] = value
         else:
             current["min"] = min(current["min"], value)
             current["max"] = max(current["max"], value)
-            current["sum"] += value
-            current["count"] += 1
-        if thresholds.is_sensor_fault(param, value):
-            continue
+        current["sum"] += value
+        current["count"] += 1
         if thresholds.range_status_for(param, value) in ("warn", "danger"):
             station_breach_counts[param] = station_breach_counts.get(param, 0) + 1
 
@@ -963,15 +975,23 @@ def _format_period_comparison(period_label: str, stats: dict, breach_counts: dic
     parts = []
     for param in PUSH_PARAMS:
         stat = stats.get(param)
-        if not stat or not stat.get("count"):
+        if not stat or (not stat.get("count") and not stat.get("faults")):
             continue
         _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
-        avg = stat["sum"] / stat["count"]
-        breaches = breach_counts.get(param, 0)
-        parts.append(
-            f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit}, "
-            f"เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด)"
-        )
+        faults = stat.get("faults", 0)
+        if stat.get("count"):
+            avg = stat["sum"] / stat["count"]
+            breaches = breach_counts.get(param, 0)
+            text = (
+                f"{label} {stat['min']:.1f}-{stat['max']:.1f} (เฉลี่ย {avg:.1f} {unit}, "
+                f"เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
+                + (f", เซนเซอร์อาจหลุด/ขาดการเชื่อมต่อ {faults} ครั้ง" if faults else "")
+                + ")"
+            )
+        else:
+            # Every reading in this period was a sensor fault -- no genuine value at all.
+            text = f"{label} (เซนเซอร์อาจหลุด/ขาดการเชื่อมต่อตลอดช่วงนี้, {faults} ครั้งที่วัด)"
+        parts.append(text)
     if not parts:
         return None
     return f"- ข้อมูลเปรียบเทียบ{period_label}: " + ", ".join(parts)
@@ -986,15 +1006,27 @@ async def _build_daily_report_prompt(station: str) -> str:
     ]
     for param in PUSH_PARAMS:
         stat = stats.get(param)
-        if not stat or not stat.get("count"):
+        if not stat or (not stat.get("count") and not stat.get("faults")):
             continue
         _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
-        avg = stat["sum"] / stat["count"]
-        breaches = breach_counts.get(param, 0)
-        lines.append(
-            f"- {label}: ต่ำสุด {stat['min']:.1f}, สูงสุด {stat['max']:.1f}, "
-            f"เฉลี่ย {avg:.1f} {unit}, เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
-        )
+        faults = stat.get("faults", 0)
+        if stat.get("count"):
+            avg = stat["sum"] / stat["count"]
+            breaches = breach_counts.get(param, 0)
+            line = (
+                f"- {label}: ต่ำสุด {stat['min']:.1f}, สูงสุด {stat['max']:.1f}, "
+                f"เฉลี่ย {avg:.1f} {unit}, เกินเกณฑ์เฝ้าระวัง/อันตราย {breaches} ครั้งจาก {stat['count']} ครั้งที่วัด"
+            )
+            if faults:
+                # Sensor-fault readings (see thresholds.is_sensor_fault) are excluded from
+                # min/max/avg above so a disconnected probe's ~0 values can't silently skew
+                # them -- called out here instead so Gemini can flag the disconnection itself.
+                line += f" (เซนเซอร์อาจหลุด/ขาดการเชื่อมต่อ {faults} ครั้ง)"
+        else:
+            # Every reading today for this param was a sensor fault -- no genuine value to
+            # report at all, but still worth telling the admin the sensor needs checking.
+            line = f"- {label}: เซนเซอร์อาจหลุด/ขาดการเชื่อมต่อตลอดวัน ({faults} ครั้งที่วัด)"
+        lines.append(line)
 
     week_snapshot = _weekly_snapshot.get(station)
     if week_snapshot:

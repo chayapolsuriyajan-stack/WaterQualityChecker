@@ -167,7 +167,14 @@ Gemini's free-tier API and shown as a card on the Dashboard tab.
   alongside `_update_stats` on every `/update`, tracking min/max/sum/count per `PUSH_PARAMS`
   plus a tally of `range_status_for` "warn"/"danger" hits. Same lazy date-rollover pattern as
   `_add_daily_usage` (checked on every reading, not solely by the scheduler below), so a
-  restart spanning midnight can't leak yesterday's numbers into today's report.
+  restart spanning midnight can't leak yesterday's numbers into today's report. A reading
+  `thresholds.is_sensor_fault` flags (implausibly near zero — almost always a disconnected
+  probe, not genuine water quality) is excluded from that param's min/max/sum/count entirely
+  and tallied in a separate `faults` counter instead, so a disconnected sensor can't silently
+  drag the reported average toward zero — `_build_daily_report_prompt` turns a non-zero
+  `faults` count into an explicit "sensor may be disconnected" line in the prompt (the same
+  split applies to the weekly/monthly comparison state below, since it shares this per-param
+  stat dict shape via the snapshot mechanism).
 - **Week/month comparison state**: eight more module globals, all in `PER_STATION_MAPS`
   — `_weekly_stats`/`_weekly_breach_counts`/`_weekly_period_start`/`_weekly_snapshot` and
   the `_monthly_*` equivalents (30-day window). `_update_period_stats` (called from
