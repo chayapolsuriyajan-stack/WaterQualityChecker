@@ -1,5 +1,5 @@
 /**
- * Language provider for the Aqua Monitor frontend. Wraps the app, persists the
+ * Language provider for the AquaMonitor frontend. Wraps the app, persists the
  * active language to localStorage, and exposes a `t()` translator plus the
  * current language / setters via `useT()`.
  *

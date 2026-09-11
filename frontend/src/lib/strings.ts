@@ -1,5 +1,5 @@
 /**
- * Single UI-text catalogue for the Aqua Monitor frontend. Every user-facing
+ * Single UI-text catalogue for the AquaMonitor frontend. Every user-facing
  * string in the app lives here as a flat dot-key -> string map, in both `en`
  * and `th`, with identical key sets. No logic, no JSX, just text.
  *
@@ -23,7 +23,7 @@ const en = {
   'nav.expandMenu': 'Expand menu',
 
   // --- app shell -----------------------------------------------------------
-  'app.title': 'Aqua Monitor',
+  'app.title': 'AquaMonitor',
   'app.siteName': 'Ang Kaew Reservoir',
   'app.siteNameShort': 'Ang Kaew',
   'app.subtitle': 'Chiang Mai University',
@@ -275,7 +275,7 @@ const en = {
   'lang.th': 'ไทย',
 
   // --- guided tour -----------------------------------------------------------
-  'tour.welcome.title': 'Welcome to Aqua Monitor',
+  'tour.welcome.title': 'Welcome to AquaMonitor',
   'tour.welcome.body': "Let's take a quick look around the dashboard. This will only take a minute.",
   'tour.navDashboard.title': 'Dashboard tab',
   'tour.navDashboard.body': 'The live overview: water quality history, current readings, and safety gauges.',
@@ -402,7 +402,7 @@ export const messages = {
     'nav.history': 'ประวัติ',
     'nav.expandMenu': 'ขยายเมนู',
 
-    'app.title': 'Aqua Monitor',
+    'app.title': 'AquaMonitor',
     'app.siteName': 'อ่างเก็บน้ำอ่างแก้ว',
     'app.siteNameShort': 'อ่างแก้ว',
     'app.subtitle': 'มหาวิทยาลัยเชียงใหม่',
@@ -635,7 +635,7 @@ export const messages = {
     'lang.en': 'English',
     'lang.th': 'ไทย',
 
-    'tour.welcome.title': 'ยินดีต้อนรับสู่ Aqua Monitor',
+    'tour.welcome.title': 'ยินดีต้อนรับสู่ AquaMonitor',
     'tour.welcome.body': 'มาดูภาพรวมของแดชบอร์ดกันสักครู่ ใช้เวลาไม่นาน',
     'tour.navDashboard.title': 'แท็บแดชบอร์ด',
     'tour.navDashboard.body': 'ภาพรวมแบบสด ทั้งประวัติคุณภาพน้ำ ค่าปัจจุบัน และมาตรวัดความปลอดภัย',

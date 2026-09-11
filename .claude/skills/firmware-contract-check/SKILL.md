@@ -1,13 +1,13 @@
 ---
 name: firmware-contract-check
-description: Use when editing main.py's update_sensor (/update handler) or firmware/esp32/esp32.ino's POST payload construction, before committing a change that touches the sensor JSON field names or shape sent between the ESP32 and the backend.
+description: Use when editing main.py's update_sensor (/update handler) or firmware/AquaMonitor/AquaMonitor.ino's POST payload construction, before committing a change that touches the sensor JSON field names or shape sent between the ESP32 and the backend.
 user-invocable: false
 ---
 
 # Firmware/Backend Contract Check
 
 ## Overview
-`main.py`'s `/update` endpoint and `firmware/esp32/esp32.ino`'s POST payload are not auto-synced (see CLAUDE.md). A field rename on one side silently breaks the other — the ESP32 has no schema validation, so a mismatch just drops data with no error visible anywhere.
+`main.py`'s `/update` endpoint and `firmware/AquaMonitor/AquaMonitor.ino`'s POST payload are not auto-synced (see CLAUDE.md). A field rename on one side silently breaks the other — the ESP32 has no schema validation, so a mismatch just drops data with no error visible anywhere.
 
 ## Current contract (verify against source before trusting this — it will drift)
 Firmware (`esp32.ino`, `jsonDoc[...]` assignments near the `StaticJsonDocument` block) posts:

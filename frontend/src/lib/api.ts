@@ -1,5 +1,5 @@
 /**
- * Relative-path fetchers for the Aqua Monitor backend (main.py). All paths are
+ * Relative-path fetchers for the AquaMonitor backend (main.py). All paths are
  * relative so the app works same-origin whether served at / in prod or
  * proxied in dev (see vite.config.ts). Never hardcode a host here.
  */

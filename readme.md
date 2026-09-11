@@ -1,4 +1,4 @@
-# HydroMonitor — Aqua Monitor
+# AquaMonitor
 
 Real-time water quality monitoring for the Ang Kaew reservoir, Chiang Mai University. An
 ESP32 board reads temperature, turbidity, and dissolved solids from the water and streams
@@ -65,7 +65,7 @@ help button in the sidebar.
   <img alt="Data flow: the ESP32 station posts raw readings to the FastAPI backend, which calibrates them and fans out to Google Sheets, local SQLite, the live dashboard, Web Push notifications, and the Gemini AI report." src="docs/data-flow-light.png">
 </picture>
 
-- **Station** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) reads temperature,
+- **Station** ([`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino)) reads temperature,
   turbidity, TDS, and flow-sensor pulses and POSTs **raw** values to the backend every 2s,
   discovering the backend's IP automatically over the network (UDP) so it keeps working if
   the backend's IP changes.
@@ -89,7 +89,7 @@ help button in the sidebar.
   directly to the same Google Apps Script Web App the server's own Sheets relay uses —
   no third-party service, no separate account. The buffer covers a ~60s outage in full;
   a longer one degrades to the most recent 30 readings. See the comments in
-  [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) and
+  [`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino) and
   [`google_apps_script.gs`](google_apps_script.gs).
 - On the server side, if the in-memory live buffer has a gap (the server restarted mid-window),
   `/history` falls back to Google Sheets for that window rather than showing a hole.
@@ -102,7 +102,7 @@ architecture — is in [`CLAUDE.md`](CLAUDE.md).
 Honest status, roughly in priority order:
 
 1. **The Google Apps Script webhook URL is committed** in [`webconfig.json`](webconfig.json)
-   and hardcoded again in [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) (used for the
+   and hardcoded again in [`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino) (used for the
    backend-outage fallback), and `POST /update` has no authentication. Anyone who can reach
    the server (or that URL) can write readings. Move the URL to an environment variable and
    add a shared-secret header on `/update`.
@@ -182,7 +182,7 @@ python main.py
   <img alt="แผนภาพการไหลของข้อมูล: สถานี ESP32 ส่งค่าดิบไปยังเซิร์ฟเวอร์ FastAPI ซึ่งปรับเทียบค่าแล้วกระจายไปยัง Google Sheets, SQLite ในเครื่อง, แดชบอร์ดแบบเรียลไทม์, Web Push notification และรายงานสรุปจาก Gemini" src="docs/data-flow-light.png">
 </picture>
 
-- **สถานีเซนเซอร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) อ่านค่าอุณหภูมิ ความขุ่น TDS
+- **สถานีเซนเซอร์** ([`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino)) อ่านค่าอุณหภูมิ ความขุ่น TDS
   และพัลส์จากเซนเซอร์วัดอัตราการไหล แล้วส่งค่า **ดิบ** ไปยังเซิร์ฟเวอร์ทุก 2 วินาที โดยค้นหา IP ของเซิร์ฟเวอร์
   เองผ่านเครือข่าย (UDP) จึงยังทำงานต่อได้แม้ IP ของเซิร์ฟเวอร์จะเปลี่ยน
 - **เซิร์ฟเวอร์** ([`main.py`](main.py), FastAPI) แปลงค่าดิบเป็นหน่วยจริง (NTU / ppm / EC) โดยใช้ค่าปรับเทียบ
@@ -204,7 +204,7 @@ python main.py
   Google Apps Script Web App ตัวเดียวกับที่เซิร์ฟเวอร์ใช้ส่งข้อมูลเข้าชีต — ไม่ต้องพึ่งบริการอื่น
   ไม่ต้องมีบัญชีแยก บัฟเฟอร์นี้รองรับช่วงที่ติดต่อเซิร์ฟเวอร์ไม่ได้นาน ~60 วินาทีได้เต็มจำนวน
   หากนานกว่านั้นจะเหลือแค่ 30 ค่าล่าสุด ดูคำอธิบายในไฟล์
-  [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) และ
+  [`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino) และ
   [`google_apps_script.gs`](google_apps_script.gs)
 - ฝั่งเซิร์ฟเวอร์ หากบัฟเฟอร์ข้อมูลสดในหน่วยความจำมีช่วงที่ขาดหาย (เช่น เซิร์ฟเวอร์รีสตาร์ทกลางคัน)
   `/history` จะดึงข้อมูลช่วงนั้นจาก Google Sheets แทน แทนที่จะแสดงกราฟที่มีช่องว่าง
@@ -214,7 +214,7 @@ python main.py
 สถานะตามความเป็นจริง เรียงตามความสำคัญคร่าว ๆ:
 
 1. **URL ของ Google Apps Script ถูกคอมมิตไว้ในโค้ด** ([`webconfig.json`](webconfig.json))
-   และฝังซ้ำอีกครั้งใน [`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino) (ใช้ตอนเซิร์ฟเวอร์ล่ม) และ
+   และฝังซ้ำอีกครั้งใน [`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino) (ใช้ตอนเซิร์ฟเวอร์ล่ม) และ
    `POST /update` ไม่มีการยืนยันตัวตน ใครที่เข้าถึงเซิร์ฟเวอร์หรือ URL นั้นได้ก็เขียนข้อมูลได้
    ควรย้าย URL ไปไว้ใน environment variable และเพิ่ม shared secret ที่ `/update`
 2. ~~**ไม่มีตัวคอยรีสตาร์ทเซิร์ฟเวอร์**~~ **แก้ไขแล้ว** — สคริปต์ `scripts/install-service.ps1` ติดตั้งเซิร์ฟเวอร์
