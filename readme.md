@@ -13,10 +13,10 @@ them to a live, bilingual (English/Thai) web dashboard.
 ### What it's for
 
 Continuous water-quality monitoring instead of occasional manual sampling. A sensor
-station in the reservoir reports three raw readings every 2 seconds — **temperature**,
-**turbidity** (cloudiness), and **TDS** (total dissolved solids) — which the backend turns
-into calibrated units, logs to Google Sheets for history, and streams live to a dashboard
-built for an educational / community-monitoring setting.
+station in the reservoir reports raw readings every 2 seconds — **temperature**,
+**turbidity** (cloudiness), **TDS** (total dissolved solids, from which EC is derived), and
+**flow** — which the backend turns into calibrated units, logs to Google Sheets for history,
+and streams live to a dashboard built for an educational / community-monitoring setting.
 
 ### How to use
 
@@ -60,24 +60,28 @@ help button in the sidebar.
 
 ### How it works, briefly
 
-```
-ESP32 station ──raw readings──▶  FastAPI server (main.py)  ──live──▶  Web dashboard
- (temp, turbidity ADC,           - converts raw → NTU / ppm            (WebSocket)
-  TDS voltage)  every 2s           using saved calibration      ──log──▶ Google Sheets
-      ▲                          - broadcasts to dashboards              (history, newest
-      └── finds the server via   - serves the dashboard + API            row at the top)
-          UDP broadcast
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/data-flow-dark.png">
+  <img alt="Data flow: the ESP32 station posts raw readings to the FastAPI backend, which calibrates them and fans out to Google Sheets, local SQLite, the live dashboard, Web Push notifications, and the Gemini AI report." src="docs/data-flow-light.png">
+</picture>
 
-- **Station** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) reads the three
-  sensors and POSTs **raw** values to the server, discovering the server's IP automatically
-  over the network so it keeps working if the server's IP changes.
-- **Server** ([`main.py`](main.py), FastAPI) converts raw values to real units using the
-  calibration saved on the server (not the firmware), pushes live readings to every open
-  dashboard, and relays each reading to Google Sheets. No fake-data fallback anywhere in
-  this chain — a real outage looks like an outage.
+- **Station** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) reads temperature,
+  turbidity, TDS, and flow-sensor pulses and POSTs **raw** values to the backend every 2s,
+  discovering the backend's IP automatically over the network (UDP) so it keeps working if
+  the backend's IP changes.
+- **Backend** ([`main.py`](main.py), FastAPI) converts raw values to real units (NTU / ppm /
+  EC) using calibration saved on the backend (not the firmware), tracks daily/weekly/monthly
+  rollups per station (excluding implausible near-zero readings as likely sensor faults
+  rather than letting them skew the averages), pushes live readings to every open dashboard,
+  and relays each reading to Google Sheets. No fake-data fallback anywhere in this chain — a
+  real outage looks like an outage.
 - **Dashboard** ([`frontend/`](frontend/) — Vite + React + TypeScript + Tailwind) subscribes
-  to the live stream and renders everything above.
+  to the live stream and renders everything above. Several boards ("stations") can report to
+  the same backend independently — see [`CLAUDE.md`](CLAUDE.md)'s Multi-station support.
+- **Push notifications** — on a threshold breach, subscribed browsers get an OS-level push
+  even with no tab open, followed by a Gemini-generated plain-language guidance notification.
+- **AI daily report** — once a day (or on demand), Gemini summarises the day's stats per
+  station, compared against the trailing week/month, as a card on the Dashboard tab.
 
 **If the server is unreachable**, readings are not simply lost:
 
@@ -133,9 +137,9 @@ Honest status, roughly in priority order:
 ### จุดประสงค์ของโปรเจกต์นี้
 
 ระบบตรวจสอบคุณภาพน้ำแบบต่อเนื่อง แทนการเก็บตัวอย่างด้วยมือเป็นครั้งคราว สถานีเซนเซอร์ในอ่างเก็บน้ำ
-ส่งค่าดิบ 3 ค่าทุก 2 วินาที ได้แก่ **อุณหภูมิ**, **ความขุ่น** (turbidity) และ **TDS**
-(ปริมาณสารละลายทั้งหมด) ซึ่งเซิร์ฟเวอร์จะแปลงเป็นหน่วยที่ปรับเทียบแล้ว บันทึกประวัติลง Google Sheets
-และส่งขึ้นแดชบอร์ดแบบเรียลไทม์ ออกแบบมาเพื่อใช้งานในบริบทการศึกษาและการติดตามของชุมชน
+ส่งค่าดิบทุก 2 วินาที ได้แก่ **อุณหภูมิ**, **ความขุ่น** (turbidity), **TDS**
+(ปริมาณสารละลายทั้งหมด ซึ่งใช้คำนวณค่า EC ต่อ) และ **อัตราการไหล** ซึ่งเซิร์ฟเวอร์จะแปลงเป็นหน่วยที่ปรับเทียบแล้ว
+บันทึกประวัติลง Google Sheets และส่งขึ้นแดชบอร์ดแบบเรียลไทม์ ออกแบบมาเพื่อใช้งานในบริบทการศึกษาและการติดตามของชุมชน
 
 ### วิธีใช้งาน
 
@@ -173,23 +177,26 @@ python main.py
 
 ### หลักการทำงานโดยสรุป
 
-```
-สถานี ESP32 ──ค่าดิบ──▶  เซิร์ฟเวอร์ FastAPI (main.py)  ──เรียลไทม์──▶  เว็บแดชบอร์ด
- (อุณหภูมิ, ADC ความขุ่น,      - แปลงค่าดิบ → NTU / ppm                (WebSocket)
-  แรงดัน TDS) ทุก 2 วิ           โดยใช้ค่าปรับเทียบที่บันทึกไว้    ──บันทึก──▶ Google Sheets
-      ▲                       - ส่งกระจายไปยังแดชบอร์ด                  (ประวัติ, แถวล่าสุด
-      └── หาเซิร์ฟเวอร์ผ่าน       - ให้บริการแดชบอร์ด + API                 อยู่บนสุด)
-          การกระจายสัญญาณ UDP
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/data-flow-dark.png">
+  <img alt="แผนภาพการไหลของข้อมูล: สถานี ESP32 ส่งค่าดิบไปยังเซิร์ฟเวอร์ FastAPI ซึ่งปรับเทียบค่าแล้วกระจายไปยัง Google Sheets, SQLite ในเครื่อง, แดชบอร์ดแบบเรียลไทม์, Web Push notification และรายงานสรุปจาก Gemini" src="docs/data-flow-light.png">
+</picture>
 
-- **สถานีเซนเซอร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) อ่านค่าจากเซนเซอร์ทั้ง 3 ตัว
-  แล้วส่งค่า **ดิบ** ไปยังเซิร์ฟเวอร์ โดยค้นหา IP ของเซิร์ฟเวอร์เองผ่านเครือข่าย จึงยังทำงานต่อได้แม้ IP
-  ของเซิร์ฟเวอร์จะเปลี่ยน
-- **เซิร์ฟเวอร์** ([`main.py`](main.py), FastAPI) แปลงค่าดิบเป็นหน่วยจริงโดยใช้ค่าปรับเทียบที่บันทึกไว้ที่เซิร์ฟเวอร์
-  (ไม่ใช่ที่เฟิร์มแวร์) ส่งค่าล่าสุดไปยังทุกแดชบอร์ดที่เปิดอยู่ และส่งต่อแต่ละค่าไปบันทึกที่ Google Sheets
-  ไม่มีการสร้างข้อมูลปลอมในทุกจุดของระบบ — เมื่อเกิดปัญหาจริงจะแสดงผลตรงตามความเป็นจริง
+- **สถานีเซนเซอร์** ([`firmware/esp32/esp32.ino`](firmware/esp32/esp32.ino)) อ่านค่าอุณหภูมิ ความขุ่น TDS
+  และพัลส์จากเซนเซอร์วัดอัตราการไหล แล้วส่งค่า **ดิบ** ไปยังเซิร์ฟเวอร์ทุก 2 วินาที โดยค้นหา IP ของเซิร์ฟเวอร์
+  เองผ่านเครือข่าย (UDP) จึงยังทำงานต่อได้แม้ IP ของเซิร์ฟเวอร์จะเปลี่ยน
+- **เซิร์ฟเวอร์** ([`main.py`](main.py), FastAPI) แปลงค่าดิบเป็นหน่วยจริง (NTU / ppm / EC) โดยใช้ค่าปรับเทียบ
+  ที่บันทึกไว้ที่เซิร์ฟเวอร์ (ไม่ใช่ที่เฟิร์มแวร์) ติดตามค่าสรุปรายวัน/รายสัปดาห์/รายเดือนต่อสถานี (โดยตัดค่าที่ต่ำผิดปกติ
+  จนเกือบเป็นศูนย์ออกจากค่าเฉลี่ย ถือว่าเป็นเซนเซอร์หลุดมากกว่าคุณภาพน้ำจริง) ส่งค่าล่าสุดไปยังทุกแดชบอร์ดที่เปิดอยู่
+  และส่งต่อแต่ละค่าไปบันทึกที่ Google Sheets ไม่มีการสร้างข้อมูลปลอมในทุกจุดของระบบ — เมื่อเกิดปัญหาจริงจะแสดงผล
+  ตรงตามความเป็นจริง
 - **แดชบอร์ด** ([`frontend/`](frontend/) — Vite + React + TypeScript + Tailwind)
-  รับข้อมูลแบบเรียลไทม์และแสดงผลทั้งหมดข้างต้น
+  รับข้อมูลแบบเรียลไทม์และแสดงผลทั้งหมดข้างต้น สามารถเชื่อมต่อหลายสถานีเข้ากับเซิร์ฟเวอร์เดียวกันได้ โดยแต่ละสถานี
+  ทำงานอิสระจากกัน — ดูรายละเอียดที่หัวข้อ Multi-station support ใน [`CLAUDE.md`](CLAUDE.md)
+- **Push notification** — เมื่อค่าที่วัดได้เกินเกณฑ์ ผู้ใช้ที่สมัครรับการแจ้งเตือนจะได้รับ OS push notification
+  ทันทีแม้ไม่ได้เปิดแท็บไว้ ตามด้วยคำแนะนำแบบภาษาธรรมดาที่สร้างโดย Gemini
+- **รายงานสรุปประจำวันจาก AI** — วันละครั้ง (หรือกดสร้างเองได้) Gemini จะสรุปค่าสถิติของแต่ละสถานีในวันนั้น
+  เปรียบเทียบกับค่าเฉลี่ยรายสัปดาห์/รายเดือน แสดงเป็นการ์ดในแท็บ Dashboard
 
 **หากติดต่อเซิร์ฟเวอร์ไม่ได้** ข้อมูลจะไม่สูญหายไปเฉย ๆ:
 
