@@ -1,6 +1,8 @@
 {
   "staticDir": "Build",
   "googleSheetsWebhookUrl": "https://script.google.com/macros/s/AKfycbx38Bv3wlgevYq4OtxxvCrFq7atMi6PgRxF7XzTQSentBiTVAyyQbn_UTlKPPMMJc4P/exec",
+  "vercelRelayUrl": "",
+  "vercelRelayApiKey": "",
   "calibrationFile": "calibration.json",
   "historyDbFile": "history.db",
   "vapidPrivateKeyFile": "vapid_private_key.pem",

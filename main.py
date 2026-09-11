@@ -39,6 +39,14 @@ except FileNotFoundError:
 
 BUILD_DIR = webconfig.get("staticDir", "Build")
 GOOGLE_SHEETS_WEBHOOK_URL = webconfig.get("googleSheetsWebhookUrl", "")
+# Optional dual-send: relays every raw ESP32 reading to a second backend's own /update
+# endpoint (e.g. the Vercel deployment) so one physical board can feed both a local and a
+# cloud instance at once, with no firmware change. Each backend keeps its own independent
+# calibration/history/push state -- this only forwards the same raw payload the ESP32 sent,
+# never this backend's already-calibrated one, so the two deployments can't cross-contaminate
+# each other's calibration math. Empty by default (disabled).
+VERCEL_RELAY_URL = webconfig.get("vercelRelayUrl", "")
+VERCEL_RELAY_API_KEY = webconfig.get("vercelRelayApiKey", "")
 CALIBRATION_PATH = webconfig.get("calibrationFile", "calibration.json")
 # Local SQLite file for push subscriptions + daily water usage only (see storage.py).
 # Reading history is NOT stored here -- it lives in the in-memory buffer and Google Sheets.
@@ -161,6 +169,9 @@ if GOOGLE_SHEETS_WEBHOOK_URL:
     print("✅ Google Sheets relay enabled for /update readings.")
 else:
     print("⚠️ googleSheetsWebhookUrl not set in webconfig.json; Google Sheets relay disabled.")
+
+if VERCEL_RELAY_URL:
+    print(f"✅ Dual-send relay enabled: every reading also forwarded to {VERCEL_RELAY_URL}.")
 
 if HISTORY_DB_PATH and storage.init(HISTORY_DB_PATH):
     print(f"✅ Local database at {HISTORY_DB_PATH} (push subscriptions + daily water usage).")
@@ -522,6 +533,29 @@ async def relay_to_google_sheets(payload: dict) -> None:
     # Runs in a thread so a slow/unreachable Google endpoint never blocks the event
     # loop or delays the ESP32's /update response.
     await asyncio.to_thread(_post_to_google_sheets, payload)
+
+
+def _post_to_vercel(data: dict) -> None:
+    body = json.dumps(data).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if VERCEL_RELAY_API_KEY:
+        headers["X-API-Key"] = VERCEL_RELAY_API_KEY
+    req = urllib.request.Request(VERCEL_RELAY_URL, data=body, headers=headers, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as exc:
+        print(f"⚠️ Failed to relay reading to {VERCEL_RELAY_URL}: {exc}")
+
+
+async def relay_to_vercel(data: dict) -> None:
+    """Forwards the exact raw payload the ESP32 posted to a second backend's own /update
+    (see VERCEL_RELAY_URL above) -- not this backend's already-calibrated `payload`, so the
+    second deployment's calibration/history/push state stays entirely its own. Same
+    fire-and-forget-in-a-thread shape as relay_to_google_sheets, for the same reason: a
+    slow/unreachable second backend must never delay the ESP32's response."""
+    if not VERCEL_RELAY_URL:
+        return
+    await asyncio.to_thread(_post_to_vercel, data)
 
 
 # --- Sensor calibration ------------------------------------------------------
@@ -1337,6 +1371,9 @@ async def update_sensor(request: Request):
             if "flowRate" in payload:
                 sheet_payload["flowRate"] = payload["flowRate"]
             asyncio.create_task(relay_to_google_sheets(sheet_payload))
+            # Dual-send: forwards the ESP32's original raw `data` (not the locally-calibrated
+            # `payload`) to a second backend, e.g. the Vercel deployment -- see VERCEL_RELAY_URL.
+            asyncio.create_task(relay_to_vercel(data))
 
             # Threshold-breach push notifications: detection is synchronous/inline (must
             # observe every reading in order to edge-detect correctly), the actual sends

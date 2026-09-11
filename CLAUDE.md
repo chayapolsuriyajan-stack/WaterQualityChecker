@@ -128,6 +128,14 @@ A fifth **main** sensor (not a water-quality param — Sensor calibration above)
 - **Redeploy gotcha**: after editing `doGet`/`doPost`, redeploy as a **new version** — otherwise `/exec` keeps serving old code silently. The insert-at-top behavior above lives only in this repo's reference copy until then; the deployed script keeps appending at the bottom (still correct for `/history`, just not "newest at top" by hand) until redeployed.
 - Running min/max per sensor (`temperature`/`turbidity`/`tds`) is tracked in `main.py`'s in-memory `sensor_stats` (since server start, resets on restart, shared across dashboards) — not persisted or read from the spreadsheet.
 
+## Dual-send to a second backend (e.g. the Vercel deployment)
+
+A single ESP32 only ever POSTs `/update` to one backend at a time (whatever UDP discovery finds, or the fixed-host override — see WiFi provisioning below); there's no firmware-level way to target two backends without reflashing. Instead, `main.py` itself can relay every reading it receives onward to a *second* backend's own `/update` — same fire-and-forget-in-a-thread shape as the Google Sheets relay above, so a slow/unreachable second backend never delays the ESP32's response.
+
+- **Config**: `webconfig.json`'s `vercelRelayUrl` (e.g. `https://<your-app>.vercel.app/update`, empty by default — disabled) and `vercelRelayApiKey` (sent as `X-API-Key`, matching the second backend's own `updateApiKey`/`UPDATE_API_KEY`).
+- **Relays the raw payload, not the calibrated one**: `relay_to_vercel` forwards the exact JSON body the ESP32 posted (`data`, before `apply_turbidity`/TDS-ppm conversion), never this backend's own already-calibrated `payload`. Each backend keeps fully independent calibration, history, and push-subscription state — this is purely a second raw feed, not a state sync, matching the same reasoning the Sheets fallback in the firmware already follows (raw in, each side converts for itself).
+- **Not the reverse**: this only pushes local → second backend. The Vercel deployment doesn't relay back to the local one; if both need to see each other's readings, both would need this configured pointing at each other (not attempted/tested — two-way relay risks an infinite loop unless each side is careful not to re-relay what it received via relay).
+
 ## Push notifications (Web Push)
 
 Threshold-breach alerts as OS-level push notifications, so a subscribed browser is warned even with no tab open — an *outbound* path on top of the same `range_status_for` scoring `/update` already does.
