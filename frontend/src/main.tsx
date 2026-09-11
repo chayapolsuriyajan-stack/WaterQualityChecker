@@ -53,7 +53,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Aqua Monitor crashed:', error, info)
+    console.error('AquaMonitor crashed:', error, info)
   }
 
   render() {

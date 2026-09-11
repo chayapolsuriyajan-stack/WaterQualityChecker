@@ -1893,7 +1893,7 @@ async def push_test(request: Request):
             webpush(
                 subscription_info=subscription_info,
                 data=_push_payload(
-                    "🔔 HydroMonitor — Test",
+                    "🔔 AquaMonitor — Test",
                     "This is a test notification. If you can see this, alerts are working.",
                     "test",
                 ),
@@ -2006,7 +2006,7 @@ async def websocket_app(websocket: WebSocket):
             ui_clients.discard(websocket)
 
 
-# The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
+# The AquaMonitor React app (frontend/) is the default page, mounted at "/" LAST so it
 # only catches requests that no explicit route above already matched (Starlette tries
 # routes in registration order; specific routes like /history, /calibration, /ws/app all win
 # over this root Mount since they were registered earlier). StaticFiles(html=True) serves
@@ -2014,7 +2014,7 @@ async def websocket_app(websocket: WebSocket):
 # needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.
 if os.path.isdir("frontend/dist"):
     app.mount("/", SpaStaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
-    print("✅ Mounted Aqua Monitor React app as the default page at /.")
+    print("✅ Mounted AquaMonitor React app as the default page at /.")
 else:
     print("⚠️ frontend/dist not found; default page disabled (run: cd frontend && npm run build).")
 

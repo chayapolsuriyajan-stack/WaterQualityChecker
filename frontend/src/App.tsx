@@ -22,12 +22,12 @@ import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
 function TabTitleSync() {
   const { connected } = useSensorData()
   useEffect(() => {
-    document.title = connected ? 'Aqua Monitor — Connected' : 'Aqua Monitor — Offline'
+    document.title = connected ? 'AquaMonitor — Connected' : 'AquaMonitor — Offline'
   }, [connected])
   return null
 }
 
-/** Aqua Monitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
+/** AquaMonitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
 export default function App() {
   const [view, setView] = useState<ViewId>('dashboard')
   const { role } = useRole()

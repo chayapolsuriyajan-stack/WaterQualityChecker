@@ -1,10 +1,10 @@
 ---
 name: sensor-calibration
-description: Calibrate or verify the HydroMonitor turbidity (NTU) and TDS sensor conversions. Use when raw ADC/voltage readings don't match known water samples, when capturing new reference points via the /calibrate page, when adjusting the turbidity 2-point map or TDS k-factor, or when checking TDS temperature compensation.
+description: Calibrate or verify the AquaMonitor turbidity (NTU) and TDS sensor conversions. Use when raw ADC/voltage readings don't match known water samples, when capturing new reference points via the /calibrate page, when adjusting the turbidity 2-point map or TDS k-factor, or when checking TDS temperature compensation.
 disable-model-invocation: true
 ---
 
-# Sensor Calibration (HydroMonitor)
+# Sensor Calibration (AquaMonitor)
 
 Calibration is **backend-owned** (as of the calibration-mode work): the ESP32
 streams raw values, and `main.py` converts them using coefficients in
