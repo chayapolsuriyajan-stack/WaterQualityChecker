@@ -10,6 +10,9 @@
 
 export type PushParam = 'temperature' | 'turbidity' | 'tds' | 'ec'
 export type PushPrefs = Record<PushParam, { warn: boolean; danger: boolean }>
+/** Mirrors lib/strings.ts's `Lang` -- not imported directly to keep this module's only
+ * dependency direction (i18n.tsx doesn't need to know about push.ts). */
+export type PushLang = 'en' | 'th'
 
 export function isPushSupported(): boolean {
   return (
@@ -49,7 +52,7 @@ async function getRegistration(): Promise<ServiceWorkerRegistration | null> {
 
 export type SubscribeResult = { ok: true } | { ok: false; error: string }
 
-export async function subscribeToPush(): Promise<SubscribeResult> {
+export async function subscribeToPush(lang: PushLang): Promise<SubscribeResult> {
   try {
     const registration = await getRegistration()
     if (!registration) return { ok: false, error: 'unsupported' }
@@ -67,10 +70,13 @@ export async function subscribeToPush(): Promise<SubscribeResult> {
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     })
 
+    // `lang` is the dashboard's current UI language at subscribe time -- main.py stores it
+    // per-subscription and picks Thai/English notification text accordingly (see
+    // PushLangSync in App.tsx for keeping it in sync if the user switches language later).
     const subscribeRes = await fetch('/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(subscription.toJSON()),
+      body: JSON.stringify({ ...subscription.toJSON(), lang }),
     })
     if (!subscribeRes.ok) return { ok: false, error: `subscribe-failed-${subscribeRes.status}` }
 
@@ -111,12 +117,14 @@ export async function getCurrentSubscriptionEndpoint(): Promise<string | null> {
   return subscription?.endpoint ?? null
 }
 
-export async function getPushPreferences(endpoint: string): Promise<PushPrefs | null> {
+export async function getPushPreferences(
+  endpoint: string,
+): Promise<{ prefs: PushPrefs; lang: PushLang } | null> {
   try {
     const res = await fetch(`/push/preferences?endpoint=${encodeURIComponent(endpoint)}`)
     if (!res.ok) return null
-    const data = (await res.json()) as { prefs: PushPrefs }
-    return data.prefs
+    const data = (await res.json()) as { prefs: PushPrefs; lang?: PushLang }
+    return { prefs: data.prefs, lang: data.lang ?? 'en' }
   } catch {
     return null
   }
@@ -132,6 +140,27 @@ export async function savePushPreferences(endpoint: string, prefs: PushPrefs): P
     return res.ok
   } catch {
     return false
+  }
+}
+
+/** Re-syncs an already-subscribed device's notification language -- called when the user
+ * flips the dashboard's language toggle after already subscribing, so future breach/test
+ * pushes switch language too without needing to unsubscribe/resubscribe. Silently no-ops
+ * (never throws/toasts) since this is a best-effort background sync, not a user action. */
+export async function syncPushLang(endpoint: string, lang: PushLang): Promise<void> {
+  try {
+    // PUT /push/preferences requires `prefs` -- re-send whatever's currently stored rather
+    // than guessing, since this call only wants to touch `lang`.
+    const current = await getPushPreferences(endpoint)
+    if (!current) return
+    await fetch('/push/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint, prefs: current.prefs, lang }),
+    })
+  } catch {
+    // Best-effort -- next SettingsDialog open's refreshSubscriptionState re-derives state
+    // from the server anyway, so a failed sync here just means one stale notification.
   }
 }
 

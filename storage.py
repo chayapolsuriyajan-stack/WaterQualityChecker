@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     p256dh      TEXT NOT NULL,
     auth        TEXT NOT NULL,
     prefs_json  TEXT NOT NULL,  -- e.g. {"temperature": {"warn": bool, "danger": bool}, ...}
+    lang        TEXT NOT NULL DEFAULT 'en',  -- notification text language: 'en' or 'th'
     created_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL
 );
@@ -77,6 +78,20 @@ def _migrate_daily_usage_schema(conn: sqlite3.Connection) -> None:
     print("📦 Migrated daily_usage to per-station schema (existing rows attributed to 'default').")
 
 
+def _migrate_push_subscriptions_lang(conn: sqlite3.Connection) -> None:
+    """`push_subscriptions` used to have no `lang` column (every notification was English).
+    A plain ALTER TABLE ADD COLUMN is enough here -- unlike daily_usage's primary-key change,
+    this doesn't need a full table rebuild. Existing subscriptions default to 'en', matching
+    their actual behavior before this column existed. A fresh database already gets the
+    column from _SCHEMA above, so this is a no-op then."""
+    cols = [row["name"] for row in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()]
+    if not cols or "lang" in cols:
+        return
+    conn.execute("ALTER TABLE push_subscriptions ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+    conn.commit()
+    print("📦 Migrated push_subscriptions to include a lang column (existing rows default to 'en').")
+
+
 def init(path: str) -> bool:
     """Open (creating if needed) the local database. Returns False if unusable.
 
@@ -98,6 +113,7 @@ def init(path: str) -> bool:
         conn.executescript(_SCHEMA)
         conn.commit()
         _migrate_daily_usage_schema(conn)
+        _migrate_push_subscriptions_lang(conn)
         _conn = conn
         return True
     except Exception as exc:  # sqlite3.Error, OSError, permissions...
@@ -118,21 +134,25 @@ def close() -> None:
             _conn = None
 
 
-def upsert_push_subscription(endpoint: str, p256dh: str, auth: str, prefs: dict) -> None:
+def upsert_push_subscription(endpoint: str, p256dh: str, auth: str, prefs: dict, lang: str = "en") -> None:
     """Insert or update one push subscription. `prefs` is stored as one JSON blob per
-    subscription since it's always read/written whole, never queried by field."""
+    subscription since it's always read/written whole, never queried by field. `lang`
+    picks which language notification text this subscription receives (main.py's
+    _format_push_text/_push_payload etc.) -- set from the frontend's current UI language
+    at subscribe time, and re-synced separately (update_push_lang) if the user switches
+    language later without resubscribing."""
     if _conn is None:
         return
     try:
         now_ms = int(time.time() * 1000)
         with _lock:
             _conn.execute(
-                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, prefs_json, created_ms, updated_ms)"
-                " VALUES (?, ?, ?, ?, ?, ?)"
+                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, prefs_json, lang, created_ms, updated_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(endpoint) DO UPDATE SET"
                 " p256dh=excluded.p256dh, auth=excluded.auth,"
-                " prefs_json=excluded.prefs_json, updated_ms=excluded.updated_ms",
-                (endpoint, p256dh, auth, json.dumps(prefs), now_ms, now_ms),
+                " prefs_json=excluded.prefs_json, lang=excluded.lang, updated_ms=excluded.updated_ms",
+                (endpoint, p256dh, auth, json.dumps(prefs), lang, now_ms, now_ms),
             )
             _conn.commit()
     except Exception as exc:
@@ -155,7 +175,7 @@ def get_all_push_subscriptions() -> list[dict]:
         return []
     try:
         with _lock:
-            cur = _conn.execute("SELECT endpoint, p256dh, auth, prefs_json FROM push_subscriptions")
+            cur = _conn.execute("SELECT endpoint, p256dh, auth, prefs_json, lang FROM push_subscriptions")
             rows = cur.fetchall()
     except Exception as exc:
         print(f"⚠️ Push subscription read failed: {exc}")
@@ -167,8 +187,33 @@ def get_all_push_subscriptions() -> list[dict]:
             prefs = json.loads(r["prefs_json"])
         except (TypeError, ValueError):
             prefs = {}
-        out.append({"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"], "prefs": prefs})
+        out.append({
+            "endpoint": r["endpoint"],
+            "p256dh": r["p256dh"],
+            "auth": r["auth"],
+            "prefs": prefs,
+            "lang": r["lang"] or "en",
+        })
     return out
+
+
+def update_push_lang(endpoint: str, lang: str) -> bool:
+    """Re-syncs an already-subscribed device's notification language -- e.g. the user
+    switches the dashboard's language toggle after subscribing, without unsubscribing/
+    resubscribing. Returns False if the endpoint isn't a known subscription."""
+    if _conn is None:
+        return False
+    try:
+        with _lock:
+            cur = _conn.execute(
+                "UPDATE push_subscriptions SET lang = ?, updated_ms = ? WHERE endpoint = ?",
+                (lang, int(time.time() * 1000), endpoint),
+            )
+            _conn.commit()
+            return cur.rowcount > 0
+    except Exception as exc:
+        print(f"⚠️ Push subscription lang update failed: {exc}")
+        return False
 
 
 def add_daily_usage(date: str, station: str, liters: float) -> None:
