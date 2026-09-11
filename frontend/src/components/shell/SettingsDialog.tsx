@@ -52,7 +52,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ className, showLabel = false }: SettingsDialogProps): JSX.Element {
-  const { t } = useT()
+  const { t, lang } = useT()
   const { visible, setVisible } = useDashboardPrefs()
   const supported = isPushSupported()
 
@@ -71,8 +71,8 @@ export function SettingsDialog({ className, showLabel = false }: SettingsDialogP
       const currentEndpoint = await getCurrentSubscriptionEndpoint()
       setEndpoint(currentEndpoint)
       if (currentEndpoint) {
-        const savedPrefs = await getPushPreferences(currentEndpoint)
-        setPrefs(savedPrefs ?? DEFAULT_PREFS)
+        const saved = await getPushPreferences(currentEndpoint)
+        setPrefs(saved?.prefs ?? DEFAULT_PREFS)
       }
     } finally {
       setChecking(false)
@@ -89,7 +89,7 @@ export function SettingsDialog({ className, showLabel = false }: SettingsDialogP
   const handleEnable = async () => {
     setBusy(true)
     try {
-      const result = await subscribeToPush()
+      const result = await subscribeToPush(lang)
       if (result.ok) {
         toast.success(t('notif.subscribeSuccess'))
         await refreshSubscriptionState()

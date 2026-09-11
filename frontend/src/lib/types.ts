@@ -1,5 +1,5 @@
 /**
- * Shared types for the Aqua Monitor frontend.
+ * Shared types for the AquaMonitor frontend.
  * Mirrors the backend's `/update`/`/history` payload shape (see main.py).
  */
 

@@ -509,6 +509,30 @@ PARAM_DISPLAY = {
     "ec": ("⚡", "EC", "µS/cm"),
 }
 
+# Thai variant of PARAM_DISPLAY, used only for push notification text when a subscription's
+# stored `lang` is "th" -- kept separate from PARAM_DISPLAY rather than adding a lang branch
+# to it, since PARAM_DISPLAY is also used by the AI daily report prompt builder below.
+PARAM_DISPLAY_TH = {
+    "temperature": ("🌡️", "อุณหภูมิ", "°C"),
+    "turbidity": ("💧", "ความขุ่น", "NTU"),
+    "tds": ("🧪", "สารละลายทั้งหมด", "ppm"),
+    "ec": ("⚡", "การนำไฟฟ้า", "µS/cm"),
+}
+
+SEVERITY_TH = {"warn": "เฝ้าระวัง", "danger": "อันตราย"}
+
+# Push notification action-button labels, by language (View Dashboard / Dismiss).
+_PUSH_ACTIONS = {
+    "en": [
+        {"action": "view", "title": "View Dashboard"},
+        {"action": "dismiss", "title": "Dismiss"},
+    ],
+    "th": [
+        {"action": "view", "title": "ดูแดชบอร์ด"},
+        {"action": "dismiss", "title": "ปิด"},
+    ],
+}
+
 
 def _check_breaches_and_dispatch(station_severity: dict, payload: dict) -> list:
     """Mutates `station_severity` in place (edge-detection state for one station), returns
@@ -528,18 +552,24 @@ def _check_breaches_and_dispatch(station_severity: dict, payload: dict) -> list:
     return breaches
 
 
-def _format_push_text(param: str, severity: str, value) -> tuple:
-    emoji, label, unit = PARAM_DISPLAY.get(param, ("⚠️", param.capitalize(), ""))
-    title = f"{emoji} {label} — {severity.title()}"
+def _format_push_text(param: str, severity: str, value, lang: str = "en") -> tuple:
     try:
         formatted_value = f"{float(value):.1f}"
     except (TypeError, ValueError):
         formatted_value = str(value)
+    if lang == "th":
+        emoji, label, unit = PARAM_DISPLAY_TH.get(param, ("⚠️", param.capitalize(), ""))
+        severity_th = SEVERITY_TH.get(severity, severity)
+        title = f"{emoji} {label} — {severity_th}"
+        body = f"{formatted_value} {unit} อยู่ในระดับ{severity_th}".strip()
+        return title, body
+    emoji, label, unit = PARAM_DISPLAY.get(param, ("⚠️", param.capitalize(), ""))
+    title = f"{emoji} {label} — {severity.title()}"
     body = f"{formatted_value} {unit} is in the {severity} range".strip()
     return title, body
 
 
-def _push_payload(title: str, body: str, tag: str) -> str:
+def _push_payload(title: str, body: str, tag: str, lang: str = "en") -> str:
     return json.dumps(
         {
             "title": title,
@@ -547,10 +577,7 @@ def _push_payload(title: str, body: str, tag: str) -> str:
             "tag": tag,
             "icon": "/favicon.svg",
             "badge": "/favicon.svg",
-            "actions": [
-                {"action": "view", "title": "View Dashboard"},
-                {"action": "dismiss", "title": "Dismiss"},
-            ],
+            "actions": _PUSH_ACTIONS.get(lang, _PUSH_ACTIONS["en"]),
         }
     )
 
@@ -560,10 +587,11 @@ def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) 
         "endpoint": sub["endpoint"],
         "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
     }
+    lang = sub.get("lang", "en")
     try:
         webpush(
             subscription_info=subscription_info,
-            data=_push_payload(title, body, f"{param}-{severity}"),
+            data=_push_payload(title, body, f"{param}-{severity}", lang),
             vapid_private_key=VAPID_PRIVATE_KEY_PATH,
             vapid_claims={"sub": VAPID_CLAIM_SUB},
         )
@@ -582,9 +610,13 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
     for param, severity in breaches:
         value = payload.get(param)
-        title, body = _format_push_text(param, severity, value)
+        # Pre-compute both language variants once per (param, severity) rather than per
+        # subscriber -- there are only ever two possible texts here regardless of how many
+        # subscriptions exist.
+        texts = {lang: _format_push_text(param, severity, value, lang) for lang in ("en", "th")}
         for sub in subs:
             if sub["prefs"].get(param, {}).get(severity, False):
+                title, body = texts.get(sub.get("lang", "en"), texts["en"])
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
 
 
@@ -1516,7 +1548,8 @@ async def push_subscribe(request: Request):
     if not endpoint or not p256dh or not auth:
         return JSONResponse({"error": "endpoint and keys.p256dh/keys.auth are required"}, status_code=400)
     prefs = body.get("prefs") or {p: {"warn": False, "danger": True} for p in PUSH_PARAMS}
-    await asyncio.to_thread(storage.upsert_push_subscription, endpoint, p256dh, auth, prefs)
+    lang = body.get("lang") if body.get("lang") in ("en", "th") else "en"
+    await asyncio.to_thread(storage.upsert_push_subscription, endpoint, p256dh, auth, prefs, lang)
     return JSONResponse({"ok": True})
 
 
@@ -1539,7 +1572,7 @@ async def get_push_preferences(endpoint: str):
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
     for sub in subs:
         if sub["endpoint"] == endpoint:
-            return JSONResponse({"prefs": sub["prefs"]})
+            return JSONResponse({"prefs": sub["prefs"], "lang": sub.get("lang", "en")})
     return JSONResponse({"error": "subscription not found"}, status_code=404)
 
 
@@ -1565,16 +1598,18 @@ async def push_test(request: Request):
         "endpoint": sub["endpoint"],
         "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
     }
+    lang = sub.get("lang", "en")
+    title, body = (
+        ("🔔 AquaMonitor — ทดสอบ", "นี่คือการแจ้งเตือนทดสอบ หากคุณเห็นข้อความนี้ แสดงว่าการแจ้งเตือนทำงานได้ตามปกติ")
+        if lang == "th"
+        else ("🔔 AquaMonitor — Test", "This is a test notification. If you can see this, alerts are working.")
+    )
 
     def _send() -> tuple:
         try:
             webpush(
                 subscription_info=subscription_info,
-                data=_push_payload(
-                    "🔔 HydroMonitor — Test",
-                    "This is a test notification. If you can see this, alerts are working.",
-                    "test",
-                ),
+                data=_push_payload(title, body, "test", lang),
                 vapid_private_key=VAPID_PRIVATE_KEY_PATH,
                 vapid_claims={"sub": VAPID_CLAIM_SUB},
             )
@@ -1605,10 +1640,16 @@ async def put_push_preferences(request: Request):
     ok = await asyncio.to_thread(storage.update_push_prefs, endpoint, prefs)
     if not ok:
         return JSONResponse({"error": "not found"}, status_code=404)
+    # `lang` is optional here -- re-syncs an already-subscribed device's notification
+    # language when the frontend calls this alongside a language-toggle change, distinct
+    # from the initial lang sent at /push/subscribe time.
+    lang = body.get("lang")
+    if lang in ("en", "th"):
+        await asyncio.to_thread(storage.update_push_lang, endpoint, lang)
     return JSONResponse({"ok": True})
 
 
-# The Aqua Monitor React app (frontend/) is the default page, mounted at "/" LAST so it
+# The AquaMonitor React app (frontend/) is the default page, mounted at "/" LAST so it
 # only catches requests that no explicit route above already matched (Starlette tries
 # routes in registration order; specific routes like /history, /calibration, /live all win
 # over this root Mount since they were registered earlier). StaticFiles(html=True) serves
@@ -1616,7 +1657,7 @@ async def put_push_preferences(request: Request):
 # needs (favicon.svg, icons.svg, assets/*.js/css) with no separate /assets mount required.
 if os.path.isdir("frontend/dist"):
     app.mount("/", SpaStaticFiles(directory="frontend/dist", html=True), name="aquamonitor")
-    print("✅ Mounted Aqua Monitor React app as the default page at /.")
+    print("✅ Mounted AquaMonitor React app as the default page at /.")
 else:
     print("⚠️ frontend/dist not found; default page disabled (run: cd frontend && npm run build).")
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { AnimatedBackground } from '@/components/shell/AnimatedBackground'
 import { CalibrationView } from '@/components/calibration/CalibrationView'
@@ -10,6 +10,8 @@ import { RightContextColumn } from '@/components/shell/RightContextColumn'
 import type { ViewId } from '@/components/shell/Sidebar'
 import { TourOverlay } from '@/components/tour/TourOverlay'
 import { TourProvider } from '@/components/tour/TourProvider'
+import { useT } from '@/lib/i18n'
+import { getCurrentSubscriptionEndpoint, isPushSupported, syncPushLang } from '@/lib/push'
 import { useRole } from '@/lib/RoleProvider'
 import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
 
@@ -22,12 +24,41 @@ import { SensorProvider, useSensorData } from '@/lib/SensorProvider'
 function TabTitleSync() {
   const { connected } = useSensorData()
   useEffect(() => {
-    document.title = connected ? 'Aqua Monitor — Connected' : 'Aqua Monitor — Offline'
+    document.title = connected ? 'AquaMonitor — Connected' : 'AquaMonitor — Offline'
   }, [connected])
   return null
 }
 
-/** Aqua Monitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
+/**
+ * Keeps an already-subscribed device's push-notification language in sync with the
+ * dashboard's language toggle. `subscribeToPush` (SettingsDialog.tsx) only sets `lang` at
+ * the moment a device first subscribes; without this, a subscriber who later switches
+ * languages would keep getting breach alerts in whatever language they subscribed under
+ * until they happened to reopen Settings (which resyncs nothing on its own either -- it
+ * only reads state). Runs app-wide, not just while Settings is open, and skips entirely on
+ * the very first mount (the ref) so a fresh page load doesn't fire a redundant sync for a
+ * lang that was just sent at subscribe time.
+ */
+function PushLangSync() {
+  const { lang } = useT()
+  const isFirstRun = useRef(true)
+
+  useEffect(() => {
+    if (isFirstRun.current) {
+      isFirstRun.current = false
+      return
+    }
+    if (!isPushSupported()) return
+    void (async () => {
+      const endpoint = await getCurrentSubscriptionEndpoint()
+      if (endpoint) await syncPushLang(endpoint, lang)
+    })()
+  }, [lang])
+
+  return null
+}
+
+/** AquaMonitor app shell: left sidebar / mobile nav, active view, and (dashboard-only) right context column. */
 export default function App() {
   const [view, setView] = useState<ViewId>('dashboard')
   const { role } = useRole()
@@ -48,6 +79,7 @@ export default function App() {
     // being torn down and reconnected/reset on every tab switch.
     <SensorProvider>
       <TabTitleSync />
+      <PushLangSync />
       <TourProvider view={view} setView={setView}>
         <div className="relative flex h-full w-full overflow-hidden bg-background">
           <AnimatedBackground reducedMotion={!!reducedMotion} />

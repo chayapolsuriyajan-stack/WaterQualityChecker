@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs HydroMonitor's FastAPI backend (main.py) as a Windows service via NSSM,
+    Installs AquaMonitor's FastAPI backend (main.py) as a Windows service via NSSM,
     so monitoring survives reboots, crashes, and closed terminals.
 
 .DESCRIPTION
@@ -13,9 +13,9 @@
         .\scripts\install-service.ps1
 
     Useful afterwards:
-        nssm status  HydroMonitor
-        nssm restart HydroMonitor
-        nssm edit    HydroMonitor      # GUI for every setting below
+        nssm status  AquaMonitor
+        nssm restart AquaMonitor
+        nssm edit    AquaMonitor      # GUI for every setting below
         .\scripts\install-service.ps1 -Uninstall
 
     NSSM itself is not bundled -- install it first with `choco install nssm` or from
@@ -31,7 +31,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $ServiceName = 'HydroMonitor',
+    [string] $ServiceName = 'AquaMonitor',
     [switch] $Uninstall
 )
 
@@ -68,7 +68,7 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out
 
 nssm install $ServiceName $Python 'main.py'
 nssm set $ServiceName AppDirectory $RepoRoot
-nssm set $ServiceName DisplayName  'HydroMonitor water quality backend'
+nssm set $ServiceName DisplayName  'AquaMonitor water quality backend'
 nssm set $ServiceName Description  'FastAPI backend: ESP32 sensor ingestion, dashboard WebSocket fan-out, UDP discovery.'
 nssm set $ServiceName Start        SERVICE_AUTO_START
 
@@ -78,8 +78,8 @@ nssm set $ServiceName AppRestartDelay 10000
 
 # Redirect stdout/stderr to files and rotate at ~10 MB -- main.py prints every reading,
 # so an unrotated log grows without bound at one line per 2 seconds.
-nssm set $ServiceName AppStdout       (Join-Path $LogDir 'hydromonitor.out.log')
-nssm set $ServiceName AppStderr       (Join-Path $LogDir 'hydromonitor.err.log')
+nssm set $ServiceName AppStdout       (Join-Path $LogDir 'aquamonitor.out.log')
+nssm set $ServiceName AppStderr       (Join-Path $LogDir 'aquamonitor.err.log')
 nssm set $ServiceName AppRotateFiles  1
 nssm set $ServiceName AppRotateOnline 1
 nssm set $ServiceName AppRotateBytes  10485760
@@ -97,4 +97,4 @@ Write-Host "  Logs:      $LogDir"
 Write-Host "  Status:    nssm status $ServiceName"
 Write-Host ""
 Write-Host "Reminder: UDP discovery needs an inbound firewall rule on port 8888 --" -ForegroundColor Yellow
-Write-Host '  netsh advfirewall firewall add rule name="HydroMonitor UDP Discovery" dir=in action=allow protocol=UDP localport=8888' -ForegroundColor Yellow
+Write-Host '  netsh advfirewall firewall add rule name="AquaMonitor UDP Discovery" dir=in action=allow protocol=UDP localport=8888' -ForegroundColor Yellow

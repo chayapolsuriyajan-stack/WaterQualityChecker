@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 /*
-  Aqua Monitor theme
+  AquaMonitor theme
   Accent: mint/teal (brand) — a fresh spring-green/teal, deliberately kept apart
   in hue from --success so brand accent and water-quality status never collide.
   Status colors (good/moderate/poor) are separate semantic tokens used by

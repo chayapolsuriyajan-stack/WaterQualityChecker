@@ -604,8 +604,8 @@ void setup() {
     Serial.println("\nStill not connected after 20s -- continuing anyway. Use WIFI_SCAN/WIFI_SET over serial to reconfigure, or wait for a retry.");
   }
 
-  if (MDNS.begin("hydromonitor")) {
-    Serial.println("mDNS responder started! You can use: hydromonitor.local");
+  if (MDNS.begin("aquamonitor")) {
+    Serial.println("mDNS responder started! You can use: aquamonitor.local");
   } else {
     Serial.println("Error setting up MDNS responder!");
   }

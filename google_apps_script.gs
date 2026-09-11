@@ -15,7 +15,7 @@
 //
 // -- Backend-outage fallback path ---------------------------------------------------------
 // main.py's own Sheets relay (webconfig.json's googleSheetsWebhookUrl) POSTs here on every
-// reading normally. When the backend PC can't be reached, firmware/esp32/esp32.ino instead
+// reading normally. When the backend PC can't be reached, firmware/AquaMonitor/AquaMonitor.ino instead
 // buffers readings on-device and POSTs each one straight to THIS SAME Web App once it's able
 // to (see esp32.ino's "Google Sheets fallback" section) -- same JSON shape doPost already
 // accepts below, so no separate buffer tab or migration trigger is needed: a fallback reading
