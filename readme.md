@@ -63,10 +63,7 @@ help button in the sidebar.
 
 ### How it works, briefly
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/data-flow-dark.png">
-  <img alt="Data flow: the ESP32 station posts raw readings to the FastAPI backend, which calibrates them and fans out to Google Sheets, local SQLite, the live dashboard, Web Push notifications, and the Gemini AI report." src="docs/data-flow-light.png">
-</picture>
+![Data flow: the ESP32 station posts raw readings to the FastAPI backend, which calibrates them and fans out to Google Sheets, local SQLite, the live dashboard, Web Push notifications, and the Gemini AI report.](docs/data-flow-light.png)
 
 - **Station** ([`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino)) reads temperature,
   turbidity, TDS, and flow-sensor pulses and POSTs **raw** values to the backend every 2s,
@@ -183,10 +180,7 @@ python main.py
 
 ### หลักการทำงานโดยสรุป
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/data-flow-dark.png">
-  <img alt="แผนภาพการไหลของข้อมูล: สถานี ESP32 ส่งค่าดิบไปยังเซิร์ฟเวอร์ FastAPI ซึ่งปรับเทียบค่าแล้วกระจายไปยัง Google Sheets, SQLite ในเครื่อง, แดชบอร์ดแบบเรียลไทม์, Web Push notification และรายงานสรุปจาก Gemini" src="docs/data-flow-light.png">
-</picture>
+![แผนภาพการไหลของข้อมูล: สถานี ESP32 ส่งค่าดิบไปยังเซิร์ฟเวอร์ FastAPI ซึ่งปรับเทียบค่าแล้วกระจายไปยัง Google Sheets, SQLite ในเครื่อง, แดชบอร์ดแบบเรียลไทม์, Web Push notification และรายงานสรุปจาก Gemini](docs/data-flow-light.png)
 
 - **สถานีเซนเซอร์** ([`firmware/AquaMonitor/AquaMonitor.ino`](firmware/AquaMonitor/AquaMonitor.ino)) อ่านค่าอุณหภูมิ ความขุ่น TDS
   และพัลส์จากเซนเซอร์วัดอัตราการไหล แล้วส่งค่า **ดิบ** ไปยังเซิร์ฟเวอร์ทุก 2 วินาที โดยค้นหา IP ของเซิร์ฟเวอร์
