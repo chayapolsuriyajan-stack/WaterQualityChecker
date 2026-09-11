@@ -3,7 +3,7 @@
  * active language to localStorage, and exposes a `t()` translator plus the
  * current language / setters via `useT()`.
  *
- * Default language is `en`. `t()` falls back to the `en` string if a key is
+ * Default language is `th`. `t()` falls back to the `en` string if a key is
  * missing from `th`, and returns the key itself (never throws, never renders
  * "undefined") if the key is missing from both locales.
  */
@@ -25,13 +25,13 @@ function isLang(value: unknown): value is Lang {
 }
 
 function readStoredLang(): Lang {
-  if (typeof window === 'undefined') return 'en'
+  if (typeof window === 'undefined') return 'th'
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY)
-    return isLang(stored) ? stored : 'en'
+    return isLang(stored) ? stored : 'th'
   } catch {
     // localStorage can throw in restrictive environments (private browsing, etc).
-    return 'en'
+    return 'th'
   }
 }
 
