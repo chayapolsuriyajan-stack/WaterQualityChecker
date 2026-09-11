@@ -820,6 +820,32 @@ PARAM_DISPLAY = {
     "ec": ("⚡", "EC", "µS/cm"),
 }
 
+# Thai variant of PARAM_DISPLAY, used only for push notification text when a subscription's
+# stored `lang` is "th" (Push notifications below) -- kept separate from PARAM_DISPLAY (which
+# stays English) rather than adding a lang branch to it, since PARAM_DISPLAY is also used by
+# the AI daily report prompt builder, which is Thai-only regardless of subscriber language
+# (see _build_daily_report_prompt) and isn't part of this lang switch.
+PARAM_DISPLAY_TH = {
+    "temperature": ("🌡️", "อุณหภูมิ", "°C"),
+    "turbidity": ("💧", "ความขุ่น", "NTU"),
+    "tds": ("🧪", "สารละลายทั้งหมด", "ppm"),
+    "ec": ("⚡", "การนำไฟฟ้า", "µS/cm"),
+}
+
+SEVERITY_TH = {"warn": "เฝ้าระวัง", "danger": "อันตราย"}
+
+# Push notification action-button labels, by language (View Dashboard / Dismiss).
+_PUSH_ACTIONS = {
+    "en": [
+        {"action": "view", "title": "View Dashboard"},
+        {"action": "dismiss", "title": "Dismiss"},
+    ],
+    "th": [
+        {"action": "view", "title": "ดูแดชบอร์ด"},
+        {"action": "dismiss", "title": "ปิด"},
+    ],
+}
+
 
 def _check_breaches_and_dispatch(station: str, payload: dict) -> list:
     breaches = []
@@ -845,18 +871,44 @@ def _check_breaches_and_dispatch(station: str, payload: dict) -> list:
     return breaches
 
 
-def _format_push_text(param: str, severity: str, value) -> tuple:
-    emoji, label, unit = PARAM_DISPLAY.get(param, ("⚠️", param.capitalize(), ""))
-    title = f"{emoji} {label} — {severity.title()}"
+def _format_push_text(param: str, severity: str, value, lang: str = "en") -> tuple:
     try:
         formatted_value = f"{float(value):.1f}"
     except (TypeError, ValueError):
         formatted_value = str(value)
+    if lang == "th":
+        emoji, label, unit = PARAM_DISPLAY_TH.get(param, ("⚠️", param.capitalize(), ""))
+        severity_th = SEVERITY_TH.get(severity, severity)
+        title = f"{emoji} {label} — {severity_th}"
+        body = f"{formatted_value} {unit} อยู่ในระดับ{severity_th}".strip()
+        return title, body
+    emoji, label, unit = PARAM_DISPLAY.get(param, ("⚠️", param.capitalize(), ""))
+    title = f"{emoji} {label} — {severity.title()}"
     body = f"{formatted_value} {unit} is in the {severity} range".strip()
     return title, body
 
 
-def _build_breach_enrichment_prompt(station: str, breaches: list, payload: dict) -> str:
+def _build_breach_enrichment_prompt(station: str, breaches: list, payload: dict, lang: str = "th") -> str:
+    if lang == "en":
+        lines = [
+            "A water-quality issue was just detected. Briefly explain the current problem "
+            "and what to do about it, in English, in 2-3 sentences:"
+        ]
+        for param, severity in breaches:
+            value = payload.get(param)
+            _emoji, label, unit = PARAM_DISPLAY.get(param, ("", param.capitalize(), ""))
+            band = thresholds.RANGE_BANDS.get(param, {})
+            good_range = f"{band.get('goodMin', '-')}–{band.get('goodMax', '-')}"
+            try:
+                formatted_value = f"{float(value):.1f}"
+            except (TypeError, ValueError):
+                formatted_value = str(value)
+            lines.append(
+                f"- {label}: measured {formatted_value} {unit} is at {severity} level "
+                f"(normal range: {good_range} {unit})"
+            )
+        return "\n".join(lines)
+
     lines = [
         "เกิดปัญหาคุณภาพน้ำที่ตรวจพบตอนนี้ กรุณาอธิบายปัญหาปัจจุบันสั้นๆ และให้คำแนะนำว่าควรทำอย่างไร "
         "เป็นภาษาไทย ไม่เกิน 2-3 ประโยค:"
@@ -877,7 +929,7 @@ def _build_breach_enrichment_prompt(station: str, breaches: list, payload: dict)
     return "\n".join(lines)
 
 
-def _push_payload(title: str, body: str, tag: str) -> str:
+def _push_payload(title: str, body: str, tag: str, lang: str = "en") -> str:
     return json.dumps(
         {
             "title": title,
@@ -885,10 +937,7 @@ def _push_payload(title: str, body: str, tag: str) -> str:
             "tag": tag,
             "icon": "/favicon.svg",
             "badge": "/favicon.svg",
-            "actions": [
-                {"action": "view", "title": "View Dashboard"},
-                {"action": "dismiss", "title": "Dismiss"},
-            ],
+            "actions": _PUSH_ACTIONS.get(lang, _PUSH_ACTIONS["en"]),
         }
     )
 
@@ -898,10 +947,11 @@ def _send_one_push(sub: dict, title: str, body: str, param: str, severity: str) 
         "endpoint": sub["endpoint"],
         "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
     }
+    lang = sub.get("lang", "en")
     try:
         webpush(
             subscription_info=subscription_info,
-            data=_push_payload(title, body, f"{param}-{severity}"),
+            data=_push_payload(title, body, f"{param}-{severity}", lang),
             vapid_private_key=VAPID_PRIVATE_KEY_FILE,
             vapid_claims={"sub": VAPID_CLAIM_SUB},
         )
@@ -920,9 +970,13 @@ async def dispatch_push_breaches(breaches: list, payload: dict) -> None:
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
     for param, severity in breaches:
         value = payload.get(param)
-        title, body = _format_push_text(param, severity, value)
+        # Pre-compute both language variants once per (param, severity) rather than per
+        # subscriber -- there are only ever two possible texts here regardless of how many
+        # subscriptions exist.
+        texts = {lang: _format_push_text(param, severity, value, lang) for lang in ("en", "th")}
         for sub in subs:
             if sub["prefs"].get(param, {}).get(severity, False):
+                title, body = texts.get(sub.get("lang", "en"), texts["en"])
                 await asyncio.to_thread(_send_one_push, sub, title, body, param, severity)
 
 
@@ -941,17 +995,27 @@ async def dispatch_ai_breach_enrichment(station: str, breaches: list, payload: d
     _ai_enrichment_sent[station] = True  # set before the Gemini call, not after -- a
     # concurrent reading landing while this call is in flight must not also fire.
     _ai_enrichment_last_sent[station] = time.time()
-    prompt = _build_breach_enrichment_prompt(station, breaches, payload)
-    text = await asyncio.to_thread(_call_gemini, prompt, caller_label="breach enrichment")
-    if text is None:
-        return
+
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
-    title = "🤖 AI Guidance"
+    # Group eligible subscribers by their notification language first, so this only ever
+    # makes one Gemini call per language actually needed (usually 1, at most 2) instead of
+    # one call per subscriber.
+    eligible_by_lang: dict[str, list[dict]] = {}
     for sub in subs:
         eligible = any(
             sub["prefs"].get(param, {}).get(severity, False) for param, severity in breaches
         )
         if eligible:
+            eligible_by_lang.setdefault(sub.get("lang", "en"), []).append(sub)
+
+    titles = {"en": "🤖 AI Guidance", "th": "🤖 คำแนะนำจาก AI"}
+    for lang, lang_subs in eligible_by_lang.items():
+        prompt = _build_breach_enrichment_prompt(station, breaches, payload, lang)
+        text = await asyncio.to_thread(_call_gemini, prompt, caller_label=f"breach enrichment ({lang})")
+        if text is None:
+            continue
+        title = titles.get(lang, titles["en"])
+        for sub in lang_subs:
             await asyncio.to_thread(_send_one_push, sub, title, text, f"ai-{station}", "info")
 
 
@@ -1838,7 +1902,8 @@ async def push_subscribe(request: Request):
     if not endpoint or not p256dh or not auth:
         return JSONResponse({"error": "endpoint and keys.p256dh/keys.auth are required"}, status_code=400)
     prefs = body.get("prefs") or {p: {"warn": False, "danger": True} for p in PUSH_PARAMS}
-    await asyncio.to_thread(storage.upsert_push_subscription, endpoint, p256dh, auth, prefs)
+    lang = body.get("lang") if body.get("lang") in ("en", "th") else "en"
+    await asyncio.to_thread(storage.upsert_push_subscription, endpoint, p256dh, auth, prefs, lang)
     return JSONResponse({"ok": True})
 
 
@@ -1861,7 +1926,7 @@ async def get_push_preferences(endpoint: str):
     subs = await asyncio.to_thread(storage.get_all_push_subscriptions)
     for sub in subs:
         if sub["endpoint"] == endpoint:
-            return JSONResponse({"prefs": sub["prefs"]})
+            return JSONResponse({"prefs": sub["prefs"], "lang": sub.get("lang", "en")})
     return JSONResponse({"error": "subscription not found"}, status_code=404)
 
 
@@ -1887,16 +1952,18 @@ async def push_test(request: Request):
         "endpoint": sub["endpoint"],
         "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
     }
+    lang = sub.get("lang", "en")
+    title, body = (
+        ("🔔 AquaMonitor — ทดสอบ", "นี่คือการแจ้งเตือนทดสอบ หากคุณเห็นข้อความนี้ แสดงว่าการแจ้งเตือนทำงานได้ตามปกติ")
+        if lang == "th"
+        else ("🔔 AquaMonitor — Test", "This is a test notification. If you can see this, alerts are working.")
+    )
 
     def _send() -> tuple:
         try:
             webpush(
                 subscription_info=subscription_info,
-                data=_push_payload(
-                    "🔔 AquaMonitor — Test",
-                    "This is a test notification. If you can see this, alerts are working.",
-                    "test",
-                ),
+                data=_push_payload(title, body, "test", lang),
                 vapid_private_key=VAPID_PRIVATE_KEY_FILE,
                 vapid_claims={"sub": VAPID_CLAIM_SUB},
             )
@@ -1927,6 +1994,12 @@ async def put_push_preferences(request: Request):
     ok = await asyncio.to_thread(storage.update_push_prefs, endpoint, prefs)
     if not ok:
         return JSONResponse({"error": "not found"}, status_code=404)
+    # `lang` is optional here -- re-syncs an already-subscribed device's notification
+    # language when the frontend calls this alongside a language-toggle change (see
+    # PushLangSync in App.tsx), distinct from the initial lang sent at /push/subscribe time.
+    lang = body.get("lang")
+    if lang in ("en", "th"):
+        await asyncio.to_thread(storage.update_push_lang, endpoint, lang)
     return JSONResponse({"ok": True})
 
 
