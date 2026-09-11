@@ -20,7 +20,10 @@ and streams live to a dashboard built for an educational / community-monitoring 
 
 ### How to use
 
-![Dashboard](docs/dashboard.png?v=49b675d)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
+  <img alt="AquaMonitor dashboard: WQI trend chart, station Quick View, and the Gemini-generated AI daily report card, all showing normal readings." src="docs/dashboard-light.png">
+</picture>
 
 ```bash
 pip install -r requirements.txt
@@ -143,7 +146,10 @@ Honest status, roughly in priority order:
 
 ### วิธีใช้งาน
 
-![แดชบอร์ด](docs/dashboard.png?v=49b675d)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
+  <img alt="แดชบอร์ด AquaMonitor: กราฟแนวโน้ม WQI, การ์ด Quick View ของสถานี และการ์ดรายงานสรุปประจำวันจาก Gemini ซึ่งแสดงค่าปกติทั้งหมด" src="docs/dashboard-light.png">
+</picture>
 
 ```bash
 pip install -r requirements.txt
